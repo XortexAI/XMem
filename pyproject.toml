@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "Xmem"
+version = "0.1.0"
+description = "Universal unified memory system for AI agents"
+authors = [
+    {name = "Vedant Mahajan", email = "xmemlabs@gmail.com"}
+    {name = "Ishaan Gupta", email = "xmemlabs@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.1.0",
+    "langchain>=0.1.0",
+    "langchain-core>=0.1.0",
+    "langchain-google-genai>=0.0.9",
+    "langchain-anthropic>=0.1.0",
+    "langchain-openai>=0.0.5",
+    "langgraph>=0.0.10",
+    "pinecone-client>=3.0.0",
+    "sentence-transformers>=2.2.0",
+    "pymongo>=4.6.0",
+    "neo4j>=5.14.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.26.0",
+    "numpy>=1.26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "mypy>=1.8.0",
+    "ruff>=0.2.0",
+    "black>=24.1.0",
+    "pre-commit>=3.6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q --cov=src"
+testpaths = [
+    "tests",
+]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"

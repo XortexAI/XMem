@@ -37,13 +37,13 @@ Create modern Python project configuration with:
 
 **Tasks:**
 
-- [ ] Define project metadata (name, version, description, authors)
-- [ ] Add core dependencies (FastAPI, Pydantic, LangChain, LangGraph)
-- [ ] Add LLM dependencies (`langchain-google-genai`, `langchain-anthropic`, `langchain-openai`)
-- [ ] Add vector store dependencies (Pinecone, sentence-transformers)
-- [ ] Add database dependencies (pymongo, neo4j)
-- [ ] Add dev dependencies (pytest, mypy, ruff, black, pre-commit)
-- [ ] Configure build system and entry points
+- [✓] Define project metadata (name, version, description, authors)
+- [✓] Add core dependencies (FastAPI, Pydantic, LangChain, LangGraph)
+- [✓] Add LLM dependencies (`langchain-google-genai`, `langchain-anthropic`, `langchain-openai`)
+- [✓] Add vector store dependencies (Pinecone, sentence-transformers)
+- [✓] Add database dependencies (pymongo, neo4j)
+- [✓] Add dev dependencies (pytest, mypy, ruff, black, pre-commit)
+- [✓] Configure build system and entry points
 
 ---
 
@@ -55,21 +55,21 @@ Centralized configuration using `pydantic-settings`:
 
 **Tasks:**
 
-- [ ] Create `BaseSettings` class with environment variable loading
-- [ ] Define LLM configuration (API keys for Gemini/Claude/OpenAI, model names, temperature, fallback order)
-- [ ] Define vector store configuration (Pinecone API key, index name, namespace)
-- [ ] Define database configuration (MongoDB URI for sessions/profiles, Neo4j URI/credentials)
-- [ ] Define API configuration (CORS origins, rate limits)
-- [ ] Define logging configuration (level, format, handlers)
-- [ ] Add validation for required vs optional settings
-- [ ] Create [.env.example](file:///Users/vedantmahajan/Desktop/Xortex/Xmem/.env.example) with all configuration options
+- [✓] Create `BaseSettings` class with environment variable loading
+- [✓] Define LLM configuration (API keys for Gemini/Claude/OpenAI, model names, temperature, fallback order)
+- [✓] Define vector store configuration (Pinecone API key, index name, namespace)
+- [✓] Define database configuration (MongoDB URI for sessions/profiles, Neo4j URI/credentials)
+- [✓] Define API configuration (CORS origins, rate limits)
+- [N/A] Define logging configuration (level, format, handlers) - Skipped, using Opik for observability
+- [✓] Add validation for required vs optional settings
+- [✓] Create [.env.example](file:///Users/vedantmahajan/Desktop/Xortex/Xmem/.env.example) with all configuration options (Updated with Opik)
 
 **[NEW]** [src/config/**init**.py](file:///Users/vedantmahajan/Desktop/Xortex/Xmem/src/config/__init__.py)
 
 **Tasks:**
 
-- [ ] Export singleton `settings` instance
-- [ ] Add helper functions for config access
+- [✓] Export singleton `settings` instance
+- [✓] Add helper functions for config access
 
 ---
 

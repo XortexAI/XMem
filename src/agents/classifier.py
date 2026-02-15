@@ -37,14 +37,18 @@ class ClassifierAgent(BaseAgent):
         classifications = parse_raw_response_to_classifications(raw_content)
 
         if classifications:
-            self.logger.info("=" * 50)
-            self.logger.info("Extracted Classifications:")
+            sources = ", ".join(set(c["source"] for c in classifications))
+            self.logger.info(
+                "Classified into: %s (total: %d)", sources, len(classifications)
+            )
+
+            self.logger.debug("=" * 50)
+            self.logger.debug("Extracted Classifications:")
             for idx, cls in enumerate(classifications, 1):
-                self.logger.info(
+                self.logger.debug(
                     "  %d. source=%s  query=%s", idx, cls["source"], cls["query"]
                 )
-            self.logger.info("Total classifications: %d", len(classifications))
-            self.logger.info("=" * 50)
+            self.logger.debug("=" * 50)
         else:
             self.logger.info("No actionable classifications found (trivial input).")
 

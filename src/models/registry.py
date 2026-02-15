@@ -10,6 +10,7 @@ Usage:
 
 from __future__ import annotations
 
+import importlib
 import logging
 from typing import Optional
 
@@ -20,32 +21,25 @@ from src.models.base import Provider
 
 logger = logging.getLogger("xmem.models")
 
+
+def _build_from_module(module_name: str, func_name: str, **kwargs) -> BaseChatModel:
+    module = importlib.import_module(f"src.models.{module_name}")
+    factory_fn = getattr(module, func_name)
+    return factory_fn(**kwargs)
+
+
 _BUILDERS = {
-    "gemini": lambda **kw: _build_gemini(**kw),
-    "claude": lambda **kw: _build_claude(**kw),
-    "openai": lambda **kw: _build_openai(**kw),
+    "gemini": lambda **kw: _build_from_module("gemini", "build_gemini_model", **kw),
+    "claude": lambda **kw: _build_from_module("claude", "build_claude_model", **kw),
+    "openai": lambda **kw: _build_from_module("openai", "build_openai_model", **kw),
 }
+
 
 _KEY_MAP = {
     "gemini": lambda: settings.gemini_api_key,
     "claude": lambda: settings.claude_api_key,
     "openai": lambda: settings.openai_api_key,
 }
-
-
-def _build_gemini(**kw) -> BaseChatModel:
-    from src.models.gemini import build_gemini_model
-    return build_gemini_model(**kw)
-
-
-def _build_claude(**kw) -> BaseChatModel:
-    from src.models.claude import build_claude_model
-    return build_claude_model(**kw)
-
-
-def _build_openai(**kw) -> BaseChatModel:
-    from src.models.openai import build_openai_model
-    return build_openai_model(**kw)
 
 
 def get_model(
@@ -55,8 +49,8 @@ def get_model(
 ) -> BaseChatModel:
     """Build and return a chat model.
 
-    If *provider* is None the first provider from ``settings.fallback_order``
-    whose API key is configured will be used.  Raises ``RuntimeError`` if no
+    If *provider* is None the first provider from settings.fallback_order
+    whose API key is configured will be used.  Raises RuntimeError if no
     provider can be initialised.
     """
     kw: dict = {}

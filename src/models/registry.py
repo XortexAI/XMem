@@ -39,15 +39,8 @@ def _build_gemini(**kw) -> BaseChatModel:
 
 
 def _build_claude(**kw) -> BaseChatModel:
-    from langchain_anthropic import ChatAnthropic
-    api_key = settings.claude_api_key
-    if not api_key:
-        raise ValueError("CLAUDE_API_KEY is not set")
-    return ChatAnthropic(
-        model=kw.get("model_name") or settings.claude_model,
-        api_key=api_key,
-        temperature=kw.get("temperature") if kw.get("temperature") is not None else settings.temperature,
-    )
+    from src.models.claude import build_claude_model
+    return build_claude_model(**kw)
 
 
 def _build_openai(**kw) -> BaseChatModel:

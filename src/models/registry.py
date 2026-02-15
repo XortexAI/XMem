@@ -17,6 +17,9 @@ from langchain_core.language_models import BaseChatModel
 
 from src.config import settings
 from src.models.base import Provider
+from src.models.claude import build_claude_model
+from src.models.gemini import build_gemini_model
+from src.models.openai import build_openai_model
 
 logger = logging.getLogger("xmem.models")
 
@@ -34,17 +37,14 @@ _KEY_MAP = {
 
 
 def _build_gemini(**kw) -> BaseChatModel:
-    from src.models.gemini import build_gemini_model
     return build_gemini_model(**kw)
 
 
 def _build_claude(**kw) -> BaseChatModel:
-    from src.models.claude import build_claude_model
     return build_claude_model(**kw)
 
 
 def _build_openai(**kw) -> BaseChatModel:
-    from src.models.openai import build_openai_model
     return build_openai_model(**kw)
 
 

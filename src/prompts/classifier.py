@@ -7,7 +7,7 @@ The classifier routes user input to specialised downstream agents
 
 from __future__ import annotations
 
-from typing import List
+from functools import lru_cache
 
 from src.config.constants import LLM_TAB_SEPARATOR
 from src.prompts.classifier_keywords import (
@@ -84,6 +84,7 @@ One classification per line:
 """
 
 
+@lru_cache(maxsize=1)
 def build_system_prompt() -> str:
     """Render the full system prompt with examples and keywords injected."""
     examples_block = "\n\n".join(

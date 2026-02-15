@@ -7,7 +7,7 @@ name = "Xmem"
 version = "0.1.0"
 description = "Universal unified memory system for AI agents"
 authors = [
-    {name = "Vedant Mahajan", email = "xmemlabs@gmail.com"}
+    {name = "Vedant Mahajan", email = "xmemlabs@gmail.com"},
     {name = "Ishaan Gupta", email = "xmemlabs@gmail.com"}
 ]
 readme = "README.md"

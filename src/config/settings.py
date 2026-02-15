@@ -1,4 +1,4 @@
-from typing import Optional,List
+from typing import Optional, List
 from pydantic import Field,field_validator
 from pydantic_settings import BaseSettings,SettingsConfigDict
 
@@ -122,7 +122,6 @@ class Settings(BaseSettings):
     @field_validator("fallback_order")
     @classmethod
     def validate_fallback_order(cls, v: List[str]) -> List[str]:
-        """Ensure fallback_order only contains valid provider names."""
         valid_providers = {"gemini", "claude", "openai"}
         for provider in v:
             if provider not in valid_providers:

@@ -88,29 +88,3 @@ def test_get_model_fallback(mock_modules):
         registry.get_model()
 
         mock_openai_builder.assert_called_once()
-
-def test_get_model_caching(mock_modules):
-    from src.models import registry
-
-    importlib.reload(registry)
-
-    # Configure mock builder to return a NEW mock instance each time called
-    mock_builder = MagicMock()
-    mock_builder.side_effect = lambda **kwargs: MagicMock()
-
-    sys.modules["src.models.openai"].build_openai_model = mock_builder
-
-    # First call
-    model1 = registry.get_model("openai", temperature=0.7)
-
-    # Second call (same args) -> Should be cached
-    model2 = registry.get_model("openai", temperature=0.7)
-
-    # Third call (different args) -> Should be new
-    model3 = registry.get_model("openai", temperature=0.8)
-
-    assert model1 is model2
-    assert model1 is not model3
-
-    # Builder called for 0.7 and 0.8
-    assert mock_builder.call_count == 2

@@ -127,3 +127,86 @@ def parse_raw_response_to_profiles(content: str) -> list[dict]:
                 })
 
     return facts
+
+
+# ---------------------------------------------------------------------------
+# Temporal / Event helpers
+# ---------------------------------------------------------------------------
+
+
+def parse_raw_response_to_event(content: str) -> dict | None:
+    """Parse the raw LLM response for temporal event extraction.
+
+    Expected format::
+
+        DATE: MM-DD
+        EVENT_NAME: <name>
+        YEAR: <year or empty>
+        DESC: <description>
+        TIME: <time or empty>
+        DATE_EXPRESSION: <original date expression>
+
+    Or simply ``NO_EVENT``.
+
+    Returns:
+        Dict with event data or *None* if no event was found.
+    """
+    content = content.strip()
+
+    if "NO_EVENT" in content.upper():
+        return None
+
+    event_data: dict = {
+        "date": None,
+        "event_name": None,
+        "year": None,
+        "desc": None,
+        "time": None,
+        "date_expression": None,
+    }
+
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        upper = line.upper()
+
+        if upper.startswith("DATE:") and not upper.startswith("DATE_EXPRESSION:"):
+            value = line[5:].strip()
+            if value:
+                event_data["date"] = value
+
+        elif upper.startswith("EVENT_NAME:"):
+            value = line[11:].strip()
+            if value:
+                event_data["event_name"] = value
+
+        elif upper.startswith("YEAR:"):
+            value = line[5:].strip()
+            if value:
+                try:
+                    event_data["year"] = int(value)
+                except ValueError:
+                    event_data["year"] = value
+
+        elif upper.startswith("DESC:"):
+            value = line[5:].strip()
+            if value:
+                event_data["desc"] = value
+
+        elif upper.startswith("TIME:"):
+            value = line[5:].strip()
+            if value:
+                event_data["time"] = value
+
+        elif upper.startswith("DATE_EXPRESSION:"):
+            value = line[16:].strip()
+            if value:
+                event_data["date_expression"] = value
+
+    # Must have at least a date to be valid
+    if not event_data["date"]:
+        return None
+
+    return event_data

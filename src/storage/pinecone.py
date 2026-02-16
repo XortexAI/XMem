@@ -50,10 +50,8 @@ from .base import (
 )
 from ..config import settings, get_logger
 from ..utils.exceptions import (
-    VectorStoreError,
     VectorStoreConnectionError,
     VectorStoreValidationError,
-    VectorNotFoundError,
 )
 from ..utils.retry import with_retry, RetryConfig
 logger = get_logger(__name__)
@@ -990,8 +988,8 @@ class PineconeVectorStore(BaseVectorStore):
         # Single filter: convert directly
         if len(filters) == 1:
             # Get the single key-value pair
-            # list(filters.items())[0] gets first (only) tuple
-            key, value = list(filters.items())[0]
+            # Use next(iter(...)) to avoid creating a full list of items
+            key, value = next(iter(filters.items()))
             
             # Return Pinecone format
             return {key: {"$eq": value}}

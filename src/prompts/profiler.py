@@ -7,6 +7,8 @@ user facts (topic / sub_topic / memo) from a user query routed by the classifier
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from src.config.constants import LLM_TAB_SEPARATOR
 from src.prompts.profiler_topics import format_topics_for_prompt
 from src.prompts.examples.profile import PROFILE_EXAMPLES
@@ -36,7 +38,7 @@ Each line is one fact containing:
 2. SUB_TOPIC — the specific attribute
 3. MEMO — the extracted value
 
-Separate elements with `{sep}` and each line with `\n`.
+Separate elements with `{sep}` and each line with `\\n`.
 
 Final output template:
 ```
@@ -77,6 +79,7 @@ def _format_examples() -> str:
     return "\n\n".join(blocks)
 
 
+@lru_cache(maxsize=1)
 def build_system_prompt() -> str:
     return _SYSTEM_PROMPT_TEMPLATE.format(
         sep=LLM_TAB_SEPARATOR,

@@ -62,6 +62,23 @@ class Settings(BaseSettings):
         default="default",
         description="Pinecone namespace for organizing vectors"
     )
+    pinecone_dimension: int = Field(
+        default=384,
+        description="Pinecone dimension for embeddings"
+    )
+    pinecone_metric: str = Field(
+        default="cosine",
+        description="Pinecone metric for embeddings"
+    )
+    pinecone_cloud: str = Field(
+        default="aws",
+        description="Pinecone cloud for embeddings"
+    )
+    pinecone_region: str = Field(
+        default="us-east-1",
+        description="Pinecone region for embeddings"
+    )
+    
     embedding_model: str = Field(
         default="all-MiniLM-L6-v2",
         description="Sentence transformer model for embeddings"

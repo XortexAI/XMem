@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+from functools import lru_cache
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -42,6 +43,7 @@ _KEY_MAP = {
 }
 
 
+@lru_cache(maxsize=16)
 def get_model(
     provider: Optional[Provider] = None,
     model_name: Optional[str] = None,

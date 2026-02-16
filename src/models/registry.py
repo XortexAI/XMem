@@ -10,6 +10,7 @@ Usage:
 
 from __future__ import annotations
 
+import functools
 import importlib
 import logging
 from typing import Optional
@@ -42,6 +43,7 @@ _KEY_MAP = {
 }
 
 
+@functools.lru_cache(maxsize=32)
 def get_model(
     provider: Optional[Provider] = None,
     model_name: Optional[str] = None,

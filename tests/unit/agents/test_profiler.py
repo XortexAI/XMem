@@ -1,16 +1,16 @@
 """
-Interactive classifier test — send queries and see live classifications.
+Interactive profiler test — send queries and see extracted profile facts.
 
 Usage:
-    PYTHONPATH=. python tests/unit/agents/test_classifier.py
-    PYTHONPATH=. python tests/unit/agents/test_classifier.py --provider gemini
+    PYTHONPATH=. python tests/unit/agents/test_profiler.py
+    PYTHONPATH=. python tests/unit/agents/test_profiler.py --provider gemini
 """
 
 import asyncio
 import sys
 
 from src.models import get_model
-from src.agents.classifier import ClassifierAgent
+from src.agents.profiler import ProfilerAgent
 
 
 async def main():
@@ -20,10 +20,10 @@ async def main():
         provider = sys.argv[idx + 1]
 
     model = get_model(provider=provider)
-    agent = ClassifierAgent(model=model)
+    agent = ProfilerAgent(model=model)
 
     model_name = getattr(model, "model", getattr(model, "model_name", "unknown"))
-    print(f"\n  Classifier Agent ready  (provider: {type(model).__name__}, model: {model_name})")
+    print(f"\n  Profiler Agent ready  (provider: {type(model).__name__}, model: {model_name})")
     print(f"  Type a query and press Enter. Type 'q' to quit.\n")
 
     while True:
@@ -38,13 +38,14 @@ async def main():
         if not query:
             continue
 
-        result = await agent.arun({"user_query": query})
+        # Simulate the input coming from the classifier
+        result = await agent.arun({"classifier_output": query})
 
-        if not result.classifications:
-            print("   (no classifications — trivial/skip)\n")
+        if result.is_empty:
+            print("   (no profile facts extracted)\n")
         else:
-            for i, c in enumerate(result.classifications, 1):
-                print(f"   {i}. [{c['source']}]  {c['query']}")
+            for idx, fact in enumerate(result.facts, 1):
+                print(f"   {idx}. [{fact.topic}/{fact.sub_topic}]  {fact.memo}")
             print()
 
 

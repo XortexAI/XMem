@@ -1,16 +1,19 @@
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict
-
+from dataclasses import dataclass, field
 from langchain_core.language_models import BaseChatModel
 
-
+@dataclass
 class BaseAgent(ABC):
-    def __init__(self, model: BaseChatModel, name: str, system_prompt: str = ""):
-        self.model = model
-        self.name = name
-        self.system_prompt = system_prompt
-        self.logger = logging.getLogger(f"xmem.agents.{name}")
+    model: BaseChatModel
+    name: str
+    system_prompt: str = ""
+    #Use field(init=False) so 'logger' is NOT required as an argument in __init__
+    logger: logging.Logger = field(init=False)
+    #Use __post_init__ to set up variables after __init__ is done
+    def __post_init__(self):
+        self.logger = logging.getLogger(f"xmem.agents.{self.name}")
 
     @abstractmethod
     async def arun(self, state: Dict[str, Any]) -> Any:

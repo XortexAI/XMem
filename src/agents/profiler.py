@@ -51,7 +51,7 @@ class ProfilerAgent(BaseAgent):
             self.logger.info("=" * 50)
             self.logger.info("Extracted Profile Facts:")
             for idx, fact in enumerate(result.facts, 1):
-                self.logger.info(
+                self.logger.debug(
                     "  %d. %s / %s = %s", idx, fact.topic, fact.sub_topic, fact.memo
                 )
             self.logger.info("Total facts: %d", len(result.facts))

@@ -2,8 +2,10 @@
 
 from src.agents.classifier import ClassifierAgent
 from src.agents.profiler import ProfilerAgent
+from src.agents.summarizer import SummarizerAgent
 
 __all__ = [
     "ClassifierAgent",
     "ProfilerAgent",
+    "SummarizerAgent",
 ]

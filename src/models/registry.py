@@ -9,6 +9,7 @@ Usage:
 """
 
 from __future__ import annotations
+from functools import lru_cache
 
 import importlib
 import logging
@@ -42,6 +43,8 @@ _KEY_MAP = {
 }
 
 
+@lru_cache(maxsize=16)
+# Cache model instances to avoid recreating them on every call
 def get_model(
     provider: Optional[Provider] = None,
     model_name: Optional[str] = None,

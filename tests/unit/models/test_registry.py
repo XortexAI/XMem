@@ -12,6 +12,10 @@ def mock_modules():
             "src.models.gemini": MagicMock(),
             "src.models.claude": MagicMock(),
             "src.models.openai": MagicMock(),
+            "langchain_core": MagicMock(),
+            "langchain_core.language_models": MagicMock(),
+            "pydantic": MagicMock(),
+            "pydantic_settings": MagicMock(),
         },
     ):
         yield

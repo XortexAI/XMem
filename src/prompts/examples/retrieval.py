@@ -22,8 +22,8 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "What food does the user like?",
-        "  - interest / foods  (current: \"pizza\")\n"
-        "  - work / company  (current: \"Google\")",
+        "  - interest / foods\n"
+        "  - work / company",
         [
             {
                 "tool": "search_profile",
@@ -35,9 +35,9 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "Where does the user work?",
-        "  - interest / foods  (current: \"pizza\")\n"
-        "  - work / company  (current: \"Google\")\n"
-        "  - work / title  (current: \"Senior Engineer\")",
+        "  - interest / foods\n"
+        "  - work / company\n"
+        "  - work / title",
         [
             {
                 "tool": "search_profile",
@@ -51,7 +51,7 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "When is my dentist appointment?",
-        "  - interest / foods  (current: \"pizza\")",
+        "  - interest / foods",
         [
             {
                 "tool": "search_temporal",
@@ -63,7 +63,7 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "When is my birthday?",
-        "  - personal / name  (current: \"Alice\")",
+        "  - personal / name",
         [
             {
                 "tool": "search_temporal",
@@ -75,7 +75,7 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "What events do I have coming up?",
-        "  - work / company  (current: \"Google\")",
+        "  - work / company",
         [
             {
                 "tool": "search_temporal",
@@ -89,8 +89,8 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "What do you know about me?",
-        "  - interest / foods  (current: \"pizza\")\n"
-        "  - work / company  (current: \"Google\")",
+        "  - interest / foods\n"
+        "  - work / company",
         [
             {
                 "tool": "search_summary",
@@ -102,7 +102,7 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "What happened in our last conversation?",
-        "  - personal / name  (current: \"Alice\")",
+        "  - personal / name",
         [
             {
                 "tool": "search_summary",
@@ -116,8 +116,8 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "Where do I work and when is my birthday?",
-        "  - work / company  (current: \"Google\")\n"
-        "  - work / title  (current: \"Senior Engineer\")",
+        "  - work / company\n"
+        "  - work / title",
         [
             {
                 "tool": "search_profile",
@@ -134,8 +134,8 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "Tell me about my hobbies and any upcoming events",
-        "  - interest / hobbies  (current: \"hiking\")\n"
-        "  - personal / name  (current: \"Bob\")",
+        "  - interest / hobbies\n"
+        "  - personal / name",
         [
             {
                 "tool": "search_profile",
@@ -152,8 +152,8 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "What do I like to eat and when did I start my current job?",
-        "  - interest / foods  (current: \"sushi\")\n"
-        "  - work / company  (current: \"Meta\")",
+        "  - interest / foods\n"
+        "  - work / company",
         [
             {
                 "tool": "search_profile",
@@ -172,8 +172,8 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "Does the user have any pets?",
-        "  - work / company  (current: \"Google\")\n"
-        "  - interest / foods  (current: \"pizza\")",
+        "  - work / company\n"
+        "  - interest / foods",
         [
             {
                 "tool": "search_summary",
@@ -185,7 +185,7 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
 
     (
         "What programming languages does the user know?",
-        "  - work / company  (current: \"Google\")",
+        "  - work / company",
         [
             {
                 "tool": "search_summary",

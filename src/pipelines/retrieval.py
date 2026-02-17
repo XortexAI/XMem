@@ -167,6 +167,7 @@ class RetrievalPipeline:
         tool_messages: List[ToolMessage] = []
 
         if ai_response.tool_calls:
+            called_tools = set()
             for tc in ai_response.tool_calls:
                 tool_name = tc["name"]
                 tool_args = tc["args"]
@@ -184,6 +185,25 @@ class RetrievalPipeline:
                 tool_messages.append(
                     ToolMessage(content=tool_result_text, tool_call_id=tool_id)
                 )
+
+                called_tools.add(tool_name.lower().replace("_", ""))
+
+            # Auto-add summary context when only profile was requested
+            if called_tools == {"searchprofile"}:
+                logger.info("  Auto-adding summary context (top_k=2)")
+                extra = await self._search_summary(
+                    query=query, user_id=user_id, top_k=2,
+                )
+                if extra:
+                    sources.extend(extra)
+                    extra_text = self._format_tool_results(extra)
+                    # Append as a system-injected tool message
+                    tool_messages.append(
+                        ToolMessage(
+                            content=f"[Auto-fetched summary context]\n{extra_text}",
+                            tool_call_id=ai_response.tool_calls[-1]["id"],
+                        )
+                    )
 
             # ── Step 3: Send results back to LLM for final answer ─────
             messages.append(ai_response)
@@ -387,7 +407,7 @@ class RetrievalPipeline:
 
         Returns:
             (catalog, raw_results)
-            catalog  — list of {topic, sub_topic, value_preview} for the prompt
+            catalog  — list of {topic, sub_topic} for the prompt
             raw_results — the full SearchResult list, cached for _search_profile
         """
         try:
@@ -413,13 +433,11 @@ class RetrievalPipeline:
                 catalog.append({
                     "topic": parts[0],
                     "sub_topic": parts[1],
-                    "value_preview": r.content[:60],
                 })
             else:
                 catalog.append({
                     "topic": main_content,
                     "sub_topic": "",
-                    "value_preview": r.content[:60],
                 })
 
         return catalog, results
@@ -433,8 +451,7 @@ class RetrievalPipeline:
         for entry in catalog:
             t = entry["topic"]
             st = entry["sub_topic"]
-            preview = entry.get("value_preview", "")
-            lines.append(f"  - {t} / {st}  (current: \"{preview}\")")
+            lines.append(f"  - {t} / {st}")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------

@@ -5,6 +5,8 @@ from src.agents.judge import JudgeAgent
 from src.agents.profiler import ProfilerAgent
 from src.agents.summarizer import SummarizerAgent
 from src.agents.temporal import TemporalAgent
+from src.agents.synthesizer import SynthesizerAgent
+from src.agents.verification import VerificationAgent
 
 __all__ = [
     "ClassifierAgent",
@@ -12,4 +14,6 @@ __all__ = [
     "ProfilerAgent",
     "SummarizerAgent",
     "TemporalAgent",
+    "SynthesizerAgent",
+    "VerificationAgent",
 ]

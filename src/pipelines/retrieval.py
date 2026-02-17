@@ -188,8 +188,8 @@ class RetrievalPipeline:
 
                 called_tools.add(tool_name.lower().replace("_", ""))
 
-            # Auto-add summary context when only profile was requested
-            if called_tools == {"searchprofile"}:
+            # Auto-add summary context when only profile or temporal was requested
+            if "searchsummary" not in called_tools:
                 logger.info("  Auto-adding summary context (top_k=2)")
                 extra = await self._search_summary(
                     query=query, user_id=user_id, top_k=2,

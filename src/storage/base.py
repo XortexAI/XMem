@@ -437,6 +437,32 @@ class BaseVectorStore(ABC):
                 print(f"{doc['id']}: {doc['content']}")
         """
         pass
+
+    @abstractmethod
+    def search_by_metadata(
+        self,
+        filters: Dict[str, Any],
+        top_k: int = 10,
+    ) -> List[SearchResult]:
+        """
+        Retrieve documents by metadata filters WITHOUT requiring an embedding.
+
+        This enables deterministic lookups (e.g. exact match on topic/subtopic)
+        rather than relying on semantic similarity.
+
+        Args:
+            filters: Metadata key-value pairs to filter on.
+                     Example: {"main_content": "work_company", "user_id": "u1"}
+            top_k: Maximum number of results to return.
+
+        Returns:
+            List of SearchResult objects matching the filters.
+
+        Raises:
+            VectorStoreConnectionError: If connection to store fails.
+            VectorStoreError: For other retrieval-related errors.
+        """
+        pass
     
     # ========================================================================
     # OPTIONAL ABSTRACT METHODS - Override if your backend supports them

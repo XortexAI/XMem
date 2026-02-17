@@ -6,7 +6,8 @@ it receives, the judge:
 
 1. Formats the item as a search query appropriate for the domain.
 2. Fetches similar existing records:
-   - profile / summary → Pinecone (vector store)
+   - profile → Pinecone (deterministic metadata filter on topic_subtopic)
+   - summary → Pinecone (semantic similarity via vector store)
    - temporal → Neo4j (graph DB, via injected search callable)
 3. Sends both the new items and retrieved neighbours to the LLM.
 4. Parses the LLM's JSON response into a list of typed Operation objects.
@@ -183,13 +184,14 @@ class JudgeAgent(BaseAgent):
         if domain == JudgeDomain.TEMPORAL:
             return await self._fetch_similar_temporal(items_strings, new_items, user_id)
         else:
-            return await self._fetch_similar_vector(items_strings, user_id, domain)
+            return await self._fetch_similar_vector(items_strings, new_items, user_id, domain)
 
     # -- Profile / Summary: Pinecone (vector store) -----------------------
 
     async def _fetch_similar_vector(
         self,
         items_strings: List[str],
+        new_items: list,
         user_id: str,
         domain: JudgeDomain,
     ) -> Dict[str, List[SearchResult]]:
@@ -197,6 +199,13 @@ class JudgeAgent(BaseAgent):
             self.logger.debug("No vector store attached — skipping similarity search.")
             return {}
 
+        # Profile domain: use deterministic metadata lookup
+        if domain == JudgeDomain.PROFILE:
+            return await self._fetch_similar_profile_metadata(
+                items_strings, new_items, user_id,
+            )
+
+        # Summary / other: fall back to semantic search
         matches: Dict[str, List[SearchResult]] = {}
 
         for item_str in items_strings:
@@ -219,11 +228,69 @@ class JudgeAgent(BaseAgent):
 
         return matches
 
+    # -- Profile: deterministic metadata lookup ----------------------------
+
+    async def _fetch_similar_profile_metadata(
+        self,
+        items_strings: List[str],
+        new_items: list,
+        user_id: str,
+    ) -> Dict[str, List[SearchResult]]:
+        """Fetch existing profile records by exact topic_subtopic match.
+
+        Builds a metadata key ``main_content = "topic_subtopic"`` from the
+        incoming item and queries Pinecone with a metadata-only filter.
+        This is faster and more reliable than semantic similarity.
+        """
+        matches: Dict[str, List[SearchResult]] = {}
+
+        for idx, item_str in enumerate(items_strings):
+            try:
+                item = new_items[idx] if idx < len(new_items) else {}
+                meta_key = _build_profile_metadata_key(item)
+
+                if not meta_key:
+                    # Can't build key — fall back gracefully
+                    matches[item_str] = []
+                    continue
+
+                filters: Dict[str, Any] = {"main_content": meta_key}
+                if user_id:
+                    filters["user_id"] = user_id
+                filters["domain"] = JudgeDomain.PROFILE.value
+
+                search_fn = getattr(self.vector_store, "search_by_metadata", None)
+                if search_fn is not None:
+                    results = search_fn(filters=filters, top_k=self.top_k)
+                    matches[item_str] = results if results else []
+                else:
+                    self.logger.debug(
+                        "Vector store has no search_by_metadata — "
+                        "falling back to semantic search for profile."
+                    )
+                    # Graceful fallback to semantic search
+                    results = await self._search_vector_store(
+                        query_text=item_str,
+                        filters={"user_id": user_id, "domain": "profile"} if user_id else None,
+                    )
+                    matches[item_str] = results
+            except Exception as exc:
+                self.logger.warning(
+                    "Profile metadata search failed for '%s': %s",
+                    item_str[:60], exc,
+                )
+                matches[item_str] = []
+
+        return matches
+
+    # -- Semantic search fallback (summary domain) -------------------------
+
     async def _search_vector_store(
         self,
         query_text: str,
         filters: Optional[Dict[str, Any]] = None,
     ) -> List[SearchResult]:
+        """Semantic search via the vector store's search_by_text method."""
         if not self.vector_store:
             return []
 
@@ -335,3 +402,25 @@ class JudgeAgent(BaseAgent):
             )
         self.logger.info("Confidence: %.2f", result.confidence)
         self.logger.info("=" * 50)
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+def _build_profile_metadata_key(item: dict) -> str:
+    """Build the normalized metadata key for a profile item.
+
+    Given ``{"topic": "food", "sub_topic": "preference", "memo": "..."}``,
+    returns ``"food_preference"`` — the same format the Weaver stores
+    as ``main_content`` in Pinecone metadata.
+
+    Returns empty string if topic or sub_topic is missing.
+    """
+    if not isinstance(item, dict):
+        return ""
+    topic = item.get("topic", "").strip()
+    sub_topic = item.get("sub_topic", "").strip()
+    if not topic or not sub_topic:
+        return ""
+    return f"{topic}_{sub_topic}".replace(" ", "_").lower()

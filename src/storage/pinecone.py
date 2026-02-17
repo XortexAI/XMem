@@ -940,6 +940,105 @@ class PineconeVectorStore(BaseVectorStore):
         logger.info(f"Successfully deleted index: {self._index_name}")
     
     # ========================================================================
+    # METADATA-ONLY SEARCH (no embedding required)
+    # ========================================================================
+
+    @with_retry(config=PINECONE_RETRY_CONFIG)
+    def search_by_metadata(
+        self,
+        filters: Dict[str, Any],
+        top_k: int = 10,
+    ) -> List[SearchResult]:
+        """
+        Query Pinecone using only metadata filters.
+
+        Pinecone always requires a vector in the query call, so we supply a
+        zero-vector and rely entirely on the metadata filter for selection.
+        The similarity scores in the results are NOT meaningful — treat every
+        returned record as a 1.0 match.
+
+        Args:
+            filters: Metadata key-value pairs, e.g.
+                     {"main_content": "work_company", "user_id": "u1"}
+            top_k: Max results (default 10).
+
+        Returns:
+            List[SearchResult] — matched records.
+        """
+        if not filters:
+            logger.warning("search_by_metadata called with empty filters")
+            return []
+
+        pinecone_filter = self._build_filter(filters)
+
+        # Zero-vector: Pinecone requires a vector but we only care about filter
+        dummy_vector = [0.0] * self._dimension
+
+        logger.debug(
+            "Metadata search namespace='%s' filter=%s top_k=%d",
+            self._namespace, pinecone_filter, top_k,
+        )
+
+        results = self._index.query(
+            vector=dummy_vector,
+            top_k=top_k,
+            include_metadata=True,
+            namespace=self._namespace,
+            filter=pinecone_filter,
+        )
+
+        search_results: List[SearchResult] = []
+        for match in results.matches:
+            metadata: Dict[str, Any] = match.metadata or {}
+            content: str = metadata.pop("content", "")
+            search_results.append(SearchResult(
+                id=match.id,
+                content=content,
+                score=1.0,      # score is meaningless for metadata-only queries
+                metadata=metadata,
+            ))
+
+        logger.debug("Metadata search returned %d results", len(search_results))
+        return search_results
+
+    # ========================================================================
+    # TEXT SEARCH (embeds the query, then searches by vector + filters)
+    # ========================================================================
+
+    async def search_by_text(
+        self,
+        query_text: str,
+        top_k: int = 2,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[SearchResult]:
+        """
+        Embed a query string and search for similar vectors.
+
+        This is a convenience wrapper that:
+        1. Generates an embedding for `query_text` using SentenceTransformer.
+        2. Delegates to the existing `search()` method.
+
+        The Judge agent uses this for the *summary* domain to find existing
+        similar records before deciding ADD / UPDATE / NOOP.
+
+        Args:
+            query_text: The text to embed and search for.
+            top_k: Number of results to return.
+            filters: Optional metadata filters (e.g. user_id, domain).
+
+        Returns:
+            List[SearchResult] — matched records sorted by similarity.
+        """
+        from src.pipelines.ingest import embed_text
+
+        query_embedding = embed_text(query_text)
+        return self.search(
+            query_embedding=query_embedding,
+            top_k=top_k,
+            filters=filters,
+        )
+
+    # ========================================================================
     # PRIVATE HELPER METHODS
     # ========================================================================
     

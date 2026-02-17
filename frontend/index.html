@@ -1,0 +1,810 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Xmem — Memory Test Console</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0a0a0f;
+        --surface: #12121a;
+        --surface-2: #1a1a26;
+        --surface-3: #222233;
+        --border: #2a2a3d;
+        --text: #e4e4ef;
+        --text-dim: #8888a0;
+        --accent: #7c5cff;
+        --accent-glow: rgba(124, 92, 255, 0.15);
+        --green: #34d399;
+        --green-dim: rgba(52, 211, 153, 0.12);
+        --blue: #60a5fa;
+        --blue-dim: rgba(96, 165, 250, 0.12);
+        --orange: #fb923c;
+        --orange-dim: rgba(251, 146, 60, 0.12);
+        --red: #f87171;
+        --yellow: #fbbf24;
+        --radius: 12px;
+        --radius-sm: 8px;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Inter", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        overflow-x: hidden;
+      }
+
+      /* ── Header ─────────────────────────────────────────── */
+      header {
+        padding: 24px 32px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        backdrop-filter: blur(20px);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+
+      .logo {
+        font-size: 22px;
+        font-weight: 700;
+        background: linear-gradient(135deg, var(--accent), #a78bfa);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        letter-spacing: -0.5px;
+      }
+
+      .logo-sub {
+        font-size: 13px;
+        color: var(--text-dim);
+        font-weight: 400;
+      }
+
+      .user-badge {
+        margin-left: auto;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        color: var(--text-dim);
+        background: var(--surface-2);
+        padding: 6px 12px;
+        border-radius: 20px;
+        border: 1px solid var(--border);
+      }
+
+      /* ── Mode Toggle ────────────────────────────────────── */
+      .mode-toggle {
+        display: flex;
+        gap: 4px;
+        background: var(--surface-2);
+        border-radius: 10px;
+        padding: 4px;
+        border: 1px solid var(--border);
+      }
+
+      .mode-btn {
+        padding: 8px 20px;
+        border: none;
+        border-radius: 8px;
+        font-family: "Inter", sans-serif;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        color: var(--text-dim);
+        background: transparent;
+        transition: all 0.2s ease;
+      }
+
+      .mode-btn.active {
+        background: var(--accent);
+        color: white;
+        box-shadow: 0 2px 12px rgba(124, 92, 255, 0.3);
+      }
+
+      .mode-btn:not(.active):hover {
+        color: var(--text);
+        background: var(--surface-3);
+      }
+
+      /* ── Main Layout ────────────────────────────────────── */
+      main {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 32px 24px;
+      }
+
+      /* ── Input Section ──────────────────────────────────── */
+      .input-section {
+        margin-bottom: 32px;
+      }
+
+      .input-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 8px;
+      }
+
+      .input-row {
+        display: flex;
+        gap: 12px;
+      }
+
+      .input-field {
+        flex: 1;
+        padding: 14px 18px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text);
+        font-family: "Inter", sans-serif;
+        font-size: 15px;
+        outline: none;
+        transition:
+          border-color 0.2s,
+          box-shadow 0.2s;
+      }
+
+      .input-field:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-glow);
+      }
+
+      .input-field::placeholder {
+        color: var(--text-dim);
+      }
+
+      .send-btn {
+        padding: 14px 28px;
+        background: linear-gradient(135deg, var(--accent), #6d4de8);
+        border: none;
+        border-radius: var(--radius);
+        color: white;
+        font-family: "Inter", sans-serif;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        white-space: nowrap;
+      }
+
+      .send-btn:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 20px rgba(124, 92, 255, 0.4);
+      }
+
+      .send-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      /* ── Steps Panel ────────────────────────────────────── */
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        margin-bottom: 20px;
+        overflow: hidden;
+      }
+
+      .panel-header {
+        padding: 14px 18px;
+        background: var(--surface-2);
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: var(--text-dim);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .panel-body {
+        padding: 16px 18px;
+        max-height: 300px;
+        overflow-y: auto;
+      }
+
+      .panel-body::-webkit-scrollbar {
+        width: 6px;
+      }
+      .panel-body::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .panel-body::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 3px;
+      }
+
+      /* ── Step Items ─────────────────────────────────────── */
+      .step {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 6px 0;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        animation: fadeSlideIn 0.3s ease both;
+      }
+
+      @keyframes fadeSlideIn {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .step-time {
+        color: var(--text-dim);
+        min-width: 48px;
+        flex-shrink: 0;
+      }
+
+      .step-source {
+        color: var(--accent);
+        min-width: 120px;
+        flex-shrink: 0;
+        font-weight: 500;
+      }
+
+      .step-msg {
+        color: var(--text);
+        word-break: break-word;
+      }
+
+      /* ── Results ────────────────────────────────────────── */
+      .result-grid {
+        display: grid;
+        gap: 16px;
+      }
+
+      .result-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 18px;
+        animation: fadeSlideIn 0.4s ease both;
+      }
+
+      .result-card-title {
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .domain-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .domain-badge.profile {
+        background: var(--blue-dim);
+        color: var(--blue);
+      }
+      .domain-badge.temporal {
+        background: var(--orange-dim);
+        color: var(--orange);
+      }
+      .domain-badge.summary {
+        background: var(--green-dim);
+        color: var(--green);
+      }
+
+      .op-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px;
+        border-radius: var(--radius-sm);
+        margin-bottom: 6px;
+        font-size: 13px;
+      }
+
+      .op-type {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 4px;
+        min-width: 56px;
+        text-align: center;
+      }
+
+      .op-type.ADD {
+        background: var(--green-dim);
+        color: var(--green);
+      }
+      .op-type.UPDATE {
+        background: var(--blue-dim);
+        color: var(--blue);
+      }
+      .op-type.NOOP {
+        background: var(--surface-3);
+        color: var(--text-dim);
+      }
+      .op-type.DELETE {
+        background: rgba(248, 113, 113, 0.12);
+        color: var(--red);
+      }
+
+      .weaver-stats {
+        margin-top: 8px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        color: var(--text-dim);
+        display: flex;
+        gap: 12px;
+      }
+
+      .weaver-stats .ok {
+        color: var(--green);
+      }
+      .weaver-stats .skip {
+        color: var(--yellow);
+      }
+      .weaver-stats .fail {
+        color: var(--red);
+      }
+
+      /* ── Answer Card ────────────────────────────────────── */
+      .answer-card {
+        background: linear-gradient(135deg, var(--accent-glow), transparent);
+        border: 1px solid var(--accent);
+        border-radius: var(--radius);
+        padding: 20px;
+        animation: fadeSlideIn 0.5s ease both;
+      }
+
+      .answer-text {
+        font-size: 15px;
+        line-height: 1.6;
+        color: var(--text);
+      }
+
+      .answer-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--accent);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 10px;
+      }
+
+      .source-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-family: "JetBrains Mono", monospace;
+        margin: 3px;
+        background: var(--surface-3);
+        color: var(--text-dim);
+        border: 1px solid var(--border);
+      }
+
+      /* ── Loading ────────────────────────────────────────── */
+      .loading {
+        display: none;
+        align-items: center;
+        gap: 12px;
+        padding: 20px;
+        color: var(--text-dim);
+        font-size: 14px;
+      }
+
+      .loading.active {
+        display: flex;
+      }
+
+      .spinner {
+        width: 20px;
+        height: 20px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* ── Classification pills ──────────────────────────── */
+      .classification-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 12px 0;
+      }
+
+      .class-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 500;
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+      }
+
+      .class-pill .arrow {
+        color: var(--accent);
+      }
+
+      /* ── Empty state ───────────────────────────────────── */
+      .empty-state {
+        text-align: center;
+        padding: 60px 20px;
+        color: var(--text-dim);
+      }
+
+      .empty-state .icon {
+        font-size: 40px;
+        margin-bottom: 12px;
+      }
+      .empty-state p {
+        font-size: 14px;
+      }
+
+      /* ── Confidence bar ─────────────────────────────────── */
+      .confidence-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 6px;
+        font-size: 11px;
+        color: var(--text-dim);
+      }
+
+      .conf-track {
+        flex: 1;
+        height: 4px;
+        background: var(--surface-3);
+        border-radius: 2px;
+        max-width: 100px;
+      }
+
+      .conf-fill {
+        height: 100%;
+        border-radius: 2px;
+        background: var(--accent);
+        transition: width 0.5s ease;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <div class="logo">Xmem</div>
+        <div class="logo-sub">Memory Test Console</div>
+      </div>
+
+      <div class="mode-toggle">
+        <button
+          class="mode-btn active"
+          data-mode="add"
+          onclick="setMode('add')"
+        >
+          ➕ Add Memory
+        </button>
+        <button class="mode-btn" data-mode="search" onclick="setMode('search')">
+          🔍 Search Memory
+        </button>
+      </div>
+
+      <div class="user-badge">user: demo_user</div>
+    </header>
+
+    <main>
+      <!-- Input -->
+      <div class="input-section">
+        <div class="input-label" id="inputLabel">
+          Enter something to remember
+        </div>
+        <div class="input-row">
+          <input
+            class="input-field"
+            id="inputField"
+            placeholder="I just got promoted to Senior Engineer at Google..."
+            autocomplete="off"
+          />
+          <button class="send-btn" id="sendBtn" onclick="submit()">
+            Add Memory
+          </button>
+        </div>
+      </div>
+
+      <!-- Loading -->
+      <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <span id="loadingText">Processing...</span>
+      </div>
+
+      <!-- Steps -->
+      <div class="panel" id="stepsPanel" style="display: none">
+        <div class="panel-header"><span>⚙️</span> Pipeline Steps</div>
+        <div class="panel-body" id="stepsBody"></div>
+      </div>
+
+      <!-- Results -->
+      <div id="resultsArea"></div>
+
+      <!-- Empty state -->
+      <div class="empty-state" id="emptyState">
+        <div class="icon">🧠</div>
+        <p>
+          Type something above and press enter to add it to memory,<br />
+          or switch to Search to ask questions about stored memories.
+        </p>
+      </div>
+    </main>
+
+    <script>
+      let currentMode = "add";
+      const inputField = document.getElementById("inputField");
+      const sendBtn = document.getElementById("sendBtn");
+      const inputLabel = document.getElementById("inputLabel");
+      const loading = document.getElementById("loading");
+      const loadingText = document.getElementById("loadingText");
+      const stepsPanel = document.getElementById("stepsPanel");
+      const stepsBody = document.getElementById("stepsBody");
+      const resultsArea = document.getElementById("resultsArea");
+      const emptyState = document.getElementById("emptyState");
+
+      function setMode(mode) {
+        currentMode = mode;
+        document.querySelectorAll(".mode-btn").forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.mode === mode);
+        });
+        if (mode === "add") {
+          inputLabel.textContent = "Enter something to remember";
+          inputField.placeholder =
+            "I just got promoted to Senior Engineer at Google...";
+          sendBtn.textContent = "Add Memory";
+        } else {
+          inputLabel.textContent = "Ask a question about stored memories";
+          inputField.placeholder = "When is my dentist appointment?";
+          sendBtn.textContent = "Search";
+        }
+        inputField.focus();
+      }
+
+      inputField.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !sendBtn.disabled) submit();
+      });
+
+      async function submit() {
+        const text = inputField.value.trim();
+        if (!text) return;
+
+        // Reset UI
+        sendBtn.disabled = true;
+        emptyState.style.display = "none";
+        stepsPanel.style.display = "block";
+        stepsBody.innerHTML = "";
+        resultsArea.innerHTML = "";
+        loading.classList.add("active");
+        loadingText.textContent =
+          currentMode === "add"
+            ? "Running ingest pipeline..."
+            : "Running retrieval pipeline...";
+
+        try {
+          if (currentMode === "add") {
+            const resp = await fetch("/api/ingest", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ user_query: text, user_id: "demo_user" }),
+            });
+            const data = await resp.json();
+            await renderSteps(data.steps || []);
+            renderIngestResults(data);
+          } else {
+            const resp = await fetch("/api/retrieve", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ query: text, user_id: "demo_user" }),
+            });
+            const data = await resp.json();
+            await renderSteps(data.steps || []);
+            renderRetrievalResults(data);
+          }
+        } catch (err) {
+          resultsArea.innerHTML = `<div class="result-card" style="border-color: var(--red);">
+        <div class="result-card-title" style="color: var(--red);">❌ Error</div>
+        <p>${err.message}</p>
+      </div>`;
+        } finally {
+          loading.classList.remove("active");
+          sendBtn.disabled = false;
+          inputField.value = "";
+          inputField.focus();
+        }
+      }
+
+      // Render steps with staggered animation
+      async function renderSteps(steps) {
+        // Filter out noisy separator lines
+        const filtered = steps.filter(
+          (s) => !s.msg.startsWith("=") && s.msg.trim() !== "",
+        );
+
+        for (let i = 0; i < filtered.length; i++) {
+          const s = filtered[i];
+          const div = document.createElement("div");
+          div.className = "step";
+          div.style.animationDelay = `${i * 0.03}s`;
+          div.innerHTML = `
+        <span class="step-time">${s.t.toFixed(2)}s</span>
+        <span class="step-source">${s.source}</span>
+        <span class="step-msg">${escHtml(s.msg)}</span>
+      `;
+          stepsBody.appendChild(div);
+          stepsBody.scrollTop = stepsBody.scrollHeight;
+          // Small delay for animation effect
+          if (i % 5 === 0) await sleep(30);
+        }
+      }
+
+      function renderIngestResults(data) {
+        let html = "";
+
+        // Classification
+        if (data.classification && data.classification.length > 0) {
+          html += `<div class="result-card">
+        <div class="result-card-title">📋 Classification</div>
+        <div class="classification-row">
+          ${data.classification
+            .map(
+              (c) =>
+                `<span class="class-pill">
+              <span class="domain-badge ${c.source === "event" ? "temporal" : c.source}">${c.source}</span>
+              <span class="arrow">→</span>
+              "${escHtml(c.query)}"
+            </span>`,
+            )
+            .join("")}
+        </div>
+      </div>`;
+        }
+
+        // Domain results
+        for (const [domain, icon] of [
+          ["profile", "👤"],
+          ["temporal", "📅"],
+          ["summary", "📝"],
+        ]) {
+          const d = data[domain];
+          if (!d) continue;
+          html += renderDomainCard(domain, icon, d);
+        }
+
+        if (!html) {
+          html = `<div class="result-card"><p style="color: var(--text-dim);">No operations produced.</p></div>`;
+        }
+
+        resultsArea.innerHTML = `<div class="result-grid">${html}</div>`;
+      }
+
+      function renderDomainCard(domain, icon, d) {
+        const ops = d.operations
+          .map(
+            (op) => `
+      <div class="op-row">
+        <span class="op-type ${op.type}">${op.type}</span>
+        <span>${escHtml(op.content || "—")}</span>
+      </div>
+    `,
+          )
+          .join("");
+
+        const w = d.weaver;
+        return `<div class="result-card">
+      <div class="result-card-title">
+        ${icon} <span class="domain-badge ${domain}">${domain}</span>
+        <div class="confidence-bar">
+          <div class="conf-track"><div class="conf-fill" style="width: ${d.confidence * 100}%"></div></div>
+          ${(d.confidence * 100).toFixed(0)}%
+        </div>
+      </div>
+      ${ops}
+      <div class="weaver-stats">
+        <span class="ok">✓ ${w.succeeded}</span>
+        <span class="skip">⊘ ${w.skipped}</span>
+        <span class="fail">✗ ${w.failed}</span>
+      </div>
+    </div>`;
+      }
+
+      function renderRetrievalResults(data) {
+        let html = "";
+
+        // Sources
+        if (data.sources && data.sources.length > 0) {
+          const chips = data.sources
+            .map(
+              (s) =>
+                `<span class="source-chip">
+          <span class="domain-badge ${s.domain}">${s.domain}</span>
+          ${s.score > 0 ? `<span style="color: var(--text-dim)">${s.score.toFixed(2)}</span>` : ""}
+          ${escHtml(s.content.substring(0, 60))}${s.content.length > 60 ? "…" : ""}
+        </span>`,
+            )
+            .join("");
+          html += `<div class="result-card">
+        <div class="result-card-title">📦 Sources Retrieved (${data.sources.length})</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 4px;">${chips}</div>
+      </div>`;
+        }
+
+        // Answer
+        if (data.answer) {
+          html += `<div class="answer-card">
+        <div class="answer-label">💬 Answer</div>
+        <div class="answer-text">${escHtml(data.answer)}</div>
+      </div>`;
+        }
+
+        if (data.error) {
+          html += `<div class="result-card" style="border-color: var(--red);">
+        <div class="result-card-title" style="color: var(--red);">❌ Error</div>
+        <p>${escHtml(data.error)}</p>
+      </div>`;
+        }
+
+        resultsArea.innerHTML = `<div class="result-grid">${html}</div>`;
+      }
+
+      function escHtml(str) {
+        const d = document.createElement("div");
+        d.textContent = str || "";
+        return d.innerHTML;
+      }
+
+      function sleep(ms) {
+        return new Promise((r) => setTimeout(r, ms));
+      }
+
+      // Focus input on load
+      inputField.focus();
+    </script>
+  </body>
+</html>

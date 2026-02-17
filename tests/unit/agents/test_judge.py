@@ -21,11 +21,16 @@ from src.storage.base import SearchResult
 # ── Hardcoded "existing" facts (what's already in the store) ──────────────
 
 EXISTING_PROFILE = [
-    SearchResult(id="prof-001", content="work / company = Works at Microsoft", score=0.0, metadata={}),
-    SearchResult(id="prof-002", content="food / preference = Loves pizza", score=0.0, metadata={}),
-    SearchResult(id="prof-003", content="basic_info / name = Alice", score=0.0, metadata={}),
-    SearchResult(id="prof-004", content="food / diet = User loves steak", score=0.0, metadata={}),
-    SearchResult(id="prof-005", content="hobby / sport = Plays tennis on weekends", score=0.0, metadata={}),
+    SearchResult(id="prof-001", content="work / company = Works at Microsoft", score=0.0,
+                 metadata={"main_content": "work_company", "subcontent": "Works at Microsoft"}),
+    SearchResult(id="prof-002", content="food / preference = Loves pizza", score=0.0,
+                 metadata={"main_content": "food_preference", "subcontent": "Loves pizza"}),
+    SearchResult(id="prof-003", content="basic_info / name = Alice", score=0.0,
+                 metadata={"main_content": "basic_info_name", "subcontent": "Alice"}),
+    SearchResult(id="prof-004", content="food / diet = User loves steak", score=0.0,
+                 metadata={"main_content": "food_diet", "subcontent": "User loves steak"}),
+    SearchResult(id="prof-005", content="hobby / sport = Plays tennis on weekends", score=0.0,
+                 metadata={"main_content": "hobby_sport", "subcontent": "Plays tennis on weekends"}),
 ]
 
 EXISTING_TEMPORAL = [
@@ -118,6 +123,27 @@ def _find_best_match(
     return []
 
 
+def _find_profile_match_by_metadata(
+    item: dict,
+    existing: List[SearchResult],
+) -> List[SearchResult]:
+    """Simulate metadata-based profile lookup using main_content key."""
+    topic = item.get("topic", "").strip().lower()
+    sub_topic = item.get("sub_topic", "").strip().lower()
+    if not topic or not sub_topic:
+        return []
+    key = f"{topic}_{sub_topic}".replace(" ", "_")
+    for record in existing:
+        if record.metadata.get("main_content") == key:
+            return [SearchResult(
+                id=record.id,
+                content=record.content,
+                score=1.0,
+                metadata=record.metadata,
+            )]
+    return []
+
+
 # ── Monkey-patch: override _fetch_similar to use hardcoded data ───────────
 
 async def _mock_fetch_similar(
@@ -129,8 +155,17 @@ async def _mock_fetch_similar(
 ) -> Dict[str, List[SearchResult]]:
     existing = DOMAIN_EXISTING.get(domain.value, [])
     matches: Dict[str, List[SearchResult]] = {}
-    for item_str in items_strings:
-        matches[item_str] = _find_best_match(item_str, existing)
+
+    if domain.value == "profile":
+        # Use metadata-based matching for profile
+        for idx, item_str in enumerate(items_strings):
+            item = new_items[idx] if idx < len(new_items) else {}
+            matches[item_str] = _find_profile_match_by_metadata(item, existing)
+    else:
+        # Use keyword matching for other domains
+        for item_str in items_strings:
+            matches[item_str] = _find_best_match(item_str, existing)
+
     return matches
 
 

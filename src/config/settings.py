@@ -22,6 +22,10 @@ class Settings(BaseSettings):
         default="gemini-2.5-flash-lite",
         description="Gemini model name"
     )
+    gemini_vision_model: str = Field(
+        default="gemini-2.5-flash-lite",
+        description="Gemini vision model name (must support image input)"
+    )
     
     claude_api_key: Optional[str] = Field(
         default=None,
@@ -31,6 +35,10 @@ class Settings(BaseSettings):
         default="claude-3-5-sonnet",
         description="Claude model name"
     )
+    claude_vision_model: str = Field(
+        default="claude-3-5-sonnet",
+        description="Claude vision model name (must support image input)"
+    )
     
     openai_api_key: Optional[str] = Field(
         default=None,
@@ -39,6 +47,10 @@ class Settings(BaseSettings):
     openai_model: str = Field(
         default="gpt-4.1-mini",
         description="OpenAI model name"
+    )
+    openai_vision_model: str = Field(
+        default="gpt-4.1-mini",
+        description="OpenAI vision model name (must support image input)"
     )
     
     temperature: float = Field(

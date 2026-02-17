@@ -210,3 +210,83 @@ def parse_raw_response_to_event(content: str) -> dict | None:
         return None
 
     return event_data
+
+
+# ---------------------------------------------------------------------------
+# Image helpers
+# ---------------------------------------------------------------------------
+
+
+def parse_raw_response_to_image(content: str) -> dict:
+    """Parse the raw LLM response for image analysis.
+
+    Expected format::
+
+        DESCRIPTION: <natural language summary>
+
+        OBSERVATIONS:
+        - [category] observation text (confidence: high/medium/low)
+        - [category] observation text (confidence: high/medium/low)
+
+    Returns:
+        Dict with keys ``description`` (str) and ``observations`` (list of dicts).
+        Each observation dict has ``category``, ``description``, and optional ``confidence``.
+    """
+    content = content.strip()
+
+    result: dict = {
+        "description": "",
+        "observations": [],
+    }
+
+    # --- Extract DESCRIPTION line ---
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("DESCRIPTION:"):
+            result["description"] = stripped[len("DESCRIPTION:"):].strip()
+            break
+
+    # --- Extract OBSERVATIONS section ---
+    in_observations = False
+    for line in content.splitlines():
+        stripped = line.strip()
+
+        if stripped.upper().startswith("OBSERVATIONS:"):
+            in_observations = True
+            continue
+
+        if not in_observations or not stripped.startswith("-"):
+            continue
+
+        # Remove the leading "- "
+        entry = stripped[1:].strip()
+
+        # Parse "[category] description (confidence: level)"
+        category = "other"
+        confidence = None
+        description = entry
+
+        # Extract category from [brackets]
+        if entry.startswith("[") and "]" in entry:
+            bracket_end = entry.index("]")
+            category = entry[1:bracket_end].strip().lower()
+            description = entry[bracket_end + 1:].strip()
+
+        # Extract confidence from (confidence: level)
+        if "(confidence:" in description.lower():
+            idx = description.lower().index("(confidence:")
+            conf_part = description[idx:]
+            description = description[:idx].strip()
+
+            conf_part = conf_part.strip("()")
+            if ":" in conf_part:
+                confidence = conf_part.split(":", maxsplit=1)[1].strip().lower()
+
+        if description:
+            result["observations"].append({
+                "category": category,
+                "description": description,
+                "confidence": confidence,
+            })
+
+    return result

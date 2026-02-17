@@ -81,3 +81,54 @@ def get_model(
         f"No LLM provider could be initialised. Tried: {settings.fallback_order}. "
         f"Errors: {errors}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Vision model (for image analysis)
+# ---------------------------------------------------------------------------
+
+_VISION_MODEL_MAP = {
+    "gemini": lambda: settings.gemini_vision_model,
+    "claude": lambda: settings.claude_vision_model,
+    "openai": lambda: settings.openai_vision_model,
+}
+
+
+@lru_cache(maxsize=16)
+def get_vision_model(
+    provider: Optional[Provider] = None,
+    temperature: Optional[float] = None,
+) -> BaseChatModel:
+    """Build and return a vision-capable chat model.
+
+    Vision models accept multimodal input (text + images).  The model name
+    is resolved from the ``*_vision_model`` settings field for the chosen
+    provider, falling back through ``settings.fallback_order`` when
+    *provider* is ``None``.
+
+    The returned object is a normal LangChain ``BaseChatModel``; the only
+    difference from ``get_model`` is the model name pointing at a
+    vision-capable variant.
+    """
+    if provider:
+        vision_name = _VISION_MODEL_MAP[provider]()
+        return get_model(provider=provider, model_name=vision_name, temperature=temperature)
+
+    # Auto-select from fallback order
+    errors: list[str] = []
+    for p in settings.fallback_order:
+        key_fn = _KEY_MAP.get(p)
+        if key_fn and key_fn():
+            try:
+                vision_name = _VISION_MODEL_MAP[p]()
+                model = _BUILDERS[p](model_name=vision_name, **({"temperature": temperature} if temperature is not None else {}))
+                logger.info("Using vision provider: %s (model: %s)", p, vision_name)
+                return model
+            except Exception as exc:
+                errors.append(f"{p}: {exc}")
+                logger.warning("Vision provider %s failed: %s", p, exc)
+
+    raise RuntimeError(
+        f"No vision-capable LLM provider could be initialised. "
+        f"Tried: {settings.fallback_order}. Errors: {errors}"
+    )

@@ -29,13 +29,15 @@ memories. You do this in two steps:
 AVAILABLE TOOLS
 ═══════════════════════════════════════════════════════════════════════
 
-### 1. search_profile(topic, sub_topic)
+### 1. search_profile(topic)
    **What it searches:** Pinecone vector store (metadata filter).
    **When to use:** The question asks about a specific user attribute
-   (name, job, food preference, hobby, etc.) AND a matching
-   topic/sub_topic exists in the AVAILABLE PROFILES below.
-   **How it works:** Exact metadata lookup — fast and precise.
-   **You MUST use topic & sub_topic values from the catalog below.**
+   (name, job, food preference, hobby, etc.) AND a matching topic
+   exists in the AVAILABLE PROFILES below.
+   **How it works:** Returns ALL sub-topics under the requested topic,
+   giving you full context.  For example, calling search_profile("work")
+   returns company, title, and any other work-related facts.
+   **You MUST use a topic value from the catalog below.**
 
 ### 2. search_temporal(query)
    **What it searches:** Neo4j graph database (semantic similarity).
@@ -51,7 +53,7 @@ AVAILABLE TOOLS
    **When to use:** The question is broad/general and doesn't fit
    neatly into profile or temporal domains.
    **How it works:** Embeds your query and finds similar conversation
-   summaries. Good fallback when no profile key matches.
+   summaries. Good fallback when no profile topic matches.
 
 ═══════════════════════════════════════════════════════════════════════
 AVAILABLE PROFILES (topic / sub_topic)
@@ -63,18 +65,19 @@ AVAILABLE PROFILES (topic / sub_topic)
 DECISION RULES
 ═══════════════════════════════════════════════════════════════════════
 
-1. **Profile first** — If a matching topic/sub_topic exists in the
-   catalog, use search_profile. It's the most precise.
+1. **Profile first** — If a matching topic exists in the catalog,
+   use search_profile with that topic. It returns ALL sub-topics
+   under it, so you get full context.
 
 2. **Temporal for dates** — Any question with "when", a date reference,
    or event-related language → search_temporal.
 
 3. **Summary as fallback** — For broad questions like "what do you know
-   about me" or when no profile key matches → search_summary.
+   about me" or when no profile topic matches → search_summary.
 
 4. **Multi-tool is fine** — If the question spans domains, call
    multiple tools. Example: "Where do I work and when is my birthday?"
-   → search_profile(work, company) + search_temporal(birthday).
+   → search_profile(topic="work") + search_temporal(query="birthday").
 
 5. **Don't guess** — If nothing matches, call search_summary with the
    question rephrased as a short query. Never fabricate an answer

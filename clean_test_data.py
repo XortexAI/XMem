@@ -12,14 +12,14 @@ pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
 namespace = os.getenv("PINECONE_NAMESPACE", "default")
 
-# Delete all vectors for test_user_001
+# Delete all vectors for demo_user
 # Pinecone serverless supports delete by metadata filter
 try:
     index.delete(
-        filter={"user_id": {"$eq": "test_user_001"}},
+        filter={"user_id": {"$eq": "demo_user"}},
         namespace=namespace,
     )
-    print("  ✅ Pinecone: deleted test_user_001 vectors")
+    print("  ✅ Pinecone: deleted demo_user vectors")
 except Exception as e:
     print(f"  ⚠️  Pinecone delete failed: {e}")
     print("     Trying delete_all for namespace...")
@@ -37,12 +37,12 @@ driver = GraphDatabase.driver(
 )
 with driver.session() as session:
     result = session.run("""
-        MATCH (u:User {user_id: 'test_user_001'})-[r:HAS_EVENT]->()
+        MATCH (u:User {user_id: 'demo_user'})-[r:HAS_EVENT]->()
         DELETE r
         RETURN count(r) as deleted
     """)
     count = result.single()["deleted"]
-    print(f"  ✅ Neo4j: deleted {count} event relationships for test_user_001")
+    print(f"  ✅ Neo4j: deleted {count} event relationships for demo_user")
 
 driver.close()
 print("\n✨ Clean up complete!\n")

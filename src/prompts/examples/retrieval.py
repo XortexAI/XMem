@@ -27,8 +27,8 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
         [
             {
                 "tool": "search_profile",
-                "args": {"topic": "interest", "sub_topic": "foods"},
-                "why": "Question asks about food → exact match on interest/foods",
+                "args": {"topic": "interest"},
+                "why": "Question asks about food → falls under 'interest' topic",
             },
         ],
     ),
@@ -41,26 +41,8 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
         [
             {
                 "tool": "search_profile",
-                "args": {"topic": "work", "sub_topic": "company"},
-                "why": "Question asks about workplace → work/company",
-            },
-        ],
-    ),
-
-    (
-        "What is the user's job title and company?",
-        "  - work / company  (current: \"Google\")\n"
-        "  - work / title  (current: \"Senior Engineer\")",
-        [
-            {
-                "tool": "search_profile",
-                "args": {"topic": "work", "sub_topic": "company"},
-                "why": "Need company info",
-            },
-            {
-                "tool": "search_profile",
-                "args": {"topic": "work", "sub_topic": "title"},
-                "why": "Need job title info",
+                "args": {"topic": "work"},
+                "why": "Question asks about workplace → 'work' topic returns company + title",
             },
         ],
     ),
@@ -139,8 +121,8 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
         [
             {
                 "tool": "search_profile",
-                "args": {"topic": "work", "sub_topic": "company"},
-                "why": "First part: workplace → profile lookup",
+                "args": {"topic": "work"},
+                "why": "First part: workplace → 'work' topic",
             },
             {
                 "tool": "search_temporal",
@@ -157,8 +139,8 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
         [
             {
                 "tool": "search_profile",
-                "args": {"topic": "interest", "sub_topic": "hobbies"},
-                "why": "Hobbies question → profile",
+                "args": {"topic": "interest"},
+                "why": "Hobbies fall under 'interest' topic",
             },
             {
                 "tool": "search_temporal",
@@ -175,8 +157,8 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
         [
             {
                 "tool": "search_profile",
-                "args": {"topic": "interest", "sub_topic": "foods"},
-                "why": "Food preference → profile",
+                "args": {"topic": "interest"},
+                "why": "Food preference → 'interest' topic",
             },
             {
                 "tool": "search_temporal",
@@ -196,7 +178,7 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
             {
                 "tool": "search_summary",
                 "args": {"query": "pets"},
-                "why": "No pet-related profile exists → try summary",
+                "why": "No pet-related topic exists → try summary",
             },
         ],
     ),
@@ -208,7 +190,7 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
             {
                 "tool": "search_summary",
                 "args": {"query": "programming languages"},
-                "why": "No language-related profile → search summaries",
+                "why": "No language-related topic → search summaries",
             },
         ],
     ),

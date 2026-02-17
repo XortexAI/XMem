@@ -19,7 +19,7 @@ class Settings(BaseSettings):
         description="Google Gemini API key"
     )
     gemini_model: str = Field(
-        default="gemini-2.5-flash-lite",
+        default="gemini-2.5-flash",
         description="Gemini model name"
     )
     gemini_vision_model: str = Field(

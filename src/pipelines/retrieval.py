@@ -45,12 +45,12 @@ logger = logging.getLogger("xmem.pipelines.retrieval")
 # ═══════════════════════════════════════════════════════════════════════════
 
 class SearchProfile(BaseModel):
-    """Look up a specific user profile fact by topic and sub_topic.
+    """Look up user profile facts by topic.
     Use when the question asks about a specific attribute like job, name, hobby, food preference, etc.
-    You MUST use topic and sub_topic values from the AVAILABLE PROFILES list."""
+    You MUST use a topic value from the AVAILABLE PROFILES list below.
+    This returns ALL sub-topics under that topic for full context."""
 
     topic: str = Field(description="Profile topic, e.g. 'work', 'interest', 'personal'")
-    sub_topic: str = Field(description="Profile sub-topic, e.g. 'company', 'foods', 'name'")
 
 
 class SearchTemporal(BaseModel):
@@ -145,9 +145,12 @@ class RetrievalPipeline:
         logger.info("=" * 60)
 
         # ── Step 0: Fetch available profile catalog for this user ─────
-        profile_catalog = self._fetch_profile_catalog(user_id)
+        profile_catalog, profile_records = self._fetch_profile_catalog(user_id)
         catalog_text = self._format_catalog(profile_catalog)
         logger.info("Available profiles: %s", catalog_text)
+
+        # Store profile records so _search_profile can reuse them
+        self._cached_profile_records = profile_records
 
         # ── Step 1: Ask LLM what to fetch (tool calls) ────────────────
         system_prompt = build_system_prompt(profile_catalog=catalog_text)
@@ -228,26 +231,28 @@ class RetrievalPipeline:
     ) -> List[SourceRecord]:
         """Dispatch a tool call to the appropriate data store."""
 
-        if tool_name == "SearchProfile":
+        # Normalise: Gemini may return e.g. "search_profile" or "SearchProfile"
+        name = tool_name.lower().replace("_", "")
+
+        if name == "searchprofile":
             return self._search_profile(
                 topic=tool_args.get("topic", ""),
-                sub_topic=tool_args.get("sub_topic", ""),
                 user_id=user_id,
             )
-        elif tool_name == "SearchTemporal":
+        elif name == "searchtemporal":
             return self._search_temporal(
                 query=tool_args.get("query", ""),
                 user_id=user_id,
                 top_k=top_k,
             )
-        elif tool_name == "SearchSummary":
+        elif name == "searchsummary":
             return await self._search_summary(
                 query=tool_args.get("query", ""),
                 user_id=user_id,
                 top_k=top_k,
             )
         else:
-            logger.warning("Unknown tool: %s", tool_name)
+            logger.warning("Unknown tool: %s (normalised: %s)", tool_name, name)
             return []
 
     # -- Profile: Pinecone metadata lookup ─────────────────────────────
@@ -255,26 +260,27 @@ class RetrievalPipeline:
     def _search_profile(
         self,
         topic: str,
-        sub_topic: str,
         user_id: str,
     ) -> List[SourceRecord]:
-        """Fetch profile fact by topic_subtopic metadata key."""
+        """Fetch ALL profile entries for a given topic.
 
-        meta_key = f"{topic}_{sub_topic}".replace(" ", "_").lower()
-
-        filters = {
-            "main_content": meta_key,
-            "user_id": user_id,
-            "domain": "profile",
-        }
-
-        results = self.vector_store.search_by_metadata(
-            filters=filters,
-            top_k=5,
-        )
+        Uses the cached results from the catalog fetch so we don't
+        need a second Pinecone call.  Filters by topic prefix in
+        the `main_content` metadata key (e.g. topic='work' matches
+        'work_company', 'work_title', etc.).
+        """
+        topic_prefix = topic.strip().lower().replace(" ", "_")
 
         records = []
-        for r in results:
+        for r in getattr(self, "_cached_profile_records", []):
+            main_content = r.metadata.get("main_content", "")
+            if not main_content.startswith(topic_prefix):
+                continue
+
+            # Derive sub_topic from the main_content key
+            parts = main_content.split("_", 1)
+            sub_topic = parts[1] if len(parts) == 2 else ""
+
             records.append(SourceRecord(
                 domain="profile",
                 content=r.content,
@@ -287,7 +293,7 @@ class RetrievalPipeline:
                 },
             ))
 
-        logger.info("  → Profile [%s/%s]: %d results", topic, sub_topic, len(records))
+        logger.info("  → Profile [%s]: %d results", topic, len(records))
         return records
 
     # -- Temporal: Neo4j semantic search ───────────────────────────────
@@ -296,7 +302,7 @@ class RetrievalPipeline:
         self,
         query: str,
         user_id: str,
-        top_k: int = 5,
+        top_k: int = 1,
     ) -> List[SourceRecord]:
         """Semantic search over temporal events in Neo4j."""
 
@@ -376,21 +382,22 @@ class RetrievalPipeline:
     # Profile catalog (tells the LLM what profile keys exist)
     # ------------------------------------------------------------------
 
-    def _fetch_profile_catalog(self, user_id: str) -> List[Dict[str, str]]:
-        """Fetch all distinct profile topic/sub_topic pairs for a user.
+    def _fetch_profile_catalog(self, user_id: str):
+        """Fetch all profile entries for a user.
 
-        We use a metadata-only search with domain=profile to find all
-        profile entries, then extract unique topic/subtopic from the
-        main_content key.
+        Returns:
+            (catalog, raw_results)
+            catalog  — list of {topic, sub_topic, value_preview} for the prompt
+            raw_results — the full SearchResult list, cached for _search_profile
         """
         try:
             results = self.vector_store.search_by_metadata(
                 filters={"user_id": user_id, "domain": "profile"},
-                top_k=100,  # get all profile entries
+                top_k=100,
             )
         except Exception as exc:
             logger.warning("Failed to fetch profile catalog: %s", exc)
-            return []
+            return [], []
 
         catalog: List[Dict[str, str]] = []
         seen = set()
@@ -401,7 +408,6 @@ class RetrievalPipeline:
                 continue
             seen.add(main_content)
 
-            # Reverse the key: "work_company" → topic="work", sub_topic="company"
             parts = main_content.split("_", 1)
             if len(parts) == 2:
                 catalog.append({
@@ -416,7 +422,7 @@ class RetrievalPipeline:
                     "value_preview": r.content[:60],
                 })
 
-        return catalog
+        return catalog, results
 
     def _format_catalog(self, catalog: List[Dict[str, str]]) -> str:
         """Format profile catalog for the system prompt."""

@@ -33,6 +33,25 @@ Each item is a user fact in the form `topic / sub_topic = memo`.
 - Brand-new topic/sub_topic → **ADD**.
 - Contradicting a previous fact (e.g. "vegetarian" vs "loves steak") → **UPDATE** and optionally **DELETE** the old.
 
+**IMPORTANT — Append vs Overwrite for UPDATE:**
+Some sub_topics hold a COLLECTION of values (e.g. hobbies, foods, skills,
+languages, favorite_movies, music_genres).  Others hold a SINGLE value
+(e.g. name, company, city, job_title).
+
+- **Collection sub_topics (hobbies, foods, skills, etc.):**
+  When a user adds a new item to a collection, the UPDATE content MUST
+  MERGE the old and new values. Example:
+    Existing: "interest / hobbies = reading"
+    New:      "interest / hobbies = football"
+    Correct UPDATE content: "interest / hobbies = reading, football"
+    WRONG:   "interest / hobbies = football"  ← this LOSES "reading"
+
+- **Singular sub_topics (name, company, city, etc.):**
+  The new value simply replaces the old. Example:
+    Existing: "work / company = Google"
+    New:      "work / company = Meta"
+    Correct UPDATE content: "work / company = Meta"
+
 ### temporal
 Each item is a temporal event with `date | event_name | desc`.
 Events are stored in Neo4j as `User -[HAS_EVENT]-> Date` relationships.

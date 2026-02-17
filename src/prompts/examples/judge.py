@@ -45,6 +45,26 @@ JUDGE_EXAMPLES: List[Tuple[str, str, str, str]] = [
         '"confidence": 0.95}',
     ),
     (
+        "profile",
+        '1. interest / hobbies = football',
+        'For item: "interest / hobbies = football"\n'
+        '  - ID: prof-070 | Score: 0.88 | "interest / hobbies = reading"',
+        '{"operations": [{"type": "UPDATE", "content": "interest / hobbies = reading, football", '
+        '"embedding_id": "prof-070", "reason": "Hobbies is a collection — merge old (reading) '
+        'with new (football) rather than overwriting"}], '
+        '"confidence": 0.93}',
+    ),
+    (
+        "profile",
+        '1. interest / foods = sushi',
+        'For item: "interest / foods = sushi"\n'
+        '  - ID: prof-080 | Score: 0.85 | "interest / foods = pizza"',
+        '{"operations": [{"type": "UPDATE", "content": "interest / foods = pizza, sushi", '
+        '"embedding_id": "prof-080", "reason": "Foods is a collection — merge old (pizza) '
+        'with new (sushi) rather than overwriting"}], '
+        '"confidence": 0.93}',
+    ),
+    (
         "temporal",
         '1. 03-15 | Birthday | User\'s birthday',
         'For item: "03-15 | Birthday | User\'s birthday"\n'

@@ -35,7 +35,7 @@ CRITICAL: Your job is to identify WHAT SHOULD BE REMEMBERED about the user.
 - **Route here when**: User wants help with actual coding work, debugging, or technical explanations
 
 ### 2. `profile`
-- **Purpose**: Store PERMANENT facts about the user (identity, preferences, traits, background)
+- **Purpose**: Store PERMANENT facts about the user (identity, preferences, traits, background) use the below keywords for help
 - **Keywords**: {profile_keywords}
 - **Route here when**: User shares static personal information that doesn't have a specific date
 - **Examples**: name, job, hobbies, food preferences, personality traits, where they live

@@ -1,3 +1,7 @@
+"""
+System prompt and query formatting for the Judge agent.
+"""
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -65,6 +69,12 @@ Each item is a bullet-point fact extracted from conversation.
 - Semantically identical fact already exists → **NOOP**.
 - Similar but updated/refined → **UPDATE**.
 - Brand-new fact → **ADD**.
+
+### image
+Each item is a visual observation in the format `category: description`.
+- Semantically identical observation already exists → **NOOP**.
+- Similar but updated/refined → **UPDATE**.
+- Brand-new observation → **ADD**.
 
 ---
 

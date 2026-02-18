@@ -19,8 +19,7 @@ from src.prompts.classifier_keywords import (
 from src.prompts.examples.classification import CLASSIFICATION_EXAMPLES
 from src.utils.text import pack_classifications_into_string
 
-_SYSTEM_PROMPT_TEMPLATE = """\
-You are an intelligent intent router for a personal memory assistant.
+_SYSTEM_PROMPT_TEMPLATE = """You are an intelligent intent router for a personal memory assistant.
 Your task is to accurately route user inputs to the correct specialized agents for MEMORY STORAGE.
 
 CRITICAL: Your job is to identify WHAT SHOULD BE REMEMBERED about the user.
@@ -45,6 +44,11 @@ CRITICAL: Your job is to identify WHAT SHOULD BE REMEMBERED about the user.
 - **Keywords**: {event_keywords}
 - **Route here when**: User mentions something that happened/will happen at a SPECIFIC TIME
 - **Examples**: birthdays, anniversaries, "last Saturday", "3 years ago", "next month"
+
+### 4. `image`
+- **Purpose**: Analyze attached images for visual information
+- **Keywords**: look, see, image, photo, picture, attached
+- **Route here when**: User explicitly asks to analyze the attached image or the input implies visual context
 
 ## Logic & Strategy
 
@@ -72,7 +76,7 @@ Pure greetings/acknowledgments with NO factual content → empty list
 
 One classification per line:
 - Format: `SOURCE{tab}QUERY`
-- `SOURCE` must be: `code`, `profile`, or `event`
+- `SOURCE` must be: `code`, `profile`, `event`, or `image`
 - For trivial inputs, output nothing
 
 ---

@@ -21,7 +21,7 @@ def attribute_unify(value: str) -> str:
 # Classification helpers
 # ---------------------------------------------------------------------------
 
-_VALID_SOURCES = frozenset({"code", "profile", "event"})
+_VALID_SOURCES = frozenset({"code", "profile", "event","image"})
 
 
 def pack_classifications_into_string(

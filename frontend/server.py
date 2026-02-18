@@ -147,6 +147,7 @@ async def api_ingest(req: IngestRequest):
 
         # Build structured response
         response: Dict[str, Any] = {
+            "model": _get_model_name(ingest_pipeline.model),
             "steps": capture.steps,
             "classification": [],
             "profile": None,
@@ -237,6 +238,7 @@ async def api_retrieve(req: RetrieveRequest):
         )
 
         response = {
+            "model": _get_model_name(retrieval_pipeline.model),
             "steps": capture.steps,
             "answer": result.answer,
             "sources": [
@@ -262,6 +264,11 @@ async def api_retrieve(req: RetrieveRequest):
 # ═══════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════
+
+def _get_model_name(model) -> str:
+    """Extract the model name string from a LangChain model instance."""
+    return getattr(model, "model", getattr(model, "model_name", "unknown"))
+
 
 def _get_xmem_loggers() -> List[logging.Logger]:
     """Return all xmem.* loggers so we can attach/detach handlers."""

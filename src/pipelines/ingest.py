@@ -196,14 +196,21 @@ class IngestPipeline:
         # ── LLM ──────────────────────────────────────────────────────
         self.model = get_model()
 
+        def _agent_model(agent_name: str):
+            """Get model for a specific agent, falling back to default."""
+            override = getattr(settings, f"{agent_name}_model", None)
+            if override:
+                return get_model(model_name=override)
+            return self.model
+
         # ── Agents ────────────────────────────────────────────────────
-        self.classifier = ClassifierAgent(model=self.model)
-        self.profiler = ProfilerAgent(model=self.model)
-        self.temporal = TemporalAgent(model=self.model)
-        self.summarizer = SummarizerAgent(model=self.model)
+        self.classifier = ClassifierAgent(model=_agent_model("classifier"))
+        self.profiler = ProfilerAgent(model=_agent_model("profiler"))
+        self.temporal = TemporalAgent(model=_agent_model("temporal"))
+        self.summarizer = SummarizerAgent(model=_agent_model("summarizer"))
 
         self.judge = JudgeAgent(
-            model=self.model,
+            model=_agent_model("judge"),
             vector_store=self.vector_store,
             graph_event_search=self._graph_event_search_wrapper,
             top_k=3,

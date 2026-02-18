@@ -416,6 +416,18 @@
         border: 1px solid var(--border);
       }
 
+      /* ── Model Badge ────────────────────────────────────── */
+      .model-badge {
+        margin-left: auto;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        color: var(--accent);
+        background: var(--accent-glow);
+        padding: 4px 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(124, 92, 255, 0.25);
+      }
+
       /* ── Loading ────────────────────────────────────────── */
       .loading {
         display: none;
@@ -560,7 +572,14 @@
 
       <!-- Steps -->
       <div class="panel" id="stepsPanel" style="display: none">
-        <div class="panel-header"><span>⚙️</span> Pipeline Steps</div>
+        <div class="panel-header">
+          <span>⚙️</span> Pipeline Steps
+          <span
+            class="model-badge"
+            id="modelBadge"
+            style="display: none"
+          ></span>
+        </div>
         <div class="panel-body" id="stepsBody"></div>
       </div>
 
@@ -636,6 +655,7 @@
             });
             const data = await resp.json();
             await renderSteps(data.steps || []);
+            showModelBadge(data.model);
             renderIngestResults(data);
           } else {
             const resp = await fetch("/api/retrieve", {
@@ -645,6 +665,7 @@
             });
             const data = await resp.json();
             await renderSteps(data.steps || []);
+            showModelBadge(data.model);
             renderRetrievalResults(data);
           }
         } catch (err) {
@@ -791,6 +812,16 @@
         }
 
         resultsArea.innerHTML = `<div class="result-grid">${html}</div>`;
+      }
+
+      function showModelBadge(modelName) {
+        const badge = document.getElementById("modelBadge");
+        if (modelName) {
+          badge.textContent = "🤖 " + modelName;
+          badge.style.display = "inline-flex";
+        } else {
+          badge.style.display = "none";
+        }
       }
 
       function escHtml(str) {

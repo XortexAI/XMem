@@ -62,6 +62,13 @@ class Settings(BaseSettings):
         description="Order of LLM providers to try on failure"
     )
 
+    classifier_model: Optional[str] = Field(default=None, description="Model for classifier agent")
+    profiler_model: Optional[str] = Field(default=None, description="Model for profiler agent")
+    temporal_model: Optional[str] = Field(default=None, description="Model for temporal agent")
+    summarizer_model: Optional[str] = Field(default=None, description="Model for summarizer agent")
+    judge_model: Optional[str] = Field(default=None, description="Model for judge agent")
+    retrieval_model: Optional[str] = Field(default=None, description="Model for retrieval agent")
+
     pinecone_api_key: str = Field(
         ...,
         description="Pinecone API key (required)"

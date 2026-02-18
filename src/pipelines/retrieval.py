@@ -94,9 +94,9 @@ class RetrievalPipeline:
     ) -> None:
         # ── LLM ───────────────────────────────────────────────────────
         if model is None:
-            from src.models.gemini import build_gemini_model
-
-            self.model = build_gemini_model()
+            from src.models import get_model
+            override = settings.retrieval_model
+            self.model = get_model(model_name=override) if override else get_model()
         else:
             self.model = model
 

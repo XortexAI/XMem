@@ -434,7 +434,7 @@ class IngestPipeline:
         }
 
     async def _node_extract_image(self, state: IngestState) -> Dict[str, Any]:
-        """Extract visual observations from the image."""
+        """Extract visual observations from the image and store them as summary."""
         user_id = state.get("user_id", "default")
 
         # ImageAgent reads classifier_output and image_url from state
@@ -444,17 +444,28 @@ class IngestPipeline:
             return {"status": "no_image_observations"}
 
         # Convert observations to list of dicts for Judge
-        items = [obs.model_dump() for obs in result.observations]
+        # items = [obs.model_dump() for obs in result.observations]
+
+        #converted observation of images to summary and stored as summary
+        items = []
+        if result.description:
+            items.append(f"[Image] {result.description}")
+        for obs in result.observations:
+            conf = f" ({obs.confidence})" if obs.confidence else ""
+            items.append(f"[Image/{obs.category}] {obs.description}{conf}")
+
+        if not items:
+            return {"status": "no_image_observations"}
 
         judge_result = await self.judge.arun({
-            "domain": JudgeDomain.IMAGE,
+            "domain": JudgeDomain.SUMMARY,
             "new_items": items,
             "user_id": user_id,
         })
 
         weaver_result = await self.weaver.execute(
             judge_result=judge_result,
-            domain=JudgeDomain.IMAGE,
+            domain=JudgeDomain.SUMMARY,
             user_id=user_id,
         )
 

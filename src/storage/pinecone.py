@@ -23,6 +23,7 @@ RELATIONSHIP TO base.py:
 """
 from typing import List, Dict, Any, Optional, Final
 import uuid
+import asyncio
 
 # ----------------------------------------------------------------------------
 # THIRD-PARTY IMPORTS (with graceful degradation)
@@ -1031,7 +1032,8 @@ class PineconeVectorStore(BaseVectorStore):
         """
         from src.pipelines.ingest import embed_text
 
-        query_embedding = embed_text(query_text)
+        # Offload embedding generation to a thread to prevent blocking the event loop
+        query_embedding = await asyncio.to_thread(embed_text, query_text)
         return self.search(
             query_embedding=query_embedding,
             top_k=top_k,

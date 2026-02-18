@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class Classification(TypedDict):
     """A classification of a part of the user query."""
-    source: Literal["code", "profile", "event"]
+    source: Literal["code", "profile", "event", "image"]
     query: str
 
 

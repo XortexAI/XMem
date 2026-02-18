@@ -59,6 +59,7 @@ from sentence_transformers import SentenceTransformer
 from typing_extensions import TypedDict
 
 from src.agents.classifier import ClassifierAgent
+from src.agents.image import ImageAgent
 from src.agents.judge import JudgeAgent
 from src.agents.profiler import ProfilerAgent
 from src.agents.summarizer import SummarizerAgent
@@ -66,10 +67,11 @@ from src.agents.temporal import TemporalAgent
 from src.config import settings
 from src.graph.neo4j_client import Neo4jClient
 from src.graph.schema import setup_constraints
-from src.models import get_model
+from src.models import get_model, get_vision_model
 from src.pipelines.weaver import Weaver
 from src.schemas.classification import ClassificationResult
 from src.schemas.events import EventResult
+from src.schemas.image import ImageResult
 from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
@@ -115,11 +117,13 @@ class IngestState(TypedDict, total=False):
     user_query: str
     agent_response: str
     user_id: str
+    image_url: str
     session_datetime: str
 
     # ── routing (internal — set by _route_after_classify) ─────────────
     profile_queries: List[str]      # batched profile sub-queries
     temporal_queries: List[str]     # batched temporal sub-queries
+    image_queries: List[str]        # batched image sub-queries
 
     # ── classification ────────────────────────────────────────────────
     classification_result: ClassificationResult
@@ -128,16 +132,19 @@ class IngestState(TypedDict, total=False):
     profile_result: ProfileResult
     temporal_result: EventResult
     summary_result: SummaryResult
+    image_result: ImageResult
 
     # ── judge outputs ─────────────────────────────────────────────────
     profile_judge: JudgeResult
     temporal_judge: JudgeResult
     summary_judge: JudgeResult
+    image_judge: JudgeResult
 
     # ── weaver outputs ────────────────────────────────────────────────
     profile_weaver: WeaverResult
     temporal_weaver: WeaverResult
     summary_weaver: WeaverResult
+    image_weaver: WeaverResult
 
     # ── metadata ──────────────────────────────────────────────────────
     status: str
@@ -208,6 +215,7 @@ class IngestPipeline:
         self.profiler = ProfilerAgent(model=_agent_model("profiler"))
         self.temporal = TemporalAgent(model=_agent_model("temporal"))
         self.summarizer = SummarizerAgent(model=_agent_model("summarizer"))
+        self.image_agent = ImageAgent(model=get_vision_model())
 
         self.judge = JudgeAgent(
             model=_agent_model("judge"),
@@ -279,19 +287,18 @@ class IngestPipeline:
 
     async def _node_classify(self, state: IngestState) -> Dict[str, Any]:
         """Run the classifier on the user query."""
+        user_query = state.get("user_query", "")
+        # Hint the classifier if an image is attached
+        if state.get("image_url"):
+            user_query += " [User has attached an image]"
+
         result = await self.classifier.arun({
-            "user_query": state.get("user_query", ""),
+            "user_query": user_query,
         })
         return {"classification_result": result}
 
     def _route_after_classify(self, state: IngestState) -> List[Send]:
-        """Fan out to extraction agents based on classification.
-
-        All profile sub-queries are batched into a *single* Send so only
-        one ``extract_profile`` node writes to the state (avoiding the
-        LangGraph "Can receive only one value per step" error).  Same
-        for temporal.
-        """
+        """Fan out to extraction agents based on classification."""
         routes: List[Send] = []
         user_id = state.get("user_id", "default")
 
@@ -301,9 +308,10 @@ class IngestPipeline:
             "user_id": user_id,
         }))
 
-        # Batch profile & temporal queries
+        # Batch profile, temporal, & image queries
         profile_queries: List[str] = []
         temporal_queries: List[str] = []
+        image_queries: List[str] = []
 
         classification_result = state.get("classification_result")
         if classification_result and classification_result.classifications:
@@ -312,6 +320,8 @@ class IngestPipeline:
                     profile_queries.append(c["query"])
                 elif c["source"] == "event":
                     temporal_queries.append(c["query"])
+                elif c["source"] == "image":
+                    image_queries.append(c["query"])
 
         if profile_queries:
             routes.append(Send("extract_profile", {
@@ -324,6 +334,18 @@ class IngestPipeline:
             routes.append(Send("extract_temporal", {
                 **state,
                 "temporal_queries": temporal_queries,
+                "user_id": user_id,
+            }))
+
+        # Image route
+        if state.get("image_url"):
+            if not image_queries:
+                image_queries.append("Analyze this image for memory-relevant details.")
+
+            combined_query = " ".join(image_queries)
+            routes.append(Send("extract_image", {
+                **state,
+                "classifier_output": combined_query,
                 "user_id": user_id,
             }))
 
@@ -411,6 +433,37 @@ class IngestPipeline:
             "temporal_weaver": weaver_result,
         }
 
+    async def _node_extract_image(self, state: IngestState) -> Dict[str, Any]:
+        """Extract visual observations from the image."""
+        user_id = state.get("user_id", "default")
+
+        # ImageAgent reads classifier_output and image_url from state
+        result = await self.image_agent.arun(state)
+
+        if result.is_empty:
+            return {"status": "no_image_observations"}
+
+        # Convert observations to list of dicts for Judge
+        items = [obs.model_dump() for obs in result.observations]
+
+        judge_result = await self.judge.arun({
+            "domain": JudgeDomain.IMAGE,
+            "new_items": items,
+            "user_id": user_id,
+        })
+
+        weaver_result = await self.weaver.execute(
+            judge_result=judge_result,
+            domain=JudgeDomain.IMAGE,
+            user_id=user_id,
+        )
+
+        return {
+            "image_result": result,
+            "image_judge": judge_result,
+            "image_weaver": weaver_result,
+        }
+
     async def _node_extract_summary(self, state: IngestState) -> Dict[str, Any]:
         result = await self.summarizer.arun({
             "user_query": state.get("user_query", ""),
@@ -457,19 +510,21 @@ class IngestPipeline:
         workflow.add_node("extract_profile", self._node_extract_profile)
         workflow.add_node("extract_temporal", self._node_extract_temporal)
         workflow.add_node("extract_summary", self._node_extract_summary)
+        workflow.add_node("extract_image", self._node_extract_image)
 
         # Edges
         workflow.add_edge(START, "classify")
         workflow.add_conditional_edges(
             "classify",
             self._route_after_classify,
-            ["extract_profile", "extract_temporal", "extract_summary"],
+            ["extract_profile", "extract_temporal", "extract_summary", "extract_image"],
         )
 
         # All extraction lanes → END
         workflow.add_edge("extract_profile", END)
         workflow.add_edge("extract_temporal", END)
         workflow.add_edge("extract_summary", END)
+        workflow.add_edge("extract_image", END)
 
         return workflow.compile()
 
@@ -483,6 +538,7 @@ class IngestPipeline:
         agent_response: str = "",
         user_id: str = "default",
         session_datetime: str = "",
+        image_url: str = "",
     ) -> Dict[str, Any]:
         """Run the full ingest pipeline.
 
@@ -491,6 +547,7 @@ class IngestPipeline:
             agent_response: The assistant's response (for summary extraction).
             user_id: User identifier for storage scoping.
             session_datetime: Optional datetime context for temporal events.
+            image_url: URL or base64 data-URI of an attached image.
 
         Returns:
             Final LangGraph state dict with all intermediate results.
@@ -500,6 +557,7 @@ class IngestPipeline:
             "agent_response": agent_response,
             "user_id": user_id,
             "session_datetime": session_datetime,
+            "image_url": image_url,
             "errors": [],
             "status": "running",
         }
@@ -508,6 +566,8 @@ class IngestPipeline:
         logger.info("INGEST PIPELINE START")
         logger.info("  user_query: %s", user_query[:80])
         logger.info("  user_id:    %s", user_id)
+        if image_url:
+            logger.info("  image_url:  %s", image_url[:50] + "..." if len(image_url) > 50 else image_url)
         logger.info("=" * 60)
 
         result = await self.graph.ainvoke(initial_state)
@@ -525,10 +585,11 @@ class IngestPipeline:
         agent_response: str = "",
         user_id: str = "default",
         session_datetime: str = "",
+        image_url: str = "",
     ) -> Dict[str, Any]:
-        """Synchronous wrapper for ``run``."""
+        """Synchronous wrapper for run."""
         return asyncio.run(
-            self.run(user_query, agent_response, user_id, session_datetime)
+            self.run(user_query, agent_response, user_id, session_datetime, image_url)
         )
 
     # ------------------------------------------------------------------
@@ -546,7 +607,7 @@ class IngestPipeline:
 
     @staticmethod
     def _log_summary(state: Dict[str, Any]) -> None:
-        for domain in ("profile", "temporal", "summary"):
+        for domain in ("profile", "temporal", "summary", "image"):
             weaver_key = f"{domain}_weaver"
             wr: Optional[WeaverResult] = state.get(weaver_key)
             if wr:

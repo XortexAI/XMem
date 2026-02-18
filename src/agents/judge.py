@@ -53,6 +53,10 @@ def _temporal_item_to_string(event: dict) -> str:
     return " | ".join(p for p in parts if p)
 
 
+def _image_item_to_string(observation: dict) -> str:
+    return f"{observation.get('category', '')}: {observation.get('description', '')}"
+
+
 def _format_similar_block(
     items_strings: List[str],
     matches_per_item: Dict[str, List[SearchResult]],
@@ -171,6 +175,8 @@ class JudgeAgent(BaseAgent):
             if isinstance(items, dict):
                 return [_temporal_item_to_string(items)]
             return [_temporal_item_to_string(e) for e in items]
+        elif domain == JudgeDomain.IMAGE:
+            return [_image_item_to_string(i) for i in items]
         else:  # SUMMARY
             return [str(s) for s in items]
 

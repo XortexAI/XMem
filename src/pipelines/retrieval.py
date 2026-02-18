@@ -205,15 +205,18 @@ class RetrievalPipeline:
                         )
                     )
 
-            # ── Step 3: Send results back to LLM for final answer ─────
-            messages.append(ai_response)
-            messages.extend(tool_messages)
-            messages.append(HumanMessage(content=(
-                "Now answer the original question using the retrieved information above. "
-                "Be concise and direct. Use 'you' when referring to the user."
-            )))
+            # ── Step 3: Generate final answer (clean RAG prompt) ─────
+            # Only send the retrieved context + user query to the LLM.
+            # No need for the system prompt, tool schemas, or tool-call history.
+            context_text = "\n".join(tm.content for tm in tool_messages)
+            answer_prompt = ANSWER_PROMPT.format(
+                context=context_text,
+                query=query,
+            )
 
-            final_response = await self.model.ainvoke(messages)
+            final_response = await self.model.ainvoke(
+                [HumanMessage(content=answer_prompt)]
+            )
             answer = final_response.content
         else:
             # No tool calls — LLM answered directly (shouldn't happen often)

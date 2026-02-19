@@ -110,12 +110,12 @@ app.add_middleware(
 class IngestRequest(BaseModel):
     user_query: str
     agent_response: str = ""
-    user_id: str = "demo_user"
+    user_id: str
 
 
 class RetrieveRequest(BaseModel):
     query: str
-    user_id: str = "demo_user"
+    user_id: str
 
 
 # ═══════════════════════════════════════════════════════════════════

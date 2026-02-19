@@ -40,11 +40,11 @@ Usage::
     from src.pipelines.ingest import IngestPipeline
 
     pipeline = IngestPipeline()     # reads config from env / .env
-    result = await pipeline.run({
-        "user_query": "I just got a new job at Google!",
-        "agent_response": "Congratulations!",
-        "user_id": "user_123",
-    })
+    result = await pipeline.run(
+        user_query="I just got a new job at Google!",
+        agent_response="Congratulations!",
+        user_id="user_123",
+    )
 """
 
 from __future__ import annotations
@@ -300,7 +300,7 @@ class IngestPipeline:
     def _route_after_classify(self, state: IngestState) -> List[Send]:
         """Fan out to extraction agents based on classification."""
         routes: List[Send] = []
-        user_id = state.get("user_id", "default")
+        user_id = state["user_id"]
 
         # Summary always runs
         routes.append(Send("extract_summary", {
@@ -356,7 +356,7 @@ class IngestPipeline:
     async def _node_extract_profile(self, state: IngestState) -> Dict[str, Any]:
         """Extract profile facts from all batched profile queries."""
         queries = state.get("profile_queries", [])
-        user_id = state.get("user_id", "default")
+        user_id = state["user_id"]
 
         all_facts = []
         last_result = None
@@ -393,7 +393,7 @@ class IngestPipeline:
     async def _node_extract_temporal(self, state: IngestState) -> Dict[str, Any]:
         """Extract temporal events from all batched temporal queries."""
         queries = state.get("temporal_queries", [])
-        user_id = state.get("user_id", "default")
+        user_id = state["user_id"]
         session_dt = state.get("session_datetime", "")
 
         all_items: List[Dict[str, str]] = []
@@ -435,7 +435,7 @@ class IngestPipeline:
 
     async def _node_extract_image(self, state: IngestState) -> Dict[str, Any]:
         """Extract visual observations from the image."""
-        user_id = state.get("user_id", "default")
+        user_id = state["user_id"]
 
         # ImageAgent reads classifier_output and image_url from state
         result = await self.image_agent.arun(state)
@@ -484,13 +484,13 @@ class IngestPipeline:
         judge_result = await self.judge.arun({
             "domain": "summary",
             "new_items": items,
-            "user_id": state.get("user_id", "default"),
+            "user_id": state["user_id"],
         })
 
         weaver_result = await self.weaver.execute(
             judge_result=judge_result,
             domain=JudgeDomain.SUMMARY,
-            user_id=state.get("user_id", "default"),
+            user_id=state["user_id"],
         )
         return {
             "summary_result": result,
@@ -535,8 +535,8 @@ class IngestPipeline:
     async def run(
         self,
         user_query: str,
+        user_id: str,
         agent_response: str = "",
-        user_id: str = "default",
         session_datetime: str = "",
         image_url: str = "",
     ) -> Dict[str, Any]:
@@ -582,8 +582,8 @@ class IngestPipeline:
     def run_sync(
         self,
         user_query: str,
+        user_id: str,
         agent_response: str = "",
-        user_id: str = "default",
         session_datetime: str = "",
         image_url: str = "",
     ) -> Dict[str, Any]:

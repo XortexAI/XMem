@@ -67,10 +67,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from ..config import get_logger
 from ..utils.exceptions import (
-    VectorStoreError,
-    VectorStoreConnectionError,
     VectorStoreValidationError,
-    VectorNotFoundError,
 )
 
 logger = get_logger(__name__)
@@ -221,6 +218,13 @@ class BaseVectorStore(ABC):
        class MockVectorStore(BaseVectorStore):
            def add(self, ...): return ["mock-id"]
            def search(self, ...): return [SearchResult(...)]
+           def update(self, ...): return True
+           def delete(self, ...): return True
+           def get(self, ...): return []
+           def health_check(self): return True
+           def get_stats(self): return IndexStats(...)
+           def search_by_metadata(self, ...): return []
+           async def search_by_text(self, ...): return []
        
        # In tests:
        store = MockVectorStore()
@@ -461,6 +465,33 @@ class BaseVectorStore(ABC):
         Raises:
             VectorStoreConnectionError: If connection to store fails.
             VectorStoreError: For other retrieval-related errors.
+        """
+        pass
+
+    @abstractmethod
+    async def search_by_text(
+        self,
+        query_text: str,
+        top_k: int = 2,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[SearchResult]:
+        """
+        Search for similar documents using a text query.
+
+        This is a convenience method that handles embedding the query text
+        before performing the vector search.
+
+        Args:
+            query_text: The text to embed and search for.
+            top_k: Number of results to return.
+            filters: Optional metadata filters.
+
+        Returns:
+            List of SearchResult objects sorted by similarity.
+
+        Raises:
+            VectorStoreConnectionError: If connection to store fails.
+            VectorStoreError: For other search-related errors.
         """
         pass
     

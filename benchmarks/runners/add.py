@@ -12,13 +12,16 @@ Flow:
 
 This matches real-world usage where each user's messages are their own memories.
 
-Usage: python benchmarks/runners/add.py
+Usage:
+  python benchmarks/runners/add.py
+  python benchmarks/runners/add.py --start-session 13   # resume from session 13
 """
 import os
 import sys
 import json
 import time
 import asyncio
+import argparse
 from typing import List, Dict, Any
 
 # Setup paths
@@ -165,6 +168,15 @@ async def main():
     from src.graph.schema import setup_constraints
     from src.config import settings
     
+    # ── Parse CLI args ──────────────────────────────────────────────────
+    parser = argparse.ArgumentParser(description="XMEM Benchmark - ADD Phase")
+    parser.add_argument(
+        "--start-session", type=int, default=1,
+        help="Resume from this session number (default: 1 = start from beginning)"
+    )
+    args = parser.parse_args()
+    start_session = args.start_session
+    
     print("=" * 80)
     print("XMEM BENCHMARK - ADD PHASE (Refactored: No Agent Response)")
     print("=" * 80)
@@ -182,7 +194,17 @@ async def main():
     
     speaker_a = conversation["speaker_a"]
     speaker_b = conversation["speaker_b"]
-    sessions = get_all_sessions(conversation)
+    all_sessions = get_all_sessions(conversation)
+    
+    # ── Filter sessions if resuming ─────────────────────────────────────
+    if start_session > 1:
+        sessions = [
+            (key, msgs, dt) for key, msgs, dt in all_sessions
+            if int(key.split("_")[1]) >= start_session
+        ]
+        print(f"\n[RESUME] Starting from session_{start_session} ({len(sessions)}/{len(all_sessions)} sessions)")
+    else:
+        sessions = all_sessions
     
     print(f"\n[CONFIG]")
     print(f"  Dataset:     {data_path}")

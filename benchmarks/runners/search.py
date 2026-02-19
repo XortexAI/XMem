@@ -44,15 +44,48 @@ def determine_query_user(
     """
     Determine which user to query based on the question.
 
-    If the question mentions speaker_a by name → query user_a
-    If the question mentions speaker_b by name → query user_b
-    Otherwise default to user_a.
+    Checks for:
+    1. Exact full name match (e.g. "Melanie" in question)
+    2. Prefix/nickname match (e.g. "Mel" matches "Melanie", "Nick" matches "Nicholas")
+
+    Falls back to user_a if neither speaker is detected.
     """
     q_lower = question.lower()
-    if speaker_a.lower() in q_lower:
+    a_lower = speaker_a.lower()
+    b_lower = speaker_b.lower()
+
+    # 1. Exact full name match (most reliable)
+    a_exact = a_lower in q_lower
+    b_exact = b_lower in q_lower
+
+    if a_exact and not b_exact:
         return user_a_id
-    elif speaker_b.lower() in q_lower:
+    if b_exact and not a_exact:
         return user_b_id
+    if a_exact and b_exact:
+        # Both mentioned — pick the one that appears first
+        return user_a_id if q_lower.index(a_lower) <= q_lower.index(b_lower) else user_b_id
+
+    # 2. Prefix/nickname match — check if any word in the question
+    #    is a prefix (3+ chars) of either speaker name
+    #    e.g. "Mel" → prefix of "Melanie", "Nick" → prefix of "Nicholas"
+    import re
+    words = set(re.findall(r"[a-z]+", q_lower))
+
+    a_prefix = any(
+        a_lower.startswith(w) and len(w) >= 3
+        for w in words
+    )
+    b_prefix = any(
+        b_lower.startswith(w) and len(w) >= 3
+        for w in words
+    )
+
+    if a_prefix and not b_prefix:
+        return user_a_id
+    if b_prefix and not a_prefix:
+        return user_b_id
+
     return user_a_id
 
 

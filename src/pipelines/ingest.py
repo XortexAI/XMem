@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union, cast, overload
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
@@ -72,7 +72,7 @@ from src.pipelines.weaver import Weaver
 from src.schemas.classification import ClassificationResult
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -101,8 +101,14 @@ def get_embedding_model() -> SentenceTransformer:
     return _embedding_model
 
 
-def embed_text(text: str) -> List[float]:
-    """Embed a single text string → list of floats."""
+@overload
+def embed_text(text: str) -> List[float]: ...
+
+@overload
+def embed_text(text: List[str]) -> List[List[float]]: ...
+
+def embed_text(text: Union[str, List[str]]) -> Union[List[float], List[List[float]]]:
+    """Embed a single text string or a batch of strings."""
     model = get_embedding_model()
     embedding = model.encode(text, convert_to_numpy=True, normalize_embeddings=True)
     return embedding.tolist()
@@ -190,7 +196,7 @@ class IngestPipeline:
                 uri=settings.neo4j_uri,
                 username=settings.neo4j_username,
                 password=settings.neo4j_password,
-                embedding_fn=self.embed_fn,
+                embedding_fn=cast(Callable[[str], List[float]], self.embed_fn),
             )
             self.neo4j.connect()
             try:

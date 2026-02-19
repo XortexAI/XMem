@@ -11,7 +11,7 @@ No LLM involved — just structured execution with guard rails.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union, cast
 
 from src.schemas.judge import (
     JudgeDomain,
@@ -49,7 +49,7 @@ class Weaver:
     def __init__(
         self,
         vector_store: Optional[BaseVectorStore] = None,
-        embed_fn: Optional[Callable[[str], List[float]]] = None,
+        embed_fn: Optional[Callable[[Union[str, List[str]]], Union[List[float], List[List[float]]]]] = None,
         graph_create_event: Optional[GraphCreateEventFn] = None,
         graph_update_event: Optional[GraphUpdateEventFn] = None,
         graph_delete_event: Optional[GraphDeleteEventFn] = None,
@@ -76,9 +76,33 @@ class Weaver:
             logger.info("Nothing to execute — all NOOPs or empty.")
             return result
 
+        # Buffer for batched ADD operations (vector domains only)
+        add_ops_buffer: List[Operation] = []
+
         for op in judge_result.operations:
+            # Check if this operation is a candidate for batching
+            # We only batch ADDs for vector domains (Profile, Summary, Image)
+            is_vector_domain = domain != JudgeDomain.TEMPORAL
+            is_add_op = op.type == OperationType.ADD
+
+            if is_vector_domain and is_add_op:
+                add_ops_buffer.append(op)
+                continue
+
+            # If we hit a non-batchable op, flush the buffer first
+            if add_ops_buffer:
+                batch_results = await self._vector_add_batch(add_ops_buffer, domain, user_id)
+                result.executed.extend(batch_results)
+                add_ops_buffer = []
+
+            # Execute the current operation individually
             executed = await self._execute_one(op, domain, user_id)
             result.executed.append(executed)
+
+        # Flush any remaining operations in the buffer
+        if add_ops_buffer:
+            batch_results = await self._vector_add_batch(add_ops_buffer, domain, user_id)
+            result.executed.extend(batch_results)
 
         self._log_summary(domain, result)
         return result
@@ -164,7 +188,7 @@ class Weaver:
                 content=op.content, error="No embed_fn provided",
             )
 
-        embedding = self.embed_fn(op.content)
+        embedding = cast(List[float], self.embed_fn(op.content))
         metadata = {"user_id": user_id, "domain": domain.value}
 
         # Store structured metadata for deterministic lookups
@@ -181,6 +205,95 @@ class Weaver:
             type=op.type, status=OpStatus.SUCCESS,
             content=op.content, new_id=new_id,
         )
+
+    async def _vector_add_batch(
+        self, ops: List[Operation], domain: JudgeDomain, user_id: str,
+    ) -> List[ExecutedOp]:
+        """Execute a batch of ADD operations for vector store."""
+        if not self.vector_store:
+            return [
+                ExecutedOp(
+                    type=op.type, status=OpStatus.FAILED,
+                    content=op.content, error="No vector store attached",
+                )
+                for op in ops
+            ]
+
+        if not self.embed_fn:
+            return [
+                ExecutedOp(
+                    type=op.type, status=OpStatus.FAILED,
+                    content=op.content, error="No embed_fn provided",
+                )
+                for op in ops
+            ]
+
+        # Filter out empty content to avoid errors
+        valid_ops = []
+        skipped_results = []
+        for op in ops:
+            if not op.content:
+                logger.warning("ADD with empty content — skipping.")
+                skipped_results.append(
+                    ExecutedOp(
+                        type=op.type, status=OpStatus.SKIPPED,
+                        error="ADD requires content",
+                    )
+                )
+            else:
+                valid_ops.append(op)
+
+        if not valid_ops:
+            return skipped_results
+
+        contents = [op.content for op in valid_ops]
+
+        try:
+            # Batch embedding
+            embeddings = cast(List[List[float]], self.embed_fn(contents))
+        except Exception as exc:
+            logger.error("Batch embedding failed: %s", exc)
+            return skipped_results + [
+                ExecutedOp(
+                    type=op.type, status=OpStatus.FAILED,
+                    content=op.content, error=f"Embedding failed: {exc}",
+                )
+                for op in valid_ops
+            ]
+
+        # Prepare metadata
+        metadatas = []
+        for content in contents:
+            meta = {"user_id": user_id, "domain": domain.value}
+            meta.update(_extract_structured_metadata(content))
+            metadatas.append(meta)
+
+        try:
+            ids = self.vector_store.add(
+                texts=contents,
+                embeddings=embeddings,
+                metadata=metadatas,
+            )
+        except Exception as exc:
+            logger.error("Vector batch add failed: %s", exc)
+            return skipped_results + [
+                ExecutedOp(
+                    type=op.type, status=OpStatus.FAILED,
+                    content=op.content, error=f"Vector add failed: {exc}",
+                )
+                for op in valid_ops
+            ]
+
+        # Map IDs back to operations
+        results = []
+        for i, op in enumerate(valid_ops):
+            new_id = ids[i] if ids and i < len(ids) else None
+            results.append(ExecutedOp(
+                type=op.type, status=OpStatus.SUCCESS,
+                content=op.content, new_id=new_id,
+            ))
+
+        return skipped_results + results
 
     async def _vector_update(
         self, op: Operation, domain: JudgeDomain, user_id: str,

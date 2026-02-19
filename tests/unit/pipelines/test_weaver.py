@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock, Mock, PropertyMock
+from unittest.mock import AsyncMock, Mock
 
 from src.pipelines.weaver import Weaver
 from src.schemas.judge import JudgeDomain, JudgeResult, Operation, OperationType
@@ -16,7 +16,14 @@ class TestWeaver(unittest.IsolatedAsyncioTestCase):
         self.mock_store.delete = Mock(return_value=True)
 
         # Mock Embedding Function
-        self.mock_embed = Mock(return_value=[0.1, 0.2, 0.3])
+        self.mock_embed = Mock()
+        def embed_side_effect(text):
+            if isinstance(text, list):
+                # Return list of embeddings
+                return [[0.1, 0.2, 0.3] for _ in text]
+            # Return single embedding
+            return [0.1, 0.2, 0.3]
+        self.mock_embed.side_effect = embed_side_effect
 
         # Mock Graph Functions
         self.mock_create_event = AsyncMock(return_value="evt-new-123")
@@ -45,6 +52,26 @@ class TestWeaver(unittest.IsolatedAsyncioTestCase):
         call_args = self.mock_store.add.call_args
         self.assertEqual(call_args.kwargs['texts'], ["Test content"])
         self.assertEqual(call_args.kwargs['metadata'][0]['user_id'], "user1")
+
+    async def test_vector_add_batch(self):
+        ops = [
+            Operation(type=OperationType.ADD, content="Content 1"),
+            Operation(type=OperationType.ADD, content="Content 2"),
+        ]
+        result = JudgeResult(operations=ops)
+
+        # Configure mock store to return enough IDs
+        self.mock_store.add.return_value = ["id1", "id2"]
+
+        res = await self.weaver.execute(result, JudgeDomain.PROFILE, "user1")
+
+        self.assertEqual(res.succeeded, 2)
+        # Verify add was called ONCE with batched list
+        self.mock_store.add.assert_called_once()
+        call_args = self.mock_store.add.call_args
+        self.assertEqual(call_args.kwargs['texts'], ["Content 1", "Content 2"])
+        self.assertEqual(len(call_args.kwargs['embeddings']), 2)
+        self.assertEqual(len(call_args.kwargs['metadata']), 2)
 
     async def test_vector_update_success(self):
         op = Operation(

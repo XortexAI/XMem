@@ -57,7 +57,7 @@ languages, favorite_movies, music_genres).  Others hold a SINGLE value
     Correct UPDATE content: "work / company = Meta"
 
 ### temporal
-Each item is a temporal event with `date | event_name | desc`.
+Each item is a temporal event with `date | event_name | desc | year | time | date_expression`.
 Events are stored in Neo4j as `User -[HAS_EVENT]-> Date` relationships.
 - Same event_name and same date → **NOOP** (duplicate).
 - Same event_name, same date, but updated details (desc/time) → **UPDATE**.

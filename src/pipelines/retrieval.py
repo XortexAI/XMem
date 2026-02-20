@@ -266,7 +266,7 @@ class RetrievalPipeline:
             return self._search_temporal(
                 query=tool_args.get("query", ""),
                 user_id=user_id,
-                top_k=1,  # Force top_k=1 for temporal events
+                top_k=3,  # Return top 3 temporal events for better context
             )
         elif name == "searchsummary":
             return await self._search_summary(

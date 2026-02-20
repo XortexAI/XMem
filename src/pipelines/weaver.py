@@ -259,6 +259,7 @@ class Weaver:
 
         event_data = _parse_temporal_content(op.content)
         date_str = event_data.pop("date", "")
+        logger.info("_graph_add: content=%s | date_str=%s | event_data=%s", op.content, date_str, event_data)
         if not date_str:
             return ExecutedOp(
                 type=op.type, status=OpStatus.FAILED,
@@ -268,6 +269,7 @@ class Weaver:
         await self.graph_create_event(
             user_id=user_id, date_str=date_str, event_data=event_data,
         )
+        logger.info("_graph_add: SUCCESS for user=%s date=%s", user_id, date_str)
         return ExecutedOp(
             type=op.type, status=OpStatus.SUCCESS, content=op.content,
         )
@@ -370,7 +372,7 @@ def _extract_structured_metadata(content: str) -> Dict[str, str]:
 
 
 def _parse_temporal_content(content: str) -> Dict[str, str]:
-    """Parse 'date | event_name | desc' back into a dict."""
+    """Parse 'date | event_name | desc | year | time | date_expression' back into a dict."""
     parts = [p.strip() for p in content.split("|")]
     result: Dict[str, str] = {}
     if len(parts) >= 1:
@@ -379,4 +381,10 @@ def _parse_temporal_content(content: str) -> Dict[str, str]:
         result["event_name"] = parts[1]
     if len(parts) >= 3:
         result["desc"] = parts[2]
+    if len(parts) >= 4 and parts[3]:
+        result["year"] = parts[3]
+    if len(parts) >= 5 and parts[4]:
+        result["time"] = parts[4]
+    if len(parts) >= 6 and parts[5]:
+        result["date_expression"] = parts[5]
     return result

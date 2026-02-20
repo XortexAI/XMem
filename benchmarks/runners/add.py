@@ -1,16 +1,18 @@
 """
 XMEM Benchmark - ADD Phase
 
-Processes LoCoMo conversations session-by-session.
-For each session: process speaker_a messages, then speaker_b messages.
+Processes LoCoMo conversations session-by-session using conversation pairs.
+For each session, messages are processed as (user_query, agent_response) pairs
+where the "agent_response" is the other speaker's next reply.
 
 Flow:
   For each session:
-    1. Process all speaker_a messages in that session
-    2. Process all speaker_b messages in that session
+    1. Build conversation pairs for speaker_a (a_msg → b_reply)
+    2. Build conversation pairs for speaker_b (b_msg → a_reply)
+    3. Process pairs through the ingest pipeline
   Move to next session
 
-This ensures temporal ordering within conversations is preserved.
+This ensures the summarizer gets full conversation context for better extraction.
 
 Usage:
   python benchmarks/runners/add.py
@@ -72,34 +74,50 @@ def get_all_sessions(conversation: Dict) -> List[tuple]:
     return sessions
 
 
-def get_speaker_messages_in_session(
+def get_speaker_pairs_in_session(
     session_messages: List[Dict],
     speaker_name: str,
     session_key: str,
     session_datetime: str,
 ) -> List[Dict[str, Any]]:
     """
-    Extract all messages from a specific speaker within a single session.
+    Build conversation pairs for a specific speaker within a session.
+    
+    For each message by `speaker_name`, the "agent_response" is the
+    next message from the OTHER speaker immediately following it.
+    This gives the summarizer both sides of the conversation.
     
     Returns:
-        List of message dicts with keys: text, dia_id, session_key, session_datetime, image_url
+        List of message dicts with keys:
+          text, agent_response, dia_id, session_key, session_datetime, image_url
     """
-    messages = []
-    for msg in session_messages:
-        if msg.get("speaker") == speaker_name and msg.get("text"):
-            # Handle img_url as array - take first URL if present
-            img_urls = msg.get("img_url", [])
-            image_url = img_urls[0] if img_urls else ""
-            
-            messages.append({
-                "text": msg["text"],
-                "dia_id": msg.get("dia_id", ""),
-                "session_key": session_key,
-                "session_datetime": session_datetime,
-                "image_url": image_url,
-                "blip_caption": msg.get("blip_caption", ""),
-            })
-    return messages
+    pairs = []
+    for idx, msg in enumerate(session_messages):
+        if msg.get("speaker") != speaker_name or not msg.get("text"):
+            continue
+        
+        # Handle img_url as array - take first URL if present
+        img_urls = msg.get("img_url", [])
+        image_url = img_urls[0] if img_urls else ""
+        
+        # Find the next reply from the other speaker
+        agent_response = ""
+        for j in range(idx + 1, len(session_messages)):
+            next_msg = session_messages[j]
+            if next_msg.get("speaker") != speaker_name and next_msg.get("text"):
+                agent_response = next_msg["text"]
+                break
+        
+        pairs.append({
+            "text": msg["text"],
+            "agent_response": agent_response,
+            "dia_id": msg.get("dia_id", ""),
+            "session_key": session_key,
+            "session_datetime": session_datetime,
+            "image_url": image_url,
+            "blip_caption": msg.get("blip_caption", ""),
+        })
+    return pairs
 
 
 def estim_tokens(texts: List[str]) -> float:
@@ -130,10 +148,10 @@ async def process_messages(
         dia_id = msg.get("dia_id", f"msg_{i}")
         
         try:
-            # Run the ingest pipeline
+            # Run the ingest pipeline with conversation pair context
             result = await pipeline.run(
                 user_query=msg["text"],
-                agent_response="",
+                agent_response=msg.get("agent_response", ""),
                 user_id=user_id,
                 session_datetime=msg.get("session_datetime", ""),
                 image_url=msg.get("image_url", ""),
@@ -277,30 +295,30 @@ async def main():
         print(f"  Messages: {len(session_messages)}")
         print(f"{'─' * 60}")
         
-        # Get messages for each speaker in this session
-        msgs_a = get_speaker_messages_in_session(
+        # Build conversation pairs for each speaker
+        pairs_a = get_speaker_pairs_in_session(
             session_messages, speaker_a, session_key, session_datetime
         )
-        msgs_b = get_speaker_messages_in_session(
+        pairs_b = get_speaker_pairs_in_session(
             session_messages, speaker_b, session_key, session_datetime
         )
         
         # Count images in this session
-        images_a = sum(1 for m in msgs_a if m.get("image_url"))
-        images_b = sum(1 for m in msgs_b if m.get("image_url"))
+        images_a = sum(1 for m in pairs_a if m.get("image_url"))
+        images_b = sum(1 for m in pairs_b if m.get("image_url"))
         
-        print(f"  {speaker_a}: {len(msgs_a)} messages ({images_a} with images)")
-        print(f"  {speaker_b}: {len(msgs_b)} messages ({images_b} with images)")
+        print(f"  {speaker_a}: {len(pairs_a)} pairs ({images_a} with images)")
+        print(f"  {speaker_b}: {len(pairs_b)} pairs ({images_b} with images)")
         
         # Track input texts
-        all_input_texts.extend([m["text"] for m in msgs_a])
-        all_input_texts.extend([m["text"] for m in msgs_b])
+        all_input_texts.extend([m["text"] for m in pairs_a])
+        all_input_texts.extend([m["text"] for m in pairs_b])
         
         # ── Process Speaker A in this session ────────────────────────────
-        if msgs_a:
-            print(f"\n    Processing {speaker_a}...")
+        if pairs_a:
+            print(f"\n    Processing {speaker_a} (paired with {speaker_b} replies)...")
             result_a = await process_messages(
-                messages=msgs_a,
+                messages=pairs_a,
                 user_id=user_a_id,
                 speaker_name=speaker_a,
                 session_key=session_key,
@@ -316,10 +334,10 @@ async def main():
             print(f"      → {result_a['facts_stored']} facts, {result_a['events_stored']} events, {result_a['images_processed']} images")
         
         # ── Process Speaker B in this session ────────────────────────────
-        if msgs_b:
-            print(f"\n    Processing {speaker_b}...")
+        if pairs_b:
+            print(f"\n    Processing {speaker_b} (paired with {speaker_a} replies)...")
             result_b = await process_messages(
-                messages=msgs_b,
+                messages=pairs_b,
                 user_id=user_b_id,
                 speaker_name=speaker_b,
                 session_key=session_key,

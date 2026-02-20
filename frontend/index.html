@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Xmem — Memory Test Console</title>
+    <meta
+      name="description"
+      content="Interactive console for testing Xmem memory ingestion and retrieval pipelines."
+    />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
@@ -27,6 +31,10 @@
         --orange-dim: rgba(251, 146, 60, 0.12);
         --red: #f87171;
         --yellow: #fbbf24;
+        --pink: #f472b6;
+        --pink-dim: rgba(244, 114, 182, 0.12);
+        --teal: #2dd4bf;
+        --teal-dim: rgba(45, 212, 191, 0.12);
         --radius: 12px;
         --radius-sm: 8px;
       }
@@ -47,7 +55,7 @@
 
       /* ── Header ─────────────────────────────────────────── */
       header {
-        padding: 24px 32px;
+        padding: 18px 32px;
         display: flex;
         align-items: center;
         gap: 16px;
@@ -57,6 +65,7 @@
         position: sticky;
         top: 0;
         z-index: 100;
+        flex-wrap: wrap;
       }
 
       .logo {
@@ -72,17 +81,6 @@
         font-size: 13px;
         color: var(--text-dim);
         font-weight: 400;
-      }
-
-      .user-badge {
-        margin-left: auto;
-        font-family: "JetBrains Mono", monospace;
-        font-size: 12px;
-        color: var(--text-dim);
-        background: var(--surface-2);
-        padding: 6px 12px;
-        border-radius: 20px;
-        border: 1px solid var(--border);
       }
 
       /* ── Mode Toggle ────────────────────────────────────── */
@@ -117,6 +115,67 @@
       .mode-btn:not(.active):hover {
         color: var(--text);
         background: var(--surface-3);
+      }
+
+      /* ── User Selector ──────────────────────────────────── */
+      .user-selector-wrapper {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .user-selector-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+      }
+
+      .user-select {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        color: var(--text);
+        background: var(--surface-2);
+        padding: 8px 14px;
+        padding-right: 32px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        outline: none;
+        cursor: pointer;
+        appearance: none;
+        -webkit-appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238888a0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        transition:
+          border-color 0.2s,
+          box-shadow 0.2s;
+      }
+
+      .user-select:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-glow);
+      }
+
+      .user-select option {
+        background: var(--surface-2);
+        color: var(--text);
+        padding: 8px;
+      }
+
+      .user-avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        font-weight: 700;
+        color: white;
+        flex-shrink: 0;
       }
 
       /* ── Main Layout ────────────────────────────────────── */
@@ -520,6 +579,90 @@
         background: var(--accent);
         transition: width 0.5s ease;
       }
+
+      /* ── User Cards Grid ────────────────────────────────── */
+      .user-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 12px;
+        margin-bottom: 28px;
+      }
+
+      .user-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .user-card:hover {
+        border-color: var(--accent);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 20px rgba(124, 92, 255, 0.15);
+      }
+
+      .user-card.active {
+        border-color: var(--accent);
+        background: var(--accent-glow);
+        box-shadow: 0 0 0 2px var(--accent-glow);
+      }
+
+      .user-card-info {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .user-card-name {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text);
+        margin-bottom: 2px;
+      }
+
+      .user-card-id {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 10px;
+        color: var(--text-dim);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .user-card-stats {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 10px;
+        color: var(--text-dim);
+        margin-top: 4px;
+      }
+
+      .user-card-stats span {
+        margin-right: 8px;
+      }
+
+      /* ── Section Label ──────────────────────────────────── */
+      .section-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 1.2px;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .section-label::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: var(--border);
+      }
     </style>
   </head>
   <body>
@@ -534,18 +677,127 @@
           class="mode-btn active"
           data-mode="add"
           onclick="setMode('add')"
+          id="modeAddBtn"
         >
           ➕ Add Memory
         </button>
-        <button class="mode-btn" data-mode="search" onclick="setMode('search')">
+        <button
+          class="mode-btn"
+          data-mode="search"
+          onclick="setMode('search')"
+          id="modeSearchBtn"
+        >
           🔍 Search Memory
         </button>
       </div>
 
-      <div class="user-badge">user: demo_user</div>
+      <div class="user-selector-wrapper">
+        <span class="user-selector-label">User</span>
+        <div
+          class="user-avatar"
+          id="userAvatar"
+          style="background: linear-gradient(135deg, #7c5cff, #a78bfa)"
+        >
+          D
+        </div>
+        <select class="user-select" id="userSelect" onchange="onUserChange()">
+          <option value="demo_user">🧪 demo_user</option>
+          <optgroup label="── Jon & Gina ──">
+            <option value="jon_benchmark">👤 Jon</option>
+            <option value="gina_benchmark">👤 Gina</option>
+          </optgroup>
+          <optgroup label="── Caroline & Melanie ──">
+            <option value="caroline_benchmark">👤 Caroline</option>
+            <option value="melanie_benchmark">👤 Melanie</option>
+          </optgroup>
+        </select>
+      </div>
     </header>
 
     <main>
+      <!-- User Cards -->
+      <div class="section-label" id="userCardsLabel">
+        Select a Benchmark User
+      </div>
+      <div class="user-cards" id="userCards">
+        <div
+          class="user-card"
+          data-uid="jon_benchmark"
+          onclick="selectUserCard('jon_benchmark')"
+        >
+          <div
+            class="user-avatar"
+            style="background: linear-gradient(135deg, #60a5fa, #3b82f6)"
+          >
+            J
+          </div>
+          <div class="user-card-info">
+            <div class="user-card-name">Jon</div>
+            <div class="user-card-id">jon_benchmark</div>
+            <div class="user-card-stats">
+              <span>📝 313 facts</span><span>📅 16 events</span>
+            </div>
+          </div>
+        </div>
+        <div
+          class="user-card"
+          data-uid="gina_benchmark"
+          onclick="selectUserCard('gina_benchmark')"
+        >
+          <div
+            class="user-avatar"
+            style="background: linear-gradient(135deg, #f472b6, #ec4899)"
+          >
+            G
+          </div>
+          <div class="user-card-info">
+            <div class="user-card-name">Gina</div>
+            <div class="user-card-id">gina_benchmark</div>
+            <div class="user-card-stats">
+              <span>📝 255 facts</span><span>📅 10 events</span>
+            </div>
+          </div>
+        </div>
+        <div
+          class="user-card"
+          data-uid="caroline_benchmark"
+          onclick="selectUserCard('caroline_benchmark')"
+        >
+          <div
+            class="user-avatar"
+            style="background: linear-gradient(135deg, #34d399, #10b981)"
+          >
+            C
+          </div>
+          <div class="user-card-info">
+            <div class="user-card-name">Caroline</div>
+            <div class="user-card-id">caroline_benchmark</div>
+            <div class="user-card-stats">
+              <span>📝 363 facts</span><span>📅 29 events</span>
+            </div>
+          </div>
+        </div>
+        <div
+          class="user-card"
+          data-uid="melanie_benchmark"
+          onclick="selectUserCard('melanie_benchmark')"
+        >
+          <div
+            class="user-avatar"
+            style="background: linear-gradient(135deg, #fb923c, #f97316)"
+          >
+            M
+          </div>
+          <div class="user-card-info">
+            <div class="user-card-name">Melanie</div>
+            <div class="user-card-id">melanie_benchmark</div>
+            <div class="user-card-stats">
+              <span>📝 267 facts</span><span>📅 21 events</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Input -->
       <div class="input-section">
         <div class="input-label" id="inputLabel">
@@ -590,14 +842,45 @@
       <div class="empty-state" id="emptyState">
         <div class="icon">🧠</div>
         <p>
-          Type something above and press enter to add it to memory,<br />
+          Select a user above, then type something to add to memory,<br />
           or switch to Search to ask questions about stored memories.
         </p>
       </div>
     </main>
 
     <script>
+      // ── User config ───────────────────────────────────────
+      const USERS = {
+        demo_user: {
+          name: "Demo User",
+          initial: "D",
+          gradient: "linear-gradient(135deg, #7c5cff, #a78bfa)",
+        },
+        jon_benchmark: {
+          name: "Jon",
+          initial: "J",
+          gradient: "linear-gradient(135deg, #60a5fa, #3b82f6)",
+        },
+        gina_benchmark: {
+          name: "Gina",
+          initial: "G",
+          gradient: "linear-gradient(135deg, #f472b6, #ec4899)",
+        },
+        caroline_benchmark: {
+          name: "Caroline",
+          initial: "C",
+          gradient: "linear-gradient(135deg, #34d399, #10b981)",
+        },
+        melanie_benchmark: {
+          name: "Melanie",
+          initial: "M",
+          gradient: "linear-gradient(135deg, #fb923c, #f97316)",
+        },
+      };
+
       let currentMode = "add";
+      let currentUserId = "demo_user";
+
       const inputField = document.getElementById("inputField");
       const sendBtn = document.getElementById("sendBtn");
       const inputLabel = document.getElementById("inputLabel");
@@ -607,20 +890,52 @@
       const stepsBody = document.getElementById("stepsBody");
       const resultsArea = document.getElementById("resultsArea");
       const emptyState = document.getElementById("emptyState");
+      const userSelect = document.getElementById("userSelect");
+      const userAvatar = document.getElementById("userAvatar");
 
+      // ── User selection ────────────────────────────────────
+      function onUserChange() {
+        currentUserId = userSelect.value;
+        updateUserUI();
+      }
+
+      function selectUserCard(uid) {
+        currentUserId = uid;
+        userSelect.value = uid;
+        updateUserUI();
+        // auto-switch to search mode for benchmark users
+        if (uid !== "demo_user") {
+          setMode("search");
+        }
+        inputField.focus();
+      }
+
+      function updateUserUI() {
+        const u = USERS[currentUserId] || USERS.demo_user;
+        userAvatar.textContent = u.initial;
+        userAvatar.style.background = u.gradient;
+
+        // Highlight active card
+        document.querySelectorAll(".user-card").forEach((card) => {
+          card.classList.toggle("active", card.dataset.uid === currentUserId);
+        });
+      }
+
+      // ── Mode toggle ───────────────────────────────────────
       function setMode(mode) {
         currentMode = mode;
         document.querySelectorAll(".mode-btn").forEach((btn) => {
           btn.classList.toggle("active", btn.dataset.mode === mode);
         });
+        const u = USERS[currentUserId] || USERS.demo_user;
         if (mode === "add") {
-          inputLabel.textContent = "Enter something to remember";
+          inputLabel.textContent = `Enter something to remember as ${u.name}`;
           inputField.placeholder =
             "I just got promoted to Senior Engineer at Google...";
           sendBtn.textContent = "Add Memory";
         } else {
-          inputLabel.textContent = "Ask a question about stored memories";
-          inputField.placeholder = "When is my dentist appointment?";
+          inputLabel.textContent = `Ask a question about ${u.name}'s memories`;
+          inputField.placeholder = "What do you know about my hobbies?";
           sendBtn.textContent = "Search";
         }
         inputField.focus();
@@ -634,6 +949,8 @@
         const text = inputField.value.trim();
         if (!text) return;
 
+        const u = USERS[currentUserId] || USERS.demo_user;
+
         // Reset UI
         sendBtn.disabled = true;
         emptyState.style.display = "none";
@@ -643,15 +960,18 @@
         loading.classList.add("active");
         loadingText.textContent =
           currentMode === "add"
-            ? "Running ingest pipeline..."
-            : "Running retrieval pipeline...";
+            ? `Running ingest pipeline for ${u.name}...`
+            : `Searching ${u.name}'s memories...`;
 
         try {
           if (currentMode === "add") {
             const resp = await fetch("/api/ingest", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ user_query: text, user_id: "demo_user" }),
+              body: JSON.stringify({
+                user_query: text,
+                user_id: currentUserId,
+              }),
             });
             const data = await resp.json();
             await renderSteps(data.steps || []);
@@ -661,7 +981,7 @@
             const resp = await fetch("/api/retrieve", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ query: text, user_id: "demo_user" }),
+              body: JSON.stringify({ query: text, user_id: currentUserId }),
             });
             const data = await resp.json();
             await renderSteps(data.steps || []);
@@ -777,6 +1097,17 @@
 
       function renderRetrievalResults(data) {
         let html = "";
+        const u = USERS[currentUserId] || USERS.demo_user;
+
+        // User context badge
+        html += `<div class="result-card" style="padding: 12px 18px;">
+          <div style="display: flex; align-items: center; gap: 10px; font-size: 13px;">
+            <div class="user-avatar" style="width: 24px; height: 24px; font-size: 11px; background: ${u.gradient};">${u.initial}</div>
+            <span style="color: var(--text-dim);">Answering as</span>
+            <span style="font-weight: 600; color: var(--text);">${u.name}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim);">(${currentUserId})</span>
+          </div>
+        </div>`;
 
         // Sources
         if (data.sources && data.sources.length > 0) {
@@ -834,7 +1165,8 @@
         return new Promise((r) => setTimeout(r, ms));
       }
 
-      // Focus input on load
+      // Init
+      updateUserUI();
       inputField.focus();
     </script>
   </body>

@@ -45,12 +45,19 @@ def _profile_items_to_strings(facts: List[dict]) -> List[str]:
 
 
 def _temporal_item_to_string(event: dict) -> str:
+    # Format: date | event_name | desc | year | time | date_expression
+    # All 6 fields are always emitted (even if empty) so the parser
+    # can positionally reconstruct the full dict.
+    # str() ensures non-string values (e.g. year as int) don't break join.
     parts = [
-        event.get("date", ""),
-        event.get("event_name", ""),
-        event.get("desc", ""),
+        str(event.get("date", "") or ""),
+        str(event.get("event_name", "") or ""),
+        str(event.get("desc", "") or ""),
+        str(event.get("year", "") or ""),
+        str(event.get("time", "") or ""),
+        str(event.get("date_expression", "") or ""),
     ]
-    return " | ".join(p for p in parts if p)
+    return " | ".join(parts)
 
 
 def _image_item_to_string(observation: dict) -> str:

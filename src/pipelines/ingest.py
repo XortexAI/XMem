@@ -410,6 +410,9 @@ class IngestPipeline:
                     "date": event.date,
                     "event_name": event.event_name or "",
                     "desc": event.desc or "",
+                    "year": event.year or "",
+                    "time": event.time or "",
+                    "date_expression": event.date_expression or "",
                 })
                 last_result = result
 

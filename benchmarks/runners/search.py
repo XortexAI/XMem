@@ -29,6 +29,21 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(name)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("xmem.benchmark.search")
 
+# ── Silence noisy internal loggers during benchmark ──────────────────────
+# Only show WARNING+ from pipeline internals so the output stays clean.
+for _noisy in (
+    "xmem.pipelines.retrieval",
+    "xmem.models",
+    "src.storage.pinecone",
+    "xmem.graph.neo4j",
+    "neo4j",               # Neo4j driver notifications (e.g. 'year' property warnings)
+    "httpx",
+    "httpcore",
+    "langchain_core",
+    "langchain_google_genai",
+):
+    logging.getLogger(_noisy).setLevel(logging.ERROR)
+
 # Category mapping
 CAT_NAMES = {1: "Single Hop", 2: "Temporal", 3: "Multi-Hop", 4: "Open Domain", 5: "Adversarial"}
 
@@ -148,7 +163,7 @@ async def main():
     # Check stored data counts
     try:
         vector_store = PineconeVectorStore()
-        fact_count = vector_store.get_stats().total_vectors
+        fact_count = vector_store.get_stats().total_vector_count
         logger.info(f"Vector store has {fact_count} vectors")
     except Exception as e:
         fact_count = 0
@@ -192,11 +207,14 @@ async def main():
 
         q_start = time.time()
         try:
-            # Use the retrieval pipeline to search and answer
-            retrieval_result = await retrieval.run(
-                query=search_query,
-                user_id=query_user,
-                top_k=10,
+            # Use the retrieval pipeline to search and answer (60s timeout per question)
+            retrieval_result = await asyncio.wait_for(
+                retrieval.run(
+                    query=search_query,
+                    user_id=query_user,
+                    top_k=10,
+                ),
+                timeout=60.0,
             )
 
             answer = retrieval_result.answer
@@ -206,6 +224,10 @@ async def main():
             profiles_found = [s for s in retrieval_result.sources if s.domain == "profile"]
             events_found = [s for s in retrieval_result.sources if s.domain == "temporal"]
 
+        except asyncio.TimeoutError:
+            logger.warning(f"Q{i+1} timed out after 60s — skipping")
+            answer = "TIMEOUT"
+            facts_found, profiles_found, events_found = [], [], []
         except Exception as e:
             logger.error(f"Search error: {e}")
             answer = f"ERROR: {e}"

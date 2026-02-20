@@ -5,7 +5,6 @@ Exposes the ingest and retrieval pipelines as API endpoints.
 Captures pipeline logs so the frontend can show each step.
 
 Usage:
-    cd frontend
     uvicorn server:app --reload --port 8000
 """
 
@@ -29,7 +28,7 @@ from pydantic import BaseModel
 import sys
 import os
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # Load .env from the project root BEFORE importing src modules
@@ -124,7 +123,7 @@ class RetrieveRequest(BaseModel):
 
 @app.get("/")
 async def serve_ui():
-    return FileResponse(Path(__file__).parent / "index.html")
+    return FileResponse(Path(__file__).parent / "frontend" / "index.html")
 
 
 @app.post("/api/ingest")

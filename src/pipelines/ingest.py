@@ -72,7 +72,7 @@ from src.pipelines.weaver import Weaver
 from src.schemas.classification import ClassificationResult
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -361,8 +361,15 @@ class IngestPipeline:
         all_facts = []
         last_result = None
 
-        for query in queries:
-            result = await self.profiler.arun({"classifier_output": query})
+        # Optimization: Process multiple profile queries in parallel using asyncio.gather
+        # This reduces latency when multiple queries are extracted from the user input.
+        tasks = [
+            self.profiler.arun({"classifier_output": q})
+            for q in queries
+        ]
+        results = await asyncio.gather(*tasks)
+
+        for result in results:
             if not result.is_empty:
                 all_facts.extend(result.facts)
                 last_result = result
@@ -399,11 +406,18 @@ class IngestPipeline:
         all_items: List[Dict[str, str]] = []
         last_result = None
 
-        for query in queries:
-            result = await self.temporal.arun({
-                "classifier_output": query,
+        # Optimization: Process multiple temporal queries in parallel using asyncio.gather
+        # This reduces latency when multiple queries are extracted from the user input.
+        tasks = [
+            self.temporal.arun({
+                "classifier_output": q,
                 "session_datetime": session_dt,
             })
+            for q in queries
+        ]
+        results = await asyncio.gather(*tasks)
+
+        for result in results:
             if not result.is_empty:
                 event = result.event
                 all_items.append({

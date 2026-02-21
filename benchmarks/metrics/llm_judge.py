@@ -48,7 +48,7 @@ def get_judge_model() -> ChatGoogleGenerativeAI:
     global _judge_model
     if _judge_model is None:
         _judge_model = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model="gemini-2.5-pro",
             google_api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
             temperature=0.0
         )

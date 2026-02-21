@@ -192,7 +192,7 @@ class RetrievalPipeline:
             if "searchsummary" not in called_tools:
                 logger.info("  Auto-adding summary context (top_k=5)")
                 extra = await self._search_summary(
-                    query=query, user_id=user_id, top_k=5,
+                    query=query, user_id=user_id, top_k=10,
                 )
                 if extra:
                     sources.extend(extra)
@@ -266,7 +266,7 @@ class RetrievalPipeline:
             return self._search_temporal(
                 query=tool_args.get("query", ""),
                 user_id=user_id,
-                top_k=3,  # Return top 3 temporal events for better context
+                top_k=10,  # Return top 3 temporal events for better context
             )
         elif name == "searchsummary":
             return await self._search_summary(
@@ -325,7 +325,7 @@ class RetrievalPipeline:
         self,
         query: str,
         user_id: str,
-        top_k: int = 1,
+        top_k: int = 3,
     ) -> List[SourceRecord]:
         """Semantic search over temporal events in Neo4j."""
 
@@ -376,7 +376,7 @@ class RetrievalPipeline:
         self,
         query: str,
         user_id: str,
-        top_k: int = 5,
+        top_k: int = 10,
     ) -> List[SourceRecord]:
         """Semantic search over summary entries in Pinecone."""
 

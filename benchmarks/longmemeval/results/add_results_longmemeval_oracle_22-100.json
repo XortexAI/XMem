@@ -1,0 +1,663 @@
+{
+  "dataset": "longmemeval_oracle.json",
+  "run_range": "Q22-Q100",
+  "total_questions_processed": 79,
+  "metrics": {
+    "total_messages": 1249,
+    "total_facts_stored": 5722,
+    "total_events_stored": 311,
+    "total_errors": 10,
+    "total_time_seconds": 26485.85
+  },
+  "per_question_metrics": [
+    {
+      "q_id": "gpt4_4edbafa2",
+      "messages": 12,
+      "facts": 53,
+      "events": 5,
+      "errors": [],
+      "time": 250.1377182006836
+    },
+    {
+      "q_id": "c8090214",
+      "messages": 12,
+      "facts": 49,
+      "events": 5,
+      "errors": [],
+      "time": 242.20548605918884
+    },
+    {
+      "q_id": "gpt4_483dd43c",
+      "messages": 12,
+      "facts": 60,
+      "events": 2,
+      "errors": [],
+      "time": 345.6823489665985
+    },
+    {
+      "q_id": "e4e14d04",
+      "messages": 12,
+      "facts": 52,
+      "events": 4,
+      "errors": [],
+      "time": 242.10903096199036
+    },
+    {
+      "q_id": "c9f37c46",
+      "messages": 11,
+      "facts": 49,
+      "events": 2,
+      "errors": [],
+      "time": 225.78195786476135
+    },
+    {
+      "q_id": "gpt4_2c50253f",
+      "messages": 12,
+      "facts": 67,
+      "events": 0,
+      "errors": [],
+      "time": 275.35760402679443
+    },
+    {
+      "q_id": "dcfa8644",
+      "messages": 12,
+      "facts": 50,
+      "events": 11,
+      "errors": [],
+      "time": 263.63133788108826
+    },
+    {
+      "q_id": "gpt4_b4a80587",
+      "messages": 12,
+      "facts": 65,
+      "events": 3,
+      "errors": [],
+      "time": 316.21616315841675
+    },
+    {
+      "q_id": "gpt4_9a159967",
+      "messages": 16,
+      "facts": 71,
+      "events": 5,
+      "errors": [],
+      "time": 310.31690979003906
+    },
+    {
+      "q_id": "cc6d1ec1",
+      "messages": 12,
+      "facts": 57,
+      "events": 2,
+      "errors": [],
+      "time": 214.68560791015625
+    },
+    {
+      "q_id": "gpt4_8c8961ae",
+      "messages": 12,
+      "facts": 60,
+      "events": 3,
+      "errors": [],
+      "time": 268.6314980983734
+    },
+    {
+      "q_id": "gpt4_d9af6064",
+      "messages": 12,
+      "facts": 68,
+      "events": 6,
+      "errors": [],
+      "time": 276.7366027832031
+    },
+    {
+      "q_id": "gpt4_7de946e7",
+      "messages": 12,
+      "facts": 75,
+      "events": 10,
+      "errors": [],
+      "time": 329.65474009513855
+    },
+    {
+      "q_id": "d01c6aa8",
+      "messages": 11,
+      "facts": 58,
+      "events": 0,
+      "errors": [],
+      "time": 225.9376220703125
+    },
+    {
+      "q_id": "993da5e2",
+      "messages": 12,
+      "facts": 70,
+      "events": 2,
+      "errors": [],
+      "time": 264.5602333545685
+    },
+    {
+      "q_id": "a3045048",
+      "messages": 11,
+      "facts": 40,
+      "events": 5,
+      "errors": [],
+      "time": 209.15888285636902
+    },
+    {
+      "q_id": "gpt4_d31cdae3",
+      "messages": 11,
+      "facts": 49,
+      "events": 4,
+      "errors": [],
+      "time": 182.5718538761139
+    },
+    {
+      "q_id": "gpt4_cd90e484",
+      "messages": 11,
+      "facts": 58,
+      "events": 4,
+      "errors": [],
+      "time": 298.60974884033203
+    },
+    {
+      "q_id": "gpt4_88806d6e",
+      "messages": 12,
+      "facts": 44,
+      "events": 7,
+      "errors": [
+        "Msg 1: At key 'status': Can receive only one value per step. Use an Annotated key to handle multiple values.\nFor troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE"
+      ],
+      "time": 216.43972182273865
+    },
+    {
+      "q_id": "gpt4_4cd9eba1",
+      "messages": 12,
+      "facts": 57,
+      "events": 7,
+      "errors": [],
+      "time": 245.85968780517578
+    },
+    {
+      "q_id": "gpt4_93f6379c",
+      "messages": 18,
+      "facts": 88,
+      "events": 2,
+      "errors": [],
+      "time": 393.04413199424744
+    },
+    {
+      "q_id": "b29f3365",
+      "messages": 12,
+      "facts": 76,
+      "events": 6,
+      "errors": [],
+      "time": 326.6944229602814
+    },
+    {
+      "q_id": "gpt4_2f56ae70",
+      "messages": 18,
+      "facts": 62,
+      "events": 2,
+      "errors": [],
+      "time": 317.28697514533997
+    },
+    {
+      "q_id": "6613b389",
+      "messages": 18,
+      "facts": 72,
+      "events": 9,
+      "errors": [],
+      "time": 350.49648928642273
+    },
+    {
+      "q_id": "gpt4_78cf46a3",
+      "messages": 10,
+      "facts": 36,
+      "events": 2,
+      "errors": [],
+      "time": 163.6228621006012
+    },
+    {
+      "q_id": "gpt4_0a05b494",
+      "messages": 12,
+      "facts": 47,
+      "events": 5,
+      "errors": [],
+      "time": 239.68404507637024
+    },
+    {
+      "q_id": "gpt4_1a1dc16d",
+      "messages": 10,
+      "facts": 58,
+      "events": 3,
+      "errors": [],
+      "time": 198.9114191532135
+    },
+    {
+      "q_id": "gpt4_2f584639",
+      "messages": 12,
+      "facts": 46,
+      "events": 6,
+      "errors": [],
+      "time": 223.39496183395386
+    },
+    {
+      "q_id": "gpt4_213fd887",
+      "messages": 12,
+      "facts": 57,
+      "events": 4,
+      "errors": [
+        "Msg 3: At key 'status': Can receive only one value per step. Use an Annotated key to handle multiple values.\nFor troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE"
+      ],
+      "time": 246.84683275222778
+    },
+    {
+      "q_id": "gpt4_5438fa52",
+      "messages": 12,
+      "facts": 55,
+      "events": 3,
+      "errors": [],
+      "time": 241.64930486679077
+    },
+    {
+      "q_id": "gpt4_c27434e8",
+      "messages": 11,
+      "facts": 50,
+      "events": 4,
+      "errors": [],
+      "time": 296.631564617157
+    },
+    {
+      "q_id": "gpt4_fe651585",
+      "messages": 12,
+      "facts": 50,
+      "events": 3,
+      "errors": [],
+      "time": 245.6578071117401
+    },
+    {
+      "q_id": "8c18457d",
+      "messages": 10,
+      "facts": 34,
+      "events": 6,
+      "errors": [],
+      "time": 163.89333605766296
+    },
+    {
+      "q_id": "gpt4_70e84552_abs",
+      "messages": 12,
+      "facts": 71,
+      "events": 4,
+      "errors": [],
+      "time": 259.3429741859436
+    },
+    {
+      "q_id": "gpt4_93159ced_abs",
+      "messages": 12,
+      "facts": 61,
+      "events": 0,
+      "errors": [],
+      "time": 225.03655219078064
+    },
+    {
+      "q_id": "982b5123_abs",
+      "messages": 12,
+      "facts": 41,
+      "events": 3,
+      "errors": [],
+      "time": 175.99712991714478
+    },
+    {
+      "q_id": "c8090214_abs",
+      "messages": 12,
+      "facts": 47,
+      "events": 4,
+      "errors": [],
+      "time": 224.48089981079102
+    },
+    {
+      "q_id": "gpt4_c27434e8_abs",
+      "messages": 11,
+      "facts": 56,
+      "events": 4,
+      "errors": [],
+      "time": 293.21222591400146
+    },
+    {
+      "q_id": "gpt4_fe651585_abs",
+      "messages": 12,
+      "facts": 48,
+      "events": 2,
+      "errors": [],
+      "time": 256.19096183776855
+    },
+    {
+      "q_id": "0a995998",
+      "messages": 17,
+      "facts": 68,
+      "events": 9,
+      "errors": [],
+      "time": 524.4215762615204
+    },
+    {
+      "q_id": "6d550036",
+      "messages": 22,
+      "facts": 101,
+      "events": 0,
+      "errors": [],
+      "time": 411.7312958240509
+    },
+    {
+      "q_id": "gpt4_59c863d7",
+      "messages": 23,
+      "facts": 118,
+      "events": 3,
+      "errors": [
+        "Msg 0: At key 'status': Can receive only one value per step. Use an Annotated key to handle multiple values.\nFor troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE"
+      ],
+      "time": 663.5121650695801
+    },
+    {
+      "q_id": "b5ef892d",
+      "messages": 18,
+      "facts": 77,
+      "events": 5,
+      "errors": [],
+      "time": 331.12770080566406
+    },
+    {
+      "q_id": "e831120c",
+      "messages": 12,
+      "facts": 34,
+      "events": 1,
+      "errors": [
+        "Msg 1: At key 'status': Can receive only one value per step. Use an Annotated key to handle multiple values.\nFor troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE"
+      ],
+      "time": 196.20464897155762
+    },
+    {
+      "q_id": "3a704032",
+      "messages": 18,
+      "facts": 75,
+      "events": 3,
+      "errors": [],
+      "time": 365.9591181278229
+    },
+    {
+      "q_id": "gpt4_d84a3211",
+      "messages": 23,
+      "facts": 101,
+      "events": 15,
+      "errors": [],
+      "time": 467.25334095954895
+    },
+    {
+      "q_id": "aae3761f",
+      "messages": 18,
+      "facts": 84,
+      "events": 0,
+      "errors": [],
+      "time": 376.3700292110443
+    },
+    {
+      "q_id": "gpt4_f2262a51",
+      "messages": 18,
+      "facts": 76,
+      "events": 2,
+      "errors": [],
+      "time": 381.61631417274475
+    },
+    {
+      "q_id": "dd2973ad",
+      "messages": 12,
+      "facts": 45,
+      "events": 8,
+      "errors": [],
+      "time": 201.5646448135376
+    },
+    {
+      "q_id": "c4a1ceb8",
+      "messages": 23,
+      "facts": 92,
+      "events": 3,
+      "errors": [],
+      "time": 408.71398305892944
+    },
+    {
+      "q_id": "gpt4_a56e767c",
+      "messages": 18,
+      "facts": 81,
+      "events": 0,
+      "errors": [],
+      "time": 346.7639706134796
+    },
+    {
+      "q_id": "6cb6f249",
+      "messages": 12,
+      "facts": 60,
+      "events": 2,
+      "errors": [],
+      "time": 283.27107787132263
+    },
+    {
+      "q_id": "46a3abf7",
+      "messages": 18,
+      "facts": 92,
+      "events": 1,
+      "errors": [],
+      "time": 450.7861430644989
+    },
+    {
+      "q_id": "36b9f61e",
+      "messages": 18,
+      "facts": 100,
+      "events": 0,
+      "errors": [],
+      "time": 345.53496503829956
+    },
+    {
+      "q_id": "28dc39ac",
+      "messages": 30,
+      "facts": 137,
+      "events": 0,
+      "errors": [],
+      "time": 1065.9174542427063
+    },
+    {
+      "q_id": "gpt4_2f8be40d",
+      "messages": 18,
+      "facts": 75,
+      "events": 3,
+      "errors": [
+        "Msg 5: At key 'status': Can receive only one value per step. Use an Annotated key to handle multiple values.\nFor troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE"
+      ],
+      "time": 433.6874899864197
+    },
+    {
+      "q_id": "2e6d26dc",
+      "messages": 24,
+      "facts": 74,
+      "events": 4,
+      "errors": [
+        "Msg 0: At key 'status': Can receive only one value per step. Use an Annotated key to handle multiple values.\nFor troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE",
+        "Msg 3: At key 'status': Can receive only one value per step. Use an Annotated key to handle multiple values.\nFor troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE",
+        "Msg 0: At key 'status': Can receive only one value per step. Use an Annotated key to handle multiple values.\nFor troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE",
+        "Msg 5: At key 'status': Can receive only one value per step. Use an Annotated key to handle multiple values.\nFor troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE"
+      ],
+      "time": 422.15933990478516
+    },
+    {
+      "q_id": "gpt4_15e38248",
+      "messages": 21,
+      "facts": 110,
+      "events": 6,
+      "errors": [],
+      "time": 453.3313891887665
+    },
+    {
+      "q_id": "88432d0a",
+      "messages": 24,
+      "facts": 109,
+      "events": 12,
+      "errors": [],
+      "time": 537.3093640804291
+    },
+    {
+      "q_id": "80ec1f4f",
+      "messages": 18,
+      "facts": 65,
+      "events": 6,
+      "errors": [],
+      "time": 323.2059350013733
+    },
+    {
+      "q_id": "d23cf73b",
+      "messages": 24,
+      "facts": 97,
+      "events": 3,
+      "errors": [],
+      "time": 427.2059531211853
+    },
+    {
+      "q_id": "gpt4_7fce9456",
+      "messages": 30,
+      "facts": 141,
+      "events": 8,
+      "errors": [],
+      "time": 617.965206861496
+    },
+    {
+      "q_id": "d682f1a2",
+      "messages": 18,
+      "facts": 79,
+      "events": 1,
+      "errors": [],
+      "time": 349.5210289955139
+    },
+    {
+      "q_id": "7024f17c",
+      "messages": 18,
+      "facts": 79,
+      "events": 2,
+      "errors": [
+        "Msg 1: At key 'status': Can receive only one value per step. Use an Annotated key to handle multiple values.\nFor troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE"
+      ],
+      "time": 347.4636781215668
+    },
+    {
+      "q_id": "gpt4_5501fe77",
+      "messages": 17,
+      "facts": 72,
+      "events": 0,
+      "errors": [],
+      "time": 301.4876489639282
+    },
+    {
+      "q_id": "gpt4_2ba83207",
+      "messages": 24,
+      "facts": 121,
+      "events": 10,
+      "errors": [],
+      "time": 522.1231479644775
+    },
+    {
+      "q_id": "2318644b",
+      "messages": 12,
+      "facts": 56,
+      "events": 1,
+      "errors": [],
+      "time": 263.0666949748993
+    },
+    {
+      "q_id": "2ce6a0f2",
+      "messages": 23,
+      "facts": 100,
+      "events": 6,
+      "errors": [],
+      "time": 417.8733489513397
+    },
+    {
+      "q_id": "gpt4_d12ceb0e",
+      "messages": 16,
+      "facts": 109,
+      "events": 2,
+      "errors": [],
+      "time": 385.2183029651642
+    },
+    {
+      "q_id": "00ca467f",
+      "messages": 18,
+      "facts": 84,
+      "events": 7,
+      "errors": [],
+      "time": 376.82623410224915
+    },
+    {
+      "q_id": "b3c15d39",
+      "messages": 12,
+      "facts": 55,
+      "events": 6,
+      "errors": [],
+      "time": 244.22292184829712
+    },
+    {
+      "q_id": "gpt4_31ff4165",
+      "messages": 30,
+      "facts": 162,
+      "events": 3,
+      "errors": [],
+      "time": 654.6433742046356
+    },
+    {
+      "q_id": "eeda8a6d",
+      "messages": 12,
+      "facts": 50,
+      "events": 0,
+      "errors": [],
+      "time": 242.31560611724854
+    },
+    {
+      "q_id": "2788b940",
+      "messages": 21,
+      "facts": 108,
+      "events": 3,
+      "errors": [],
+      "time": 444.50115418434143
+    },
+    {
+      "q_id": "60bf93ed",
+      "messages": 12,
+      "facts": 56,
+      "events": 9,
+      "errors": [],
+      "time": 218.187744140625
+    },
+    {
+      "q_id": "9d25d4e0",
+      "messages": 18,
+      "facts": 79,
+      "events": 5,
+      "errors": [],
+      "time": 357.4926829338074
+    },
+    {
+      "q_id": "129d1232",
+      "messages": 17,
+      "facts": 80,
+      "events": 0,
+      "errors": [],
+      "time": 364.9933052062988
+    },
+    {
+      "q_id": "60472f9c",
+      "messages": 18,
+      "facts": 96,
+      "events": 0,
+      "errors": [],
+      "time": 383.13964200019836
+    },
+    {
+      "q_id": "gpt4_194be4b3",
+      "messages": 27,
+      "facts": 117,
+      "events": 3,
+      "errors": [],
+      "time": 530.7762229442596
+    }
+  ]
+}

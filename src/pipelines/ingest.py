@@ -92,11 +92,7 @@ _embedding_model: Optional[SentenceTransformer] = None
 def get_embedding_model() -> SentenceTransformer:
     global _embedding_model
     if _embedding_model is None:
-        # local_files_only=True → use cached model, no HuggingFace Hub checks
-        _embedding_model = SentenceTransformer(
-            settings.embedding_model,
-            local_files_only=True,
-        )
+        _embedding_model = SentenceTransformer(settings.embedding_model)
         logger.info("Loaded embedding model: %s", settings.embedding_model)
     return _embedding_model
 

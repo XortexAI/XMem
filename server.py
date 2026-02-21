@@ -76,22 +76,37 @@ class StepCapture(logging.Handler):
 ingest_pipeline: IngestPipeline | None = None
 retrieval_pipeline: RetrievalPipeline | None = None
 _pipelines_ready = asyncio.Event()
+_init_error: str | None = None
 
 
 def _init_pipelines_sync() -> None:
     """Heavy synchronous init — runs in a thread so it doesn't block the event loop."""
-    global ingest_pipeline, retrieval_pipeline
-    ingest_pipeline = IngestPipeline()
-    retrieval_pipeline = RetrievalPipeline()
+    global ingest_pipeline, retrieval_pipeline, _init_error
+    try:
+        print("[init] Creating IngestPipeline...", flush=True)
+        ingest_pipeline = IngestPipeline()
+        print("[init] IngestPipeline created.", flush=True)
+
+        print("[init] Creating RetrievalPipeline...", flush=True)
+        retrieval_pipeline = RetrievalPipeline()
+        print("[init] RetrievalPipeline created.", flush=True)
+    except Exception as exc:
+        _init_error = str(exc)
+        print(f"[init] FAILED: {exc}", flush=True)
+        import traceback
+        traceback.print_exc()
 
 
 async def _init_pipelines_bg() -> None:
     """Kick off pipeline init in a thread and signal readiness when done."""
     loop = asyncio.get_running_loop()
-    print("Loading pipelines in background...")
+    print("[init] Starting background pipeline init...", flush=True)
     await loop.run_in_executor(None, _init_pipelines_sync)
     _pipelines_ready.set()
-    print("Pipelines ready")
+    if _init_error:
+        print(f"[init] Pipelines failed: {_init_error}", flush=True)
+    else:
+        print("[init] Pipelines ready!", flush=True)
 
 
 @asynccontextmanager
@@ -137,7 +152,11 @@ class RetrieveRequest(BaseModel):
 
 @app.get("/health")
 async def health():
-    return JSONResponse({"status": "ready" if _pipelines_ready.is_set() else "loading"})
+    if _init_error:
+        return JSONResponse({"status": "error", "detail": _init_error}, status_code=503)
+    if _pipelines_ready.is_set():
+        return JSONResponse({"status": "ready"})
+    return JSONResponse({"status": "loading"}, status_code=503)
 
 
 @app.get("/")
@@ -148,7 +167,10 @@ async def serve_ui():
 @app.post("/api/ingest")
 async def api_ingest(req: IngestRequest):
     """Run the ingest pipeline, return results + captured steps."""
-    await _pipelines_ready.wait()
+    if _init_error:
+        return JSONResponse({"error": f"Pipeline init failed: {_init_error}"}, status_code=503)
+    if not _pipelines_ready.is_set():
+        return JSONResponse({"error": "Pipelines are still loading, please retry in a minute."}, status_code=503)
     capture = StepCapture()
     capture.setLevel(logging.INFO)
 
@@ -243,7 +265,10 @@ async def api_ingest(req: IngestRequest):
 @app.post("/api/retrieve")
 async def api_retrieve(req: RetrieveRequest):
     """Run the retrieval pipeline, return results + captured steps."""
-    await _pipelines_ready.wait()
+    if _init_error:
+        return JSONResponse({"error": f"Pipeline init failed: {_init_error}"}, status_code=503)
+    if not _pipelines_ready.is_set():
+        return JSONResponse({"error": "Pipelines are still loading, please retry in a minute."}, status_code=503)
     capture = StepCapture()
     capture.setLevel(logging.INFO)
 

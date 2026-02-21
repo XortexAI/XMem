@@ -75,21 +75,35 @@ class StepCapture(logging.Handler):
 
 ingest_pipeline: IngestPipeline | None = None
 retrieval_pipeline: RetrievalPipeline | None = None
+_pipelines_ready = asyncio.Event()
+
+
+def _init_pipelines_sync() -> None:
+    """Heavy synchronous init — runs in a thread so it doesn't block the event loop."""
+    global ingest_pipeline, retrieval_pipeline
+    ingest_pipeline = IngestPipeline()
+    retrieval_pipeline = RetrievalPipeline()
+
+
+async def _init_pipelines_bg() -> None:
+    """Kick off pipeline init in a thread and signal readiness when done."""
+    loop = asyncio.get_running_loop()
+    print("Loading pipelines in background...")
+    await loop.run_in_executor(None, _init_pipelines_sync)
+    _pipelines_ready.set()
+    print("Pipelines ready")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global ingest_pipeline, retrieval_pipeline
-    print("🔧 Loading pipelines...")
-    ingest_pipeline = IngestPipeline()
-    retrieval_pipeline = RetrievalPipeline()
-    print("✅ Pipelines ready")
+    init_task = asyncio.create_task(_init_pipelines_bg())
     yield
+    await init_task
     if ingest_pipeline:
         ingest_pipeline.close()
     if retrieval_pipeline:
         retrieval_pipeline.close()
-    print("🔒 Pipelines closed")
+    print("Pipelines closed")
 
 
 app = FastAPI(title="Xmem Test Frontend", lifespan=lifespan)
@@ -121,6 +135,11 @@ class RetrieveRequest(BaseModel):
 # Routes
 # ═══════════════════════════════════════════════════════════════════
 
+@app.get("/health")
+async def health():
+    return JSONResponse({"status": "ready" if _pipelines_ready.is_set() else "loading"})
+
+
 @app.get("/")
 async def serve_ui():
     return FileResponse(Path(__file__).parent / "frontend" / "index.html")
@@ -129,6 +148,7 @@ async def serve_ui():
 @app.post("/api/ingest")
 async def api_ingest(req: IngestRequest):
     """Run the ingest pipeline, return results + captured steps."""
+    await _pipelines_ready.wait()
     capture = StepCapture()
     capture.setLevel(logging.INFO)
 
@@ -223,6 +243,7 @@ async def api_ingest(req: IngestRequest):
 @app.post("/api/retrieve")
 async def api_retrieve(req: RetrieveRequest):
     """Run the retrieval pipeline, return results + captured steps."""
+    await _pipelines_ready.wait()
     capture = StepCapture()
     capture.setLevel(logging.INFO)
 

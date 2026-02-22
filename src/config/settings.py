@@ -82,7 +82,7 @@ class Settings(BaseSettings):
         description="Pinecone namespace for organizing vectors"
     )
     pinecone_dimension: int = Field(
-        default=384,
+        default=768,
         description="Pinecone dimension for embeddings"
     )
     pinecone_metric: str = Field(
@@ -99,8 +99,8 @@ class Settings(BaseSettings):
     )
     
     embedding_model: str = Field(
-        default="all-MiniLM-L6-v2",
-        description="Sentence transformer model for embeddings"
+        default="gemini-embedding-001",
+        description="Google Gemini model for embeddings"
     )
 
     mongodb_uri: str = Field(

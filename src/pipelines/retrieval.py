@@ -192,7 +192,7 @@ class RetrievalPipeline:
             if "searchsummary" not in called_tools:
                 logger.info("  Auto-adding summary context (top_k=5)")
                 extra = await self._search_summary(
-                    query=query, user_id=user_id, top_k=10,
+                    query=query, user_id=user_id, top_k=20,
                 )
                 if extra:
                     sources.extend(extra)
@@ -272,7 +272,7 @@ class RetrievalPipeline:
             return await self._search_summary(
                 query=tool_args.get("query", ""),
                 user_id=user_id,
-                top_k=top_k,
+                top_k=15,
             )
         else:
             logger.warning("Unknown tool: %s (normalised: %s)", tool_name, name)

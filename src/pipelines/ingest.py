@@ -55,7 +55,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
-from sentence_transformers import SentenceTransformer
 from typing_extensions import TypedDict
 
 from src.agents.classifier import ClassifierAgent
@@ -83,29 +82,34 @@ logger = logging.getLogger("xmem.pipelines.ingest")
 
 
 # ---------------------------------------------------------------------------
-# Embedding helper — wraps SentenceTransformer into a simple callable
+# Embedding helper — wraps Google GenAI into a simple callable
 # ---------------------------------------------------------------------------
 
-_embedding_model: Optional[SentenceTransformer] = None
+from google import genai
+from google.genai import types
+
+_embedding_client: Optional[genai.Client] = None
 
 
-def get_embedding_model() -> SentenceTransformer:
-    global _embedding_model
-    if _embedding_model is None:
-        # local_files_only=True → use cached model, no HuggingFace Hub checks
-        _embedding_model = SentenceTransformer(
-            settings.embedding_model,
-            local_files_only=True,
-        )
-        logger.info("Loaded embedding model: %s", settings.embedding_model)
-    return _embedding_model
+def get_embedding_client() -> genai.Client:
+    global _embedding_client
+    if _embedding_client is None:
+        api_key_to_use = settings.gemini_api_key or None
+        _embedding_client = genai.Client(api_key=api_key_to_use) if api_key_to_use else genai.Client()
+        logger.info("Loaded embedding client for model: %s", settings.embedding_model)
+    return _embedding_client
 
 
 def embed_text(text: str) -> List[float]:
     """Embed a single text string → list of floats."""
-    model = get_embedding_model()
-    embedding = model.encode(text, convert_to_numpy=True, normalize_embeddings=True)
-    return embedding.tolist()
+    client = get_embedding_client()
+    result = client.models.embed_content(
+        model=settings.embedding_model,
+        contents=text,
+        config=types.EmbedContentConfig(output_dimensionality=settings.pinecone_dimension)
+    )
+    [embedding_obj] = result.embeddings
+    return embedding_obj.values
 
 
 # ---------------------------------------------------------------------------

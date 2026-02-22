@@ -1015,7 +1015,7 @@ class PineconeVectorStore(BaseVectorStore):
         Embed a query string and search for similar vectors.
 
         This is a convenience wrapper that:
-        1. Generates an embedding for `query_text` using SentenceTransformer.
+        1. Generates an embedding for `query_text` using Google GenAI embeddings.
         2. Delegates to the existing `search()` method.
 
         The Judge agent uses this for the *summary* domain to find existing

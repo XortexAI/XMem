@@ -68,10 +68,13 @@ from src.graph.neo4j_client import Neo4jClient
 from src.graph.schema import setup_constraints
 from src.models import get_model, get_vision_model
 from src.pipelines.weaver import Weaver
+from google import genai
+from google.genai import types
+
 from src.schemas.classification import ClassificationResult
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -84,9 +87,6 @@ logger = logging.getLogger("xmem.pipelines.ingest")
 # ---------------------------------------------------------------------------
 # Embedding helper — wraps Google GenAI into a simple callable
 # ---------------------------------------------------------------------------
-
-from google import genai
-from google.genai import types
 
 _embedding_client: Optional[genai.Client] = None
 
@@ -365,8 +365,11 @@ class IngestPipeline:
         all_facts = []
         last_result = None
 
-        for query in queries:
-            result = await self.profiler.arun({"classifier_output": query})
+        # Execute all profile queries in parallel
+        tasks = [self.profiler.arun({"classifier_output": query}) for query in queries]
+        results = await asyncio.gather(*tasks)
+
+        for result in results:
             if not result.is_empty:
                 all_facts.extend(result.facts)
                 last_result = result
@@ -403,11 +406,17 @@ class IngestPipeline:
         all_items: List[Dict[str, str]] = []
         last_result = None
 
-        for query in queries:
-            result = await self.temporal.arun({
+        # Execute all temporal queries in parallel
+        tasks = [
+            self.temporal.arun({
                 "classifier_output": query,
                 "session_datetime": session_dt,
             })
+            for query in queries
+        ]
+        results = await asyncio.gather(*tasks)
+
+        for result in results:
             if not result.is_empty:
                 event = result.event
                 all_items.append({

@@ -53,6 +53,8 @@ import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
+from google import genai
+from google.genai import types
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 from typing_extensions import TypedDict
@@ -71,7 +73,7 @@ from src.pipelines.weaver import Weaver
 from src.schemas.classification import ClassificationResult
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -84,9 +86,6 @@ logger = logging.getLogger("xmem.pipelines.ingest")
 # ---------------------------------------------------------------------------
 # Embedding helper — wraps Google GenAI into a simple callable
 # ---------------------------------------------------------------------------
-
-from google import genai
-from google.genai import types
 
 _embedding_client: Optional[genai.Client] = None
 
@@ -365,8 +364,15 @@ class IngestPipeline:
         all_facts = []
         last_result = None
 
-        for query in queries:
-            result = await self.profiler.arun({"classifier_output": query})
+        sem = asyncio.Semaphore(5)
+
+        async def _process_query(q: str):
+            async with sem:
+                return await self.profiler.arun({"classifier_output": q})
+
+        results = await asyncio.gather(*[_process_query(q) for q in queries])
+
+        for result in results:
             if not result.is_empty:
                 all_facts.extend(result.facts)
                 last_result = result
@@ -403,11 +409,18 @@ class IngestPipeline:
         all_items: List[Dict[str, str]] = []
         last_result = None
 
-        for query in queries:
-            result = await self.temporal.arun({
-                "classifier_output": query,
-                "session_datetime": session_dt,
-            })
+        sem = asyncio.Semaphore(5)
+
+        async def _process_query(q: str):
+            async with sem:
+                return await self.temporal.arun({
+                    "classifier_output": q,
+                    "session_datetime": session_dt,
+                })
+
+        results = await asyncio.gather(*[_process_query(q) for q in queries])
+
+        for result in results:
             if not result.is_empty:
                 event = result.event
                 all_items.append({

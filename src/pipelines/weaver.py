@@ -11,7 +11,7 @@ No LLM involved — just structured execution with guard rails.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.schemas.judge import (
     JudgeDomain,
@@ -76,15 +76,102 @@ class Weaver:
             logger.info("Nothing to execute — all NOOPs or empty.")
             return result
 
-        for op in judge_result.operations:
-            executed = await self._execute_one(op, domain, user_id)
-            result.executed.append(executed)
+        # Temporal domain: execute individually as before
+        if domain == JudgeDomain.TEMPORAL:
+            for op in judge_result.operations:
+                executed = await self._execute_one(op, domain, user_id)
+                result.executed.append(executed)
+            self._log_summary(domain, result)
+            return result
+
+        # Vector domains (Profile/Summary): attempt batch execution
+
+        # We preserve the order of results in result.executed by executing
+        # groups but placing results back into their original index slots.
+        executed_ops: Dict[int, ExecutedOp] = {}
+
+        # Group operations
+        adds: List[Tuple[int, Operation]] = []
+        deletes: List[Tuple[int, Operation]] = []
+        updates: List[Tuple[int, Operation]] = []
+        others: List[Tuple[int, Operation]] = [] # NOOPs, invalid, etc.
+
+        for i, op in enumerate(judge_result.operations):
+            # Pre-validate logic mirroring _execute_one
+            if op.type == OperationType.NOOP:
+                others.append((i, op))
+                continue
+
+            if op.type == OperationType.ADD:
+                if not op.content:
+                    # Will be handled (and skipped) by individual execution fallback logic
+                    others.append((i, op))
+                else:
+                    adds.append((i, op))
+                continue
+
+            if op.type == OperationType.UPDATE:
+                if not op.embedding_id:
+                     # Upsert logic: treat as ADD
+                     logger.warning(
+                        "UPDATE missing embedding_id — converting to ADD.",
+                     )
+                     new_op = op.model_copy(update={"type": OperationType.ADD, "embedding_id": None})
+                     adds.append((i, new_op))
+                else:
+                    updates.append((i, op))
+                continue
+
+            if op.type == OperationType.DELETE:
+                if not op.embedding_id:
+                     # Invalid DELETE: missing ID -> treat as others (skipped later)
+                     others.append((i, op))
+                else:
+                    deletes.append((i, op))
+                continue
+
+            others.append((i, op))
+
+        # Execute ADD batch
+        if adds:
+            batch_results = await self._execute_vector_add_batch([op for _, op in adds], domain, user_id)
+            for (idx, _), res in zip(adds, batch_results):
+                executed_ops[idx] = res
+
+        # Execute DELETE batch
+        if deletes:
+            batch_results = await self._execute_vector_delete_batch([op for _, op in deletes])
+            for (idx, _), res in zip(deletes, batch_results):
+                executed_ops[idx] = res
+
+        # Execute UPDATEs individually
+        for idx, op in updates:
+            res = await self._execute_one(op, domain, user_id)
+            executed_ops[idx] = res
+
+        # Execute others individually
+        for idx, op in others:
+            res = await self._execute_one(op, domain, user_id)
+            executed_ops[idx] = res
+
+        # Reconstruct result.executed in original order
+        for i in range(len(judge_result.operations)):
+            if i in executed_ops:
+                result.executed.append(executed_ops[i])
+            else:
+                # Should not happen if logic is correct
+                logger.error("Missing result for operation index %d", i)
+                result.executed.append(ExecutedOp(
+                    type=judge_result.operations[i].type,
+                    status=OpStatus.FAILED,
+                    error="Internal error: operation result lost during batching"
+                ))
 
         self._log_summary(domain, result)
         return result
 
     # ------------------------------------------------------------------
-    # Per-operation dispatch
+    # Per-operation dispatch (Legacy/Fallback/Individual)
     # ------------------------------------------------------------------
 
     async def _execute_one(
@@ -107,11 +194,18 @@ class Weaver:
                 error="ADD requires content",
             )
 
-        if op.type in (OperationType.UPDATE, OperationType.DELETE) and not op.embedding_id:
+        if op.type == OperationType.UPDATE and not op.embedding_id:
             logger.warning(
-                "%s missing embedding_id — converting to ADD.", op.type.value,
+                "UPDATE missing embedding_id — converting to ADD.",
             )
             op = op.model_copy(update={"type": OperationType.ADD, "embedding_id": None})
+
+        if op.type == OperationType.DELETE and not op.embedding_id:
+            logger.warning("DELETE missing embedding_id — skipping.")
+            return ExecutedOp(
+                type=op.type, status=OpStatus.SKIPPED,
+                error="DELETE requires embedding_id",
+            )
 
         # ── Route by domain ──────────────────────────────────────────
         if domain == JudgeDomain.TEMPORAL:
@@ -154,6 +248,58 @@ class Weaver:
                 content=op.content, embedding_id=op.embedding_id,
                 error=str(exc),
             )
+
+    async def _execute_vector_add_batch(
+        self, ops: List[Operation], domain: JudgeDomain, user_id: str
+    ) -> List[ExecutedOp]:
+        if not self.vector_store:
+            return [ExecutedOp(type=op.type, status=OpStatus.FAILED, content=op.content, error="No vector store attached") for op in ops]
+        if not self.embed_fn:
+            return [ExecutedOp(type=op.type, status=OpStatus.FAILED, content=op.content, error="No embed_fn provided") for op in ops]
+
+        try:
+            texts = [op.content for op in ops]
+            embeddings = [self.embed_fn(txt) for txt in texts]
+            metadatas = []
+            for txt in texts:
+                md = {"user_id": user_id, "domain": domain.value}
+                md.update(_extract_structured_metadata(txt))
+                metadatas.append(md)
+
+            ids = self.vector_store.add(texts=texts, embeddings=embeddings, metadata=metadatas)
+
+            return [
+                ExecutedOp(type=op.type, status=OpStatus.SUCCESS, content=op.content, new_id=new_id)
+                for op, new_id in zip(ops, ids)
+            ]
+        except Exception as exc:
+            logger.error("Batch ADD failed: %s. Falling back to individual execution.", exc)
+            results = []
+            for op in ops:
+                results.append(await self._vector_add(op, domain, user_id))
+            return results
+
+    async def _execute_vector_delete_batch(
+        self, ops: List[Operation]
+    ) -> List[ExecutedOp]:
+        if not self.vector_store:
+             return [ExecutedOp(type=op.type, status=OpStatus.FAILED, embedding_id=op.embedding_id, error="No vector store attached") for op in ops]
+
+        try:
+            ids = [op.embedding_id for op in ops]
+            success = self.vector_store.delete(ids=ids)
+            status = OpStatus.SUCCESS if success else OpStatus.FAILED
+
+            return [
+                ExecutedOp(type=op.type, status=status, embedding_id=op.embedding_id)
+                for op in ops
+            ]
+        except Exception as exc:
+            logger.error("Batch DELETE failed: %s. Falling back to individual execution.", exc)
+            results = []
+            for op in ops:
+                results.append(await self._vector_delete(op))
+            return results
 
     async def _vector_add(
         self, op: Operation, domain: JudgeDomain, user_id: str,
@@ -342,12 +488,12 @@ class Weaver:
 def _extract_structured_metadata(content: str) -> Dict[str, str]:
     """Extract structured metadata from profile/summary content.
 
-    For profile items formatted as ``topic / sub_topic = memo``:
-        main_content  → ``topic_subtopic``   (lowered, underscored)
-        subcontent    → ``memo``             (the actual fact)
+    For profile items formatted as topic / sub_topic = memo:
+        main_content  → topic_subtopic   (lowered, underscored)
+        subcontent    → memo             (the actual fact)
 
     For content that doesn't match the profile format the full string is
-    stored as ``subcontent`` and ``main_content`` is left empty so the
+    stored as subcontent and main_content is left empty so the
     record can still be retrieved via semantic search.
     """
     result: Dict[str, str] = {}

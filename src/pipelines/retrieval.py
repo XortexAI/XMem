@@ -21,7 +21,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -75,7 +74,7 @@ TOOLS = [SearchProfile, SearchTemporal, SearchSummary]
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _get_embed_fn() -> Callable[[str], List[float]]:
-    from src.pipelines.ingest import embed_text
+    from src.utils.embeddings import embed_text
     return embed_text
 
 

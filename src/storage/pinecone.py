@@ -1029,7 +1029,7 @@ class PineconeVectorStore(BaseVectorStore):
         Returns:
             List[SearchResult] — matched records sorted by similarity.
         """
-        from src.pipelines.ingest import embed_text
+        from src.utils.embeddings import embed_text
 
         query_embedding = embed_text(query_text)
         return self.search(

@@ -71,48 +71,17 @@ from src.pipelines.weaver import Weaver
 from src.schemas.classification import ClassificationResult
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
 from src.storage.base import BaseVectorStore, SearchResult
 from src.storage.pinecone import PineconeVectorStore
+from src.utils.embeddings import embed_text
 
 logger = logging.getLogger("xmem.pipelines.ingest")
 
 
-# ---------------------------------------------------------------------------
-# Embedding helper — wraps Google GenAI into a simple callable
-# ---------------------------------------------------------------------------
-
-from google import genai
-from google.genai import types
-
-_embedding_client: Optional[genai.Client] = None
-
-
-def get_embedding_client() -> genai.Client:
-    global _embedding_client
-    if _embedding_client is None:
-        api_key_to_use = settings.gemini_api_key or None
-        _embedding_client = genai.Client(api_key=api_key_to_use) if api_key_to_use else genai.Client()
-        logger.info("Loaded embedding client for model: %s", settings.embedding_model)
-    return _embedding_client
-
-
-def embed_text(text: str) -> List[float]:
-    """Embed a single text string → list of floats."""
-    client = get_embedding_client()
-    result = client.models.embed_content(
-        model=settings.embedding_model,
-        contents=text,
-        config=types.EmbedContentConfig(output_dimensionality=settings.pinecone_dimension)
-    )
-    [embedding_obj] = result.embeddings
-    return embedding_obj.values
-
-
-# ---------------------------------------------------------------------------
 # LangGraph state (typed dict shared across all nodes)
 # ---------------------------------------------------------------------------
 

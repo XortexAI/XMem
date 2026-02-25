@@ -20,8 +20,9 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
+from functools import partial
 import logging
-import os
 from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -263,7 +264,7 @@ class RetrievalPipeline:
                 user_id=user_id,
             )
         elif name == "searchtemporal":
-            return self._search_temporal(
+            return await self._search_temporal(
                 query=tool_args.get("query", ""),
                 user_id=user_id,
                 top_k=10,  # Return top 3 temporal events for better context
@@ -321,7 +322,7 @@ class RetrievalPipeline:
 
     # -- Temporal: Neo4j semantic search ───────────────────────────────
 
-    def _search_temporal(
+    async def _search_temporal(
         self,
         query: str,
         user_id: str,
@@ -329,11 +330,16 @@ class RetrievalPipeline:
     ) -> List[SourceRecord]:
         """Semantic search over temporal events in Neo4j."""
 
-        events = self.neo4j.search_events_by_embedding(
-            user_id=user_id,
-            query_text=query,
-            top_k=top_k,
-            similarity_threshold=0.15,
+        loop = asyncio.get_running_loop()
+        events = await loop.run_in_executor(
+            None,
+            partial(
+                self.neo4j.search_events_by_embedding,
+                user_id=user_id,
+                query_text=query,
+                top_k=top_k,
+                similarity_threshold=0.15,
+            )
         )
 
         records = []

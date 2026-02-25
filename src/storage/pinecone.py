@@ -23,6 +23,8 @@ RELATIONSHIP TO base.py:
 """
 from typing import List, Dict, Any, Optional, Final
 import uuid
+import asyncio
+from functools import partial
 
 # ----------------------------------------------------------------------------
 # THIRD-PARTY IMPORTS (with graceful degradation)
@@ -1031,11 +1033,22 @@ class PineconeVectorStore(BaseVectorStore):
         """
         from src.pipelines.ingest import embed_text
 
-        query_embedding = embed_text(query_text)
-        return self.search(
-            query_embedding=query_embedding,
-            top_k=top_k,
-            filters=filters,
+        loop = asyncio.get_running_loop()
+
+        # 1. Embed query (blocking I/O) -> run in thread pool
+        query_embedding = await loop.run_in_executor(
+            None, embed_text, query_text
+        )
+
+        # 2. Search Pinecone (blocking I/O) -> run in thread pool
+        return await loop.run_in_executor(
+            None,
+            partial(
+                self.search,
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filters=filters,
+            ),
         )
 
     # ========================================================================

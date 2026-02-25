@@ -365,8 +365,16 @@ class IngestPipeline:
         all_facts = []
         last_result = None
 
-        for query in queries:
-            result = await self.profiler.arun({"classifier_output": query})
+        sem = asyncio.Semaphore(5)
+
+        async def _run(q: str) -> ProfileResult:
+            async with sem:
+                return await self.profiler.arun({"classifier_output": q})
+
+        tasks = [_run(q) for q in queries]
+        results = await asyncio.gather(*tasks)
+
+        for result in results:
             if not result.is_empty:
                 all_facts.extend(result.facts)
                 last_result = result
@@ -403,11 +411,19 @@ class IngestPipeline:
         all_items: List[Dict[str, str]] = []
         last_result = None
 
-        for query in queries:
-            result = await self.temporal.arun({
-                "classifier_output": query,
-                "session_datetime": session_dt,
-            })
+        sem = asyncio.Semaphore(5)
+
+        async def _run(q: str) -> EventResult:
+            async with sem:
+                return await self.temporal.arun({
+                    "classifier_output": q,
+                    "session_datetime": session_dt,
+                })
+
+        tasks = [_run(q) for q in queries]
+        results = await asyncio.gather(*tasks)
+
+        for result in results:
             if not result.is_empty:
                 event = result.event
                 all_items.append({
@@ -419,7 +435,6 @@ class IngestPipeline:
                     "date_expression": event.date_expression or "",
                 })
                 last_result = result
-
         if not all_items:
             return {"status": "no_temporal_event"}
 

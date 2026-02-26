@@ -141,6 +141,10 @@ class Settings(BaseSettings):
         default=60,
         description="Rate limit (requests per minute)"
     )
+    max_request_body_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        description="Maximum request body size in bytes (default 10MB)"
+    )
 
     opik_api_key: Optional[str] = Field(
         default=None,

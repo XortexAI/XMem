@@ -76,12 +76,189 @@ class Weaver:
             logger.info("Nothing to execute — all NOOPs or empty.")
             return result
 
-        for op in judge_result.operations:
-            executed = await self._execute_one(op, domain, user_id)
-            result.executed.append(executed)
+        # Optimization: Batch vector operations if possible
+        if domain != JudgeDomain.TEMPORAL and self.vector_store:
+            batched_executed = await self._execute_batched_vector(judge_result.operations, domain, user_id)
+            result.executed.extend(batched_executed)
+        else:
+            for op in judge_result.operations:
+                executed = await self._execute_one(op, domain, user_id)
+                result.executed.append(executed)
 
         self._log_summary(domain, result)
         return result
+
+    async def _execute_batched_vector(
+        self,
+        operations: List[Operation],
+        domain: JudgeDomain,
+        user_id: str,
+    ) -> List[ExecutedOp]:
+        """Batch ADD and DELETE operations to reduce vector store round-trips."""
+        executed_ops: List[ExecutedOp] = []
+
+        # Batch containers
+        add_batch_ops: List[Operation] = []
+        delete_batch_ops: List[Operation] = []
+
+        if not self.embed_fn:
+            logger.error("Cannot batch execute vector ops: No embed_fn provided")
+            # Fallback to failing individual ops is handled if we just return empty
+            # or we can construct failed ops.
+            # But wait, if no embed_fn, _vector_add fails too.
+            # We can just return failed ops for all.
+            return [
+                ExecutedOp(type=op.type, status=OpStatus.FAILED, error="No embed_fn provided")
+                for op in operations
+            ]
+
+        async def flush_add_batch():
+            if not add_batch_ops:
+                return
+
+            # Prepare data for batch add
+            valid_ops = []
+            texts = []
+            embeddings = []
+            metadatas = []
+
+            for op in add_batch_ops:
+                if not op.content:
+                    logger.warning("ADD with empty content — skipping.")
+                    executed_ops.append(ExecutedOp(
+                        type=op.type, status=OpStatus.SKIPPED,
+                        error="ADD requires content",
+                    ))
+                    continue
+
+                try:
+                    emb = self.embed_fn(op.content)
+                    meta = {"user_id": user_id, "domain": domain.value}
+                    meta.update(_extract_structured_metadata(op.content))
+
+                    valid_ops.append(op)
+                    texts.append(op.content)
+                    embeddings.append(emb)
+                    metadatas.append(meta)
+                except Exception as exc:
+                    logger.error("Embedding generation failed for ADD: %s", exc)
+                    executed_ops.append(ExecutedOp(
+                        type=op.type, status=OpStatus.FAILED,
+                        content=op.content, error=str(exc)
+                    ))
+
+            if valid_ops:
+                try:
+                    ids = self.vector_store.add(
+                        texts=texts,
+                        embeddings=embeddings,
+                        metadata=metadatas,
+                    )
+                    # Map IDs back to ops
+                    for op, new_id in zip(valid_ops, ids):
+                        executed_ops.append(ExecutedOp(
+                            type=op.type, status=OpStatus.SUCCESS,
+                            content=op.content, new_id=new_id,
+                        ))
+                except Exception as exc:
+                    logger.error("Vector batch ADD failed: %s", exc)
+                    for op in valid_ops:
+                        executed_ops.append(ExecutedOp(
+                            type=op.type, status=OpStatus.FAILED,
+                            content=op.content, error=str(exc)
+                        ))
+
+            add_batch_ops.clear()
+
+        async def flush_delete_batch():
+            if not delete_batch_ops:
+                return
+
+            valid_ops = []
+            ids_to_delete = []
+
+            for op in delete_batch_ops:
+                if not op.embedding_id:
+                     # This should have been converted to ADD if it was UPDATE/DELETE,
+                     # but here we only batch explicit DELETEs or converted ones?
+                     # Wait, `_execute_one` handles conversion.
+                     # I need to handle it here too.
+                     logger.warning("DELETE missing embedding_id — skipping.")
+                     executed_ops.append(ExecutedOp(
+                        type=op.type, status=OpStatus.FAILED,
+                         error="DELETE missing embedding_id"
+                     ))
+                     continue
+
+                valid_ops.append(op)
+                ids_to_delete.append(op.embedding_id)
+
+            if valid_ops:
+                try:
+                    success = self.vector_store.delete(ids=ids_to_delete)
+                    status = OpStatus.SUCCESS if success else OpStatus.FAILED
+                    for op in valid_ops:
+                        executed_ops.append(ExecutedOp(
+                            type=op.type, status=status,
+                            embedding_id=op.embedding_id
+                        ))
+                except Exception as exc:
+                    logger.error("Vector batch DELETE failed: %s", exc)
+                    for op in valid_ops:
+                        executed_ops.append(ExecutedOp(
+                            type=op.type, status=OpStatus.FAILED,
+                            embedding_id=op.embedding_id, error=str(exc)
+                        ))
+
+            delete_batch_ops.clear()
+
+        # Iterate and group
+        for op in operations:
+            # Pre-processing (similar to _execute_one guards)
+            current_op = op
+
+            if current_op.type == OperationType.NOOP:
+                await flush_add_batch()
+                await flush_delete_batch()
+                executed_ops.append(ExecutedOp(
+                    type=current_op.type, status=OpStatus.SKIPPED, content=current_op.content,
+                    embedding_id=current_op.embedding_id,
+                ))
+                continue
+
+            # Convert missing ID UPDATE/DELETE to ADD
+            if current_op.type in (OperationType.UPDATE, OperationType.DELETE) and not current_op.embedding_id:
+                logger.warning(
+                    "%s missing embedding_id — converting to ADD.", current_op.type.value,
+                )
+                current_op = current_op.model_copy(update={"type": OperationType.ADD, "embedding_id": None})
+
+            # Now route to batches
+            if current_op.type == OperationType.ADD:
+                await flush_delete_batch()
+                add_batch_ops.append(current_op)
+
+            elif current_op.type == OperationType.DELETE:
+                await flush_add_batch()
+                delete_batch_ops.append(current_op)
+
+            elif current_op.type == OperationType.UPDATE:
+                await flush_add_batch()
+                await flush_delete_batch()
+                # Execute individual UPDATE
+                executed_ops.append(await self._execute_one(current_op, domain, user_id))
+
+            else:
+                 # Fallback for unknown types
+                 await flush_add_batch()
+                 await flush_delete_batch()
+                 executed_ops.append(await self._execute_one(current_op, domain, user_id))
+
+        # Final flush
+        await flush_add_batch()
+        await flush_delete_batch()
+
+        return executed_ops
 
     # ------------------------------------------------------------------
     # Per-operation dispatch

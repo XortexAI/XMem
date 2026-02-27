@@ -1,5 +1,8 @@
 """
 Health-check endpoint — unauthenticated, used by load balancers and probes.
+
+Wraps the response in the standard APIEnvelope so that SDK clients
+(which read ``body.data``) can parse it consistently.
 """
 
 from __future__ import annotations
@@ -10,14 +13,13 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from src.api.dependencies import get_init_error, get_startup_time, is_ready
-from src.api.schemas import HealthResponse
+from src.api.schemas import APIResponse, HealthResponse, StatusEnum
 
 router = APIRouter(tags=["health"])
 
 
 @router.get(
     "/health",
-    response_model=HealthResponse,
     summary="Liveness / readiness probe",
 )
 async def health_check():
@@ -25,11 +27,15 @@ async def health_check():
     ready = is_ready()
     uptime = round(time.time() - get_startup_time(), 1) if get_startup_time() else None
 
-    resp = HealthResponse(
+    health = HealthResponse(
         status="ready" if ready else ("error" if error else "loading"),
         pipelines_ready=ready,
         uptime_seconds=uptime,
         error=error,
     )
+    envelope = APIResponse(
+        status=StatusEnum.OK if ready else StatusEnum.ERROR,
+        data=health.model_dump(),
+    )
     code = 200 if ready else 503
-    return JSONResponse(content=resp.model_dump(), status_code=code)
+    return JSONResponse(content=envelope.model_dump(), status_code=code)

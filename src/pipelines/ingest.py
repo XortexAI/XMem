@@ -362,11 +362,21 @@ class IngestPipeline:
         queries = state.get("profile_queries", [])
         user_id = state.get("user_id", "default")
 
+        # Use asyncio.gather combined with asyncio.Semaphore to parallelize extraction
+        # while limiting concurrency to prevent rate limits
+        semaphore = asyncio.Semaphore(5)
+
+        async def _bounded_arun(query: str):
+            async with semaphore:
+                return await self.profiler.arun({"classifier_output": query})
+
+        tasks = [_bounded_arun(query) for query in queries]
+        results = await asyncio.gather(*tasks)
+
         all_facts = []
         last_result = None
 
-        for query in queries:
-            result = await self.profiler.arun({"classifier_output": query})
+        for result in results:
             if not result.is_empty:
                 all_facts.extend(result.facts)
                 last_result = result
@@ -400,14 +410,24 @@ class IngestPipeline:
         user_id = state.get("user_id", "default")
         session_dt = state.get("session_datetime", "")
 
+        # Use asyncio.gather combined with asyncio.Semaphore to parallelize extraction
+        # while limiting concurrency to prevent rate limits
+        semaphore = asyncio.Semaphore(5)
+
+        async def _bounded_arun(query: str):
+            async with semaphore:
+                return await self.temporal.arun({
+                    "classifier_output": query,
+                    "session_datetime": session_dt,
+                })
+
+        tasks = [_bounded_arun(query) for query in queries]
+        results = await asyncio.gather(*tasks)
+
         all_items: List[Dict[str, str]] = []
         last_result = None
 
-        for query in queries:
-            result = await self.temporal.arun({
-                "classifier_output": query,
-                "session_datetime": session_dt,
-            })
+        for result in results:
             if not result.is_empty:
                 event = result.event
                 all_items.append({

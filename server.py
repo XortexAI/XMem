@@ -153,10 +153,10 @@ class RetrieveRequest(BaseModel):
 @app.get("/health")
 async def health():
     if _init_error:
-        return JSONResponse({"status": "error", "detail": _init_error}, status_code=503)
+        return JSONResponse({"status": "error", "data": {"status": "error", "pipelines_ready": False, "version": "", "error": _init_error}}, status_code=503)
     if _pipelines_ready.is_set():
-        return JSONResponse({"status": "ready"})
-    return JSONResponse({"status": "loading"}, status_code=503)
+        return JSONResponse({"status": "ok", "data": {"status": "ready", "pipelines_ready": True, "version": "1.0.0"}})
+    return JSONResponse({"status": "ok", "data": {"status": "loading", "pipelines_ready": False, "version": "1.0.0"}}, status_code=503)
 
 
 @app.get("/")

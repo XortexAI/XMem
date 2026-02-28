@@ -71,7 +71,7 @@ from src.pipelines.weaver import Weaver
 from src.schemas.classification import ClassificationResult
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -364,9 +364,15 @@ class IngestPipeline:
 
         all_facts = []
         last_result = None
+        sem = asyncio.Semaphore(5)
 
-        for query in queries:
-            result = await self.profiler.arun({"classifier_output": query})
+        async def _extract_profile(query: str):
+            async with sem:
+                return await self.profiler.arun({"classifier_output": query})
+
+        results = await asyncio.gather(*[_extract_profile(q) for q in queries])
+
+        for result in results:
             if not result.is_empty:
                 all_facts.extend(result.facts)
                 last_result = result
@@ -402,12 +408,18 @@ class IngestPipeline:
 
         all_items: List[Dict[str, str]] = []
         last_result = None
+        sem = asyncio.Semaphore(5)
 
-        for query in queries:
-            result = await self.temporal.arun({
-                "classifier_output": query,
-                "session_datetime": session_dt,
-            })
+        async def _extract_temporal(query: str):
+            async with sem:
+                return await self.temporal.arun({
+                    "classifier_output": query,
+                    "session_datetime": session_dt,
+                })
+
+        results = await asyncio.gather(*[_extract_temporal(q) for q in queries])
+
+        for result in results:
             if not result.is_empty:
                 event = result.event
                 all_items.append({

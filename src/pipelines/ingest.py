@@ -50,6 +50,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -71,7 +72,7 @@ from src.pipelines.weaver import Weaver
 from src.schemas.classification import ClassificationResult
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -85,8 +86,10 @@ logger = logging.getLogger("xmem.pipelines.ingest")
 # Embedding helper — wraps Google GenAI into a simple callable
 # ---------------------------------------------------------------------------
 
-from google import genai
-from google.genai import types
+# fmt: off
+from google import genai  # noqa: E402
+from google.genai import types  # noqa: E402
+# fmt: on
 
 _embedding_client: Optional[genai.Client] = None
 
@@ -100,8 +103,9 @@ def get_embedding_client() -> genai.Client:
     return _embedding_client
 
 
-def embed_text(text: str) -> List[float]:
-    """Embed a single text string → list of floats."""
+@functools.lru_cache(maxsize=1024)
+def embed_text(text: str) -> tuple[float, ...]:
+    """Embed a single text string → tuple of floats (cached)."""
     client = get_embedding_client()
     result = client.models.embed_content(
         model=settings.embedding_model,
@@ -109,7 +113,7 @@ def embed_text(text: str) -> List[float]:
         config=types.EmbedContentConfig(output_dimensionality=settings.pinecone_dimension)
     )
     [embedding_obj] = result.embeddings
-    return embedding_obj.values
+    return tuple(embedding_obj.values)
 
 
 # ---------------------------------------------------------------------------

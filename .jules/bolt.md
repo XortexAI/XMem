@@ -1,0 +1,3 @@
+## 2025-03-01 - [Missing LRU Cache on Expensive External API Call]
+**Learning:** Found a critical performance bottleneck where `embed_text` in the ingestion pipeline (which makes network requests to Google GenAI for text embedding) lacked a caching mechanism. In this architecture, where operations are likely to encounter duplicate or common sentences during ingestion, failing to memoize expensive external API calls causes unnecessary latency, duplicate compute, and increases costs.
+**Action:** Always verify if deterministic external API calls (especially embedding generation or prompt retrieval) are using `functools.lru_cache` to ensure the application avoids repeated network requests and processes duplicates faster.

@@ -71,7 +71,7 @@ from src.pipelines.weaver import Weaver
 from src.schemas.classification import ClassificationResult
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -365,11 +365,21 @@ class IngestPipeline:
         all_facts = []
         last_result = None
 
-        for query in queries:
-            result = await self.profiler.arun({"classifier_output": query})
-            if not result.is_empty:
-                all_facts.extend(result.facts)
-                last_result = result
+        if queries:
+            import asyncio
+            sem = asyncio.Semaphore(5)
+
+            async def _run_query(q: str):
+                async with sem:
+                    return await self.profiler.arun({"classifier_output": q})
+
+            # Run all queries in parallel, respecting the semaphore limit
+            results = await asyncio.gather(*[_run_query(q) for q in queries])
+
+            for result in results:
+                if not result.is_empty:
+                    all_facts.extend(result.facts)
+                    last_result = result
 
         if not all_facts:
             return {"status": "no_profile_facts"}
@@ -403,22 +413,32 @@ class IngestPipeline:
         all_items: List[Dict[str, str]] = []
         last_result = None
 
-        for query in queries:
-            result = await self.temporal.arun({
-                "classifier_output": query,
-                "session_datetime": session_dt,
-            })
-            if not result.is_empty:
-                event = result.event
-                all_items.append({
-                    "date": event.date,
-                    "event_name": event.event_name or "",
-                    "desc": event.desc or "",
-                    "year": event.year or "",
-                    "time": event.time or "",
-                    "date_expression": event.date_expression or "",
-                })
-                last_result = result
+        if queries:
+            import asyncio
+            sem = asyncio.Semaphore(5)
+
+            async def _run_query(q: str):
+                async with sem:
+                    return await self.temporal.arun({
+                        "classifier_output": q,
+                        "session_datetime": session_dt,
+                    })
+
+            # Run all queries in parallel, respecting the semaphore limit
+            results = await asyncio.gather(*[_run_query(q) for q in queries])
+
+            for result in results:
+                if not result.is_empty:
+                    event = result.event
+                    all_items.append({
+                        "date": event.date,
+                        "event_name": event.event_name or "",
+                        "desc": event.desc or "",
+                        "year": event.year or "",
+                        "time": event.time or "",
+                        "date_expression": event.date_expression or "",
+                    })
+                    last_result = result
 
         if not all_items:
             return {"status": "no_temporal_event"}

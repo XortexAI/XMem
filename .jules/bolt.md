@@ -1,0 +1,3 @@
+## 2024-05-20 - [Asyncio Blocking in Pinecone Vector Store]
+**Learning:** Mixing synchronous operations inside an `async` function (e.g. `embed_text` and `self.search` inside `search_by_text`) without delegating to an executor blocks the main asyncio thread. This degrades the performance of the entire application since other asynchronous operations are paused while the synchronous function runs.
+**Action:** When implementing `async` wrappers for blocking operations, use `asyncio.get_running_loop().run_in_executor(None, sync_func)` to ensure the asynchronous nature is preserved and the main thread is kept free.

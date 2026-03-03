@@ -4,6 +4,7 @@ Weaver — deterministic executor for Judge operations.
 Takes a JudgeResult and executes each operation against the appropriate store:
   - profile / summary → Pinecone (vector store)
   - temporal → Neo4j (graph DB)
+  - code → Pinecone (annotations namespace) + Neo4j (Annotation node + ANNOTATES edge)
 
 No LLM involved — just structured execution with guard rails.
 """
@@ -40,6 +41,9 @@ GraphUpdateEventFn = Callable[..., Any]
 # async (user_id, date_str, event_name) -> bool
 GraphDeleteEventFn = Callable[..., Any]
 
+# async (org_id, content, annotation_type, ...) -> str (annotation_id)
+GraphCreateAnnotationFn = Callable[..., Any]
+
 
 # ---------------------------------------------------------------------------
 # Weaver
@@ -53,12 +57,16 @@ class Weaver:
         graph_create_event: Optional[GraphCreateEventFn] = None,
         graph_update_event: Optional[GraphUpdateEventFn] = None,
         graph_delete_event: Optional[GraphDeleteEventFn] = None,
+        code_vector_store: Optional[BaseVectorStore] = None,
+        graph_create_annotation: Optional[GraphCreateAnnotationFn] = None,
     ) -> None:
         self.vector_store = vector_store
         self.embed_fn = embed_fn
         self.graph_create_event = graph_create_event
         self.graph_update_event = graph_update_event
         self.graph_delete_event = graph_delete_event
+        self.code_vector_store = code_vector_store
+        self.graph_create_annotation = graph_create_annotation
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -116,6 +124,8 @@ class Weaver:
         # ── Route by domain ──────────────────────────────────────────
         if domain == JudgeDomain.TEMPORAL:
             return await self._execute_temporal(op, user_id)
+        elif domain == JudgeDomain.CODE:
+            return await self._execute_code(op, user_id)
         else:
             return await self._execute_vector(op, domain, user_id)
 
@@ -314,6 +324,144 @@ class Weaver:
         )
 
     # ------------------------------------------------------------------
+    # Code → Pinecone (annotations namespace) + Neo4j (Annotation node)
+    # ------------------------------------------------------------------
+
+    async def _execute_code(
+        self, op: Operation, user_id: str,
+    ) -> ExecutedOp:
+        try:
+            if op.type == OperationType.ADD:
+                return await self._code_add(op, user_id)
+            elif op.type == OperationType.UPDATE:
+                return await self._code_update(op, user_id)
+            elif op.type == OperationType.DELETE:
+                return await self._code_delete(op)
+            else:
+                return ExecutedOp(
+                    type=op.type, status=OpStatus.SKIPPED,
+                    content=op.content,
+                )
+        except Exception as exc:
+            logger.error("Code op %s failed: %s", op.type.value, exc)
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                content=op.content, embedding_id=op.embedding_id,
+                error=str(exc),
+            )
+
+    async def _code_add(self, op: Operation, user_id: str) -> ExecutedOp:
+        if not self.embed_fn:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                content=op.content, error="No embed_fn provided",
+            )
+
+        parsed = _parse_code_annotation_content(op.content)
+        store = self.code_vector_store or self.vector_store
+        if not store:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                content=op.content, error="No vector store for code domain",
+            )
+
+        embedding = self.embed_fn(op.content)
+        metadata: Dict[str, Any] = {
+            "user_id": user_id,
+            "domain": "code",
+            "annotation_type": parsed.get("annotation_type", ""),
+            "target_symbol": parsed.get("target_symbol", ""),
+            "target_file": parsed.get("target_file", ""),
+            "repo": parsed.get("repo", ""),
+            "severity": parsed.get("severity", ""),
+        }
+
+        ids = store.add(
+            texts=[op.content],
+            embeddings=[embedding],
+            metadata=[metadata],
+        )
+        new_id = ids[0] if ids else None
+
+        # Also create Neo4j annotation node + ANNOTATES edge
+        if self.graph_create_annotation:
+            try:
+                await self.graph_create_annotation(
+                    content=parsed.get("content", op.content),
+                    annotation_type=parsed.get("annotation_type", "explanation"),
+                    severity=parsed.get("severity"),
+                    author_id=user_id,
+                    repo=parsed.get("repo"),
+                    target_file=parsed.get("target_file"),
+                    target_symbol=parsed.get("target_symbol"),
+                )
+            except Exception as exc:
+                logger.warning("Neo4j annotation creation failed (vector succeeded): %s", exc)
+
+        return ExecutedOp(
+            type=op.type, status=OpStatus.SUCCESS,
+            content=op.content, new_id=new_id,
+        )
+
+    async def _code_update(self, op: Operation, user_id: str) -> ExecutedOp:
+        if not self.embed_fn:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                content=op.content, error="No embed_fn provided",
+            )
+
+        store = self.code_vector_store or self.vector_store
+        if not store:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                content=op.content, error="No vector store for code domain",
+            )
+
+        parsed = _parse_code_annotation_content(op.content)
+        embedding = self.embed_fn(op.content)
+        metadata: Dict[str, Any] = {
+            "user_id": user_id,
+            "domain": "code",
+            "annotation_type": parsed.get("annotation_type", ""),
+            "target_symbol": parsed.get("target_symbol", ""),
+            "target_file": parsed.get("target_file", ""),
+            "repo": parsed.get("repo", ""),
+            "severity": parsed.get("severity", ""),
+        }
+
+        success = store.update(
+            id=op.embedding_id,
+            text=op.content,
+            embedding=embedding,
+            metadata=metadata,
+        )
+        if success:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.SUCCESS,
+                content=op.content, embedding_id=op.embedding_id,
+            )
+        else:
+            logger.warning(
+                "UPDATE target %s not found — falling back to ADD.", op.embedding_id,
+            )
+            return await self._code_add(op, user_id)
+
+    async def _code_delete(self, op: Operation) -> ExecutedOp:
+        store = self.code_vector_store or self.vector_store
+        if not store:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                embedding_id=op.embedding_id,
+                error="No vector store for code domain",
+            )
+        success = store.delete(ids=[op.embedding_id])
+        return ExecutedOp(
+            type=op.type,
+            status=OpStatus.SUCCESS if success else OpStatus.FAILED,
+            embedding_id=op.embedding_id,
+        )
+
+    # ------------------------------------------------------------------
     # Logging
     # ------------------------------------------------------------------
 
@@ -387,4 +535,33 @@ def _parse_temporal_content(content: str) -> Dict[str, str]:
         result["time"] = parts[4]
     if len(parts) >= 6 and parts[5]:
         result["date_expression"] = parts[5]
+    return result
+
+
+def _parse_code_annotation_content(content: str) -> Dict[str, str]:
+    """Parse code annotation content formatted as pipe-delimited fields.
+
+    Expected format (from judge):
+        annotation_type | target_symbol | target_file | repo | severity | content
+
+    Falls back gracefully if the content doesn't match the expected format
+    (treats the entire string as the annotation content).
+    """
+    parts = [p.strip() for p in content.split("|")]
+    result: Dict[str, str] = {}
+
+    if len(parts) >= 6:
+        result["annotation_type"] = parts[0] or "explanation"
+        result["target_symbol"] = parts[1]
+        result["target_file"] = parts[2]
+        result["repo"] = parts[3]
+        result["severity"] = parts[4]
+        result["content"] = parts[5]
+    elif len(parts) >= 2:
+        result["annotation_type"] = parts[0] or "explanation"
+        result["content"] = " | ".join(parts[1:])
+    else:
+        result["content"] = content
+        result["annotation_type"] = "explanation"
+
     return result

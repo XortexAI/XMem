@@ -52,24 +52,28 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
+import operator
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 from sentence_transformers import SentenceTransformer
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, Annotated
 
 from src.agents.classifier import ClassifierAgent
+from src.agents.code import CodeAgent
 from src.agents.image import ImageAgent
 from src.agents.judge import JudgeAgent
 from src.agents.profiler import ProfilerAgent
 from src.agents.summarizer import SummarizerAgent
 from src.agents.temporal import TemporalAgent
 from src.config import settings
+from src.graph.code_graph_client import CodeGraphClient
 from src.graph.neo4j_client import Neo4jClient
 from src.graph.schema import setup_constraints
 from src.models import get_model, get_vision_model
 from src.pipelines.weaver import Weaver
 from src.schemas.classification import ClassificationResult
+from src.schemas.code import CodeAnnotationResult, annotations_namespace
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
 from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
@@ -120,6 +124,7 @@ class IngestState(TypedDict, total=False):
     profile_queries: List[str]      # batched profile sub-queries
     temporal_queries: List[str]     # batched temporal sub-queries
     image_queries: List[str]        # batched image sub-queries
+    code_queries: List[str]         # batched code sub-queries
 
     # ── classification ────────────────────────────────────────────────
     classification_result: ClassificationResult
@@ -129,22 +134,25 @@ class IngestState(TypedDict, total=False):
     temporal_result: EventResult
     summary_result: SummaryResult
     image_result: ImageResult
+    code_result: CodeAnnotationResult
 
     # ── judge outputs ─────────────────────────────────────────────────
     profile_judge: JudgeResult
     temporal_judge: JudgeResult
     summary_judge: JudgeResult
     image_judge: JudgeResult
+    code_judge: JudgeResult
 
     # ── weaver outputs ────────────────────────────────────────────────
     profile_weaver: WeaverResult
     temporal_weaver: WeaverResult
     summary_weaver: WeaverResult
     image_weaver: WeaverResult
+    code_weaver: WeaverResult
 
     # ── metadata ──────────────────────────────────────────────────────
-    status: str
-    errors: List[str]
+    status: Annotated[str, lambda a, b: b]
+    errors: Annotated[List[str], operator.add]
 
 
 # ---------------------------------------------------------------------------
@@ -158,8 +166,12 @@ class IngestPipeline:
         self,
         vector_store: Optional[BaseVectorStore] = None,
         neo4j_client: Optional[Neo4jClient] = None,
+        code_graph_client: Optional[CodeGraphClient] = None,
         embed_fn: Optional[Callable[[str], List[float]]] = None,
+        org_id: str = "default",
     ) -> None:
+        self.org_id = org_id
+
         # ── Embedding function ────────────────────────────────────────
         self.embed_fn = embed_fn or embed_text
 
@@ -178,7 +190,20 @@ class IngestPipeline:
             )
         logger.info("Pinecone vector store initialised.")
 
-        # ── Neo4j (graph store) ───────────────────────────────────────
+        # ── Code annotations Pinecone store (annotations namespace) ──
+        self.code_vector_store = PineconeVectorStore(
+            api_key=settings.pinecone_api_key,
+            index_name=settings.pinecone_index_name,
+            dimension=settings.pinecone_dimension,
+            metric=settings.pinecone_metric,
+            cloud=settings.pinecone_cloud,
+            region=settings.pinecone_region,
+            namespace=annotations_namespace(org_id),
+            create_if_not_exists=False,
+        )
+        logger.info("Code annotations vector store initialised (ns=%s).", annotations_namespace(org_id))
+
+        # ── Neo4j (graph store — temporal) ────────────────────────────
         if neo4j_client:
             self.neo4j = neo4j_client
         else:
@@ -196,6 +221,23 @@ class IngestPipeline:
                 logger.warning("Neo4j init (constraints/dates) failed: %s", exc)
         logger.info("Neo4j client initialised.")
 
+        # ── Neo4j (code graph) ────────────────────────────────────────
+        if code_graph_client:
+            self.code_graph = code_graph_client
+        else:
+            self.code_graph = CodeGraphClient(
+                uri=settings.neo4j_uri,
+                username=settings.neo4j_username,
+                password=settings.neo4j_password,
+                embedding_fn=self.embed_fn,
+            )
+            self.code_graph.connect()
+            try:
+                self.code_graph.setup()
+            except Exception as exc:
+                logger.warning("Code graph init (constraints) failed: %s", exc)
+        logger.info("Code graph client initialised.")
+
         # ── LLM ──────────────────────────────────────────────────────
         self.model = get_model()
 
@@ -212,6 +254,7 @@ class IngestPipeline:
         self.temporal = TemporalAgent(model=_agent_model("temporal"))
         self.summarizer = SummarizerAgent(model=_agent_model("summarizer"))
         self.image_agent = ImageAgent(model=get_vision_model())
+        self.code_agent = CodeAgent(model=_agent_model("code"))
 
         self.judge = JudgeAgent(
             model=_agent_model("judge"),
@@ -227,6 +270,8 @@ class IngestPipeline:
             graph_create_event=self._graph_create_event,
             graph_update_event=self._graph_update_event,
             graph_delete_event=self._graph_delete_event,
+            code_vector_store=self.code_vector_store,
+            graph_create_annotation=self._graph_create_annotation,
         )
 
         # ── Build graph ───────────────────────────────────────────────
@@ -277,6 +322,28 @@ class IngestPipeline:
         event_name = parts[1] if len(parts) > 1 else None
         self.neo4j.delete_event(user_id=user_id, date_str=date_str, event_name=event_name)
 
+    async def _graph_create_annotation(
+        self,
+        content: str,
+        annotation_type: str = "explanation",
+        severity: Optional[str] = None,
+        author_id: Optional[str] = None,
+        repo: Optional[str] = None,
+        target_file: Optional[str] = None,
+        target_symbol: Optional[str] = None,
+    ) -> str:
+        """Bridge for creating code annotations in the code graph."""
+        return self.code_graph.create_annotation(
+            org_id=self.org_id,
+            content=content,
+            annotation_type=annotation_type,
+            severity=severity,
+            author_id=author_id,
+            repo=repo,
+            target_file=target_file,
+            target_symbol=target_symbol,
+        )
+
     # ------------------------------------------------------------------
     # LangGraph node functions
     # ------------------------------------------------------------------
@@ -304,10 +371,11 @@ class IngestPipeline:
             "user_id": user_id,
         }))
 
-        # Batch profile, temporal, & image queries
+        # Batch profile, temporal, image, & code queries
         profile_queries: List[str] = []
         temporal_queries: List[str] = []
         image_queries: List[str] = []
+        code_queries: List[str] = []
 
         classification_result = state.get("classification_result")
         if classification_result and classification_result.classifications:
@@ -318,6 +386,8 @@ class IngestPipeline:
                     temporal_queries.append(c["query"])
                 elif c["source"] == "image":
                     image_queries.append(c["query"])
+                elif c["source"] == "code":
+                    code_queries.append(c["query"])
 
         if profile_queries:
             routes.append(Send("extract_profile", {
@@ -330,6 +400,13 @@ class IngestPipeline:
             routes.append(Send("extract_temporal", {
                 **state,
                 "temporal_queries": temporal_queries,
+                "user_id": user_id,
+            }))
+
+        if code_queries:
+            routes.append(Send("extract_code", {
+                **state,
+                "code_queries": code_queries,
                 "user_id": user_id,
             }))
 
@@ -474,6 +551,49 @@ class IngestPipeline:
             "image_weaver": weaver_result,
         }
 
+    async def _node_extract_code(self, state: IngestState) -> Dict[str, Any]:
+        """Extract code annotations from all batched code queries."""
+        queries = state.get("code_queries", [])
+        user_id = state.get("user_id", "default")
+
+        all_items: List[str] = []
+        last_result = None
+
+        for query in queries:
+            result = await self.code_agent.arun({"classifier_output": query})
+            if not result.is_empty:
+                for ann in result.annotations:
+                    parts = [
+                        ann.annotation_type.value,
+                        ann.target_symbol or "",
+                        ann.target_file or "",
+                        ann.repo or "",
+                        ann.severity.value if ann.severity else "",
+                        ann.content,
+                    ]
+                    all_items.append(" | ".join(parts))
+                last_result = result
+
+        if not all_items:
+            return {"status": "no_code_annotations"}
+
+        judge_result = await self.judge.arun({
+            "domain": JudgeDomain.CODE,
+            "new_items": all_items,
+            "user_id": user_id,
+        })
+
+        weaver_result = await self.weaver.execute(
+            judge_result=judge_result,
+            domain=JudgeDomain.CODE,
+            user_id=user_id,
+        )
+        return {
+            "code_result": last_result,
+            "code_judge": judge_result,
+            "code_weaver": weaver_result,
+        }
+
     async def _node_extract_summary(self, state: IngestState) -> Dict[str, Any]:
         result = await self.summarizer.arun({
             "user_query": state.get("user_query", ""),
@@ -521,13 +641,14 @@ class IngestPipeline:
         workflow.add_node("extract_temporal", self._node_extract_temporal)
         workflow.add_node("extract_summary", self._node_extract_summary)
         workflow.add_node("extract_image", self._node_extract_image)
+        workflow.add_node("extract_code", self._node_extract_code)
 
         # Edges
         workflow.add_edge(START, "classify")
         workflow.add_conditional_edges(
             "classify",
             self._route_after_classify,
-            ["extract_profile", "extract_temporal", "extract_summary", "extract_image"],
+            ["extract_profile", "extract_temporal", "extract_summary", "extract_image", "extract_code"],
         )
 
         # All extraction lanes → END
@@ -535,6 +656,7 @@ class IngestPipeline:
         workflow.add_edge("extract_temporal", END)
         workflow.add_edge("extract_summary", END)
         workflow.add_edge("extract_image", END)
+        workflow.add_edge("extract_code", END)
 
         return workflow.compile()
 
@@ -610,6 +732,8 @@ class IngestPipeline:
         """Release external connections."""
         if self.neo4j:
             self.neo4j.close()
+        if self.code_graph:
+            self.code_graph.close()
 
     # ------------------------------------------------------------------
     # Logging
@@ -617,7 +741,7 @@ class IngestPipeline:
 
     @staticmethod
     def _log_summary(state: Dict[str, Any]) -> None:
-        for domain in ("profile", "temporal", "summary", "image"):
+        for domain in ("profile", "temporal", "summary", "image", "code"):
             weaver_key = f"{domain}_weaver"
             wr: Optional[WeaverResult] = state.get(weaver_key)
             if wr:

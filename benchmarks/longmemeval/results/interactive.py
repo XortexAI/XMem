@@ -20,7 +20,7 @@ async def interactive_session():
     print("-" * 80)
     
     # Base user ID for the LongMemEval oracle dataset
-    base_user_id = "longmemeval_longmemeval_oracle"
+    base_user_id = "longmemeval_longmemeval_subset_10pc"
     
     while True:
         try:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -17,11 +17,16 @@ class EventData(BaseModel):
 
 
 class EventResult(BaseModel):
-    event: Optional[EventData] = Field(
-        default=None,
-        description="Extracted event data, or None if no event found",
+    events: List[EventData] = Field(
+        default_factory=list,
+        description="List of extracted event data",
     )
 
     @property
     def is_empty(self) -> bool:
-        return self.event is None
+        return len(self.events) == 0
+
+    @property
+    def event(self) -> Optional[EventData]:
+        """Backward-compatible accessor — returns the first event or None."""
+        return self.events[0] if self.events else None

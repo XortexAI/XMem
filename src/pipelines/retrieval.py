@@ -224,7 +224,15 @@ class RetrievalPipeline:
             logger.info("LLM answered without tool calls")
 
         if isinstance(answer, list):
-            answer = "\n".join(str(c) for c in answer)
+            parts = []
+            for c in answer:
+                if isinstance(c, dict) and "text" in c:
+                    parts.append(c["text"])
+                elif isinstance(c, str):
+                    parts.append(c)
+                else:
+                    parts.append(str(c))
+            answer = "\n".join(parts)
 
         confidence = min(1.0, len(sources) * 0.2) if sources else 0.1
 

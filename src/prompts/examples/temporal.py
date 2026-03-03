@@ -111,4 +111,16 @@ TEMPORAL_EXAMPLES: List[Tuple[str, str, str]] = [
         "2:32 pm on 29 January, 2023",
         "DATE: 01-28\nEVENT_NAME: Paris Trip\nYEAR: 2023\nDESC: Visited Paris\nTIME: \nDATE_EXPRESSION: yesterday",
     ),
+    # Multi-event: birthday + anniversary
+    (
+        "My birthday is on March 15th and our wedding anniversary is on July 22nd",
+        "4:04 pm on 20 January, 2023",
+        "DATE: 03-15\nEVENT_NAME: Birthday\nYEAR: \nDESC: User's birthday\nTIME: \nDATE_EXPRESSION: March 15th\n---\nDATE: 07-22\nEVENT_NAME: Wedding Anniversary\nYEAR: \nDESC: User's wedding anniversary\nTIME: \nDATE_EXPRESSION: July 22nd",
+    ),
+    # Multi-event: different event types
+    (
+        "I have a dentist appointment on January 10th at 2:30 PM and a concert on January 15th at 8 PM",
+        "12:48 am on 1 January, 2023",
+        "DATE: 01-10\nEVENT_NAME: Dentist Appointment\nYEAR: \nDESC: Scheduled dentist visit\nTIME: 2:30 PM\nDATE_EXPRESSION: January 10th\n---\nDATE: 01-15\nEVENT_NAME: Concert\nYEAR: \nDESC: Concert event\nTIME: 8 PM\nDATE_EXPRESSION: January 15th",
+    ),
 ]

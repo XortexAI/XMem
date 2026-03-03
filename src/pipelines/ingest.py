@@ -409,15 +409,16 @@ class IngestPipeline:
                 "session_datetime": session_dt,
             })
             if not result.is_empty:
-                event = result.event
-                all_items.append({
-                    "date": event.date,
-                    "event_name": event.event_name or "",
-                    "desc": event.desc or "",
-                    "year": event.year or "",
-                    "time": event.time or "",
-                    "date_expression": event.date_expression or "",
-                })
+                # Iterate over ALL events (supports multiple events per query)
+                for event in result.events:
+                    all_items.append({
+                        "date": event.date,
+                        "event_name": event.event_name or "",
+                        "desc": event.desc or "",
+                        "year": event.year or "",
+                        "time": event.time or "",
+                        "date_expression": event.date_expression or "",
+                    })
                 last_result = result
 
         if not all_items:

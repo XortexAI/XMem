@@ -15,9 +15,8 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 
 from src.api.dependencies import (
-    enforce_rate_limit,
     get_code_pipeline,
-    require_ready,
+    require_api_key,
 )
 from src.api.schemas import (
     APIResponse,
@@ -35,7 +34,7 @@ logger = logging.getLogger("xmem.api.routes.code")
 router = APIRouter(
     prefix="/v1/code",
     tags=["code"],
-    dependencies=[Depends(require_ready), Depends(enforce_rate_limit)],
+    dependencies=[Depends(require_api_key)],
 )
 
 

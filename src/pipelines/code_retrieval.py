@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from src.config import settings
 from src.graph.code_graph_client import CodeGraphClient
+from src.scanner.code_store import CodeStore
 from src.schemas.code import (
     annotations_namespace,
     directories_namespace,
@@ -92,6 +93,25 @@ class GetFileContext(BaseModel):
     repo: str = Field(description="Repository name")
 
 
+class ReadSymbolCode(BaseModel):
+    """Read the actual source code of a specific function, method, or class
+    from MongoDB. Use AFTER search_symbols finds a symbol and you need to
+    show or analyze its implementation."""
+
+    symbol_name: str = Field(description="Fully qualified symbol name, e.g. 'PaymentProcessor.process'")
+    file_path: str = Field(description="File path where the symbol is defined")
+    repo: str = Field(description="Repository name")
+
+
+class ReadFileCode(BaseModel):
+    """Read the full source code of a file from MongoDB.
+    Use when the user asks to see an entire file's contents. Prefer
+    read_symbol_code for individual functions to save context window."""
+
+    file_path: str = Field(description="File path, e.g. 'src/services/payment/processor.py'")
+    repo: str = Field(description="Repository name")
+
+
 class SearchSnippets(BaseModel):
     """Search the user's personal code snippets — algorithms, patterns, fixes,
     utility code saved from past conversations.
@@ -100,7 +120,11 @@ class SearchSnippets(BaseModel):
     query: str = Field(description="Short query describing the snippet, e.g. 'binary search in C++'")
 
 
-CODE_TOOLS = [SearchSymbols, SearchFiles, SearchAnnotations, ImpactAnalysis, GetFileContext]
+CODE_TOOLS = [
+    SearchSymbols, SearchFiles, SearchAnnotations,
+    ImpactAnalysis, GetFileContext,
+    ReadSymbolCode, ReadFileCode,
+]
 
 SNIPPET_TOOLS = [SearchSnippets]
 
@@ -147,18 +171,32 @@ AVAILABLE TOOLS
    Full file context: symbols defined + import graph.
    Use for "what's in this file?" or "what does this file depend on?"
 
+### 6. read_symbol_code(symbol_name, file_path, repo)
+   Fetch the ACTUAL source code of a function/method/class from the code store.
+   Use AFTER search_symbols or impact_analysis finds a symbol and the user
+   wants to see the real implementation — not just the summary.
+
+### 7. read_file_code(file_path, repo)
+   Fetch the FULL raw source code of a file from the code store.
+   Use when the user explicitly asks to read or see a whole file.
+   Prefer read_symbol_code for individual functions to save tokens.
+
 ═══════════════════════════════════════════════════════════════════════════
 DECISION RULES
 ═══════════════════════════════════════════════════════════════════════════
 
 1. **Specific symbol questions** → search_symbols first, then impact_analysis
    if the user wants dependency info.
-2. **Bug / issue questions** → search_annotations + search_symbols.
-3. **File / module questions** → search_files, then get_file_context for detail.
-4. **Impact / dependency questions** → impact_analysis is your primary tool.
-5. **Broad architecture questions** → search_files + search_annotations.
-6. **Multi-tool is encouraged** — combine tools for complete answers.
-7. **Don't guess** — always search before answering.
+2. **"Show me the code"** → search_symbols to find the symbol, then
+   read_symbol_code to fetch the actual source. Never guess at code.
+3. **"Show me a file"** → read_file_code to get the raw file content.
+   For large files prefer read_symbol_code for specific functions.
+4. **Bug / issue questions** → search_annotations + search_symbols.
+5. **File / module questions** → search_files, then get_file_context for detail.
+6. **Impact / dependency questions** → impact_analysis is your primary tool.
+7. **Broad architecture questions** → search_files + search_annotations.
+8. **Multi-tool is encouraged** — combine tools for complete answers.
+9. **Don't guess** — always search before answering.
 
 ═══════════════════════════════════════════════════════════════════════════
 INDEXED REPOSITORIES
@@ -211,6 +249,7 @@ class CodeRetrievalPipeline:
         org_id: str = "default",
         model: Optional[BaseChatModel] = None,
         code_graph: Optional[CodeGraphClient] = None,
+        code_store: Optional[CodeStore] = None,
         repos: Optional[List[str]] = None,
     ) -> None:
         self.org_id = org_id
@@ -241,6 +280,15 @@ class CodeRetrievalPipeline:
             self.code_graph.connect()
         else:
             self.code_graph = code_graph
+
+        # ── Code store (MongoDB — raw code) ───────────────────────────
+        if code_store is None:
+            self.code_store = CodeStore(
+                connection_string=settings.mongodb_uri,
+                database_name=settings.mongodb_database,
+            )
+        else:
+            self.code_store = code_store
 
         logger.info("CodeRetrievalPipeline initialized (org=%s)", org_id)
 
@@ -374,6 +422,17 @@ class CodeRetrievalPipeline:
                 user_id=user_id,
                 top_k=top_k,
             )
+        elif name == "readsymbolcode":
+            return self._read_symbol_code(
+                symbol_name=tool_args.get("symbol_name", ""),
+                file_path=tool_args.get("file_path", ""),
+                repo=tool_args.get("repo", "") or repo,
+            )
+        elif name == "readfilecode":
+            return self._read_file_code(
+                file_path=tool_args.get("file_path", ""),
+                repo=tool_args.get("repo", "") or repo,
+            )
         elif name == "impactanalysis":
             return self._impact_analysis(
                 symbol_name=tool_args.get("symbol_name", ""),
@@ -447,6 +506,110 @@ class CodeRetrievalPipeline:
             domain="annotation",
             top_k=top_k,
         )
+
+    # -- Read Symbol Code: MongoDB raw code fetch ───────────────────────
+
+    def _read_symbol_code(
+        self, symbol_name: str, file_path: str, repo: str,
+    ) -> List[SourceRecord]:
+        if not symbol_name or not repo:
+            return [SourceRecord(
+                domain="symbol_code",
+                content="Missing symbol_name or repo — cannot read code.",
+            )]
+
+        raw_code = self.code_store.get_symbol_code(
+            org_id=self.org_id, repo=repo,
+            file_path=file_path, symbol_name=symbol_name,
+        )
+
+        if raw_code is None:
+            logger.info("  → ReadSymbolCode [%s]: NOT FOUND in MongoDB", symbol_name)
+            return [SourceRecord(
+                domain="symbol_code",
+                content=(
+                    f"No raw code stored for `{symbol_name}` "
+                    f"in `{file_path}` ({repo}). "
+                    f"The symbol may not be indexed yet."
+                ),
+            )]
+
+        MAX_CHARS = 12_000
+        truncated = len(raw_code) > MAX_CHARS
+        code_text = raw_code[:MAX_CHARS] if truncated else raw_code
+        suffix = "\n# ... [truncated — code exceeds 12 000 chars] ..." if truncated else ""
+
+        content = (
+            f"**Source code of `{symbol_name}`** "
+            f"(`{file_path}` in `{repo}`):\n"
+            f"```\n{code_text}{suffix}\n```"
+        )
+        logger.info(
+            "  → ReadSymbolCode [%s]: %d chars%s",
+            symbol_name, len(raw_code), " (truncated)" if truncated else "",
+        )
+        return [SourceRecord(
+            domain="symbol_code",
+            content=content,
+            score=1.0,
+            metadata={
+                "symbol_name": symbol_name,
+                "file_path": file_path,
+                "repo": repo,
+                "code_length": len(raw_code),
+                "truncated": truncated,
+            },
+        )]
+
+    # -- Read File Code: MongoDB raw content fetch ─────────────────────
+
+    def _read_file_code(
+        self, file_path: str, repo: str,
+    ) -> List[SourceRecord]:
+        if not file_path or not repo:
+            return [SourceRecord(
+                domain="file_code",
+                content="Missing file_path or repo — cannot read file.",
+            )]
+
+        raw_content = self.code_store.get_file_content(
+            org_id=self.org_id, repo=repo, file_path=file_path,
+        )
+
+        if raw_content is None:
+            logger.info("  → ReadFileCode [%s]: NOT FOUND in MongoDB", file_path)
+            return [SourceRecord(
+                domain="file_code",
+                content=(
+                    f"No raw content stored for `{file_path}` in `{repo}`. "
+                    f"The file may not be indexed yet."
+                ),
+            )]
+
+        MAX_CHARS = 20_000
+        truncated = len(raw_content) > MAX_CHARS
+        code_text = raw_content[:MAX_CHARS] if truncated else raw_content
+        suffix = "\n# ... [truncated — file exceeds 20 000 chars] ..." if truncated else ""
+
+        content = (
+            f"**Full source of `{file_path}`** (`{repo}`):\n"
+            f"```\n{code_text}{suffix}\n```"
+        )
+        logger.info(
+            "  → ReadFileCode [%s]: %d chars%s",
+            file_path, len(raw_content), " (truncated)" if truncated else "",
+        )
+        return [SourceRecord(
+            domain="file_code",
+            content=content,
+            score=1.0,
+            metadata={
+                "file_path": file_path,
+                "repo": repo,
+                "code_length": len(raw_content),
+                "truncated": truncated,
+            },
+        )]
 
     # -- Snippets: user-scoped Pinecone semantic search ─────────────────
 

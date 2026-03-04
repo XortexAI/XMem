@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     summarizer_model: Optional[str] = Field(default=None, description="Model for summarizer agent")
     judge_model: Optional[str] = Field(default=None, description="Model for judge agent")
     retrieval_model: Optional[str] = Field(default=None, description="Model for retrieval agent")
+    code_model: Optional[str] = Field(default=None, description="Model for code annotation agent")
 
     pinecone_api_key: str = Field(
         ...,

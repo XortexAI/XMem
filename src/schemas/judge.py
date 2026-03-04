@@ -18,6 +18,8 @@ class JudgeDomain(str, Enum):
     TEMPORAL = "temporal"
     SUMMARY = "summary"
     IMAGE = "image"
+    CODE = "code"
+    SNIPPET = "snippet"
 
 
 class Operation(BaseModel):

@@ -160,3 +160,41 @@ class SearchRequest(BaseModel):
 class SearchResponse(BaseModel):
     results: List[SourceRecord] = Field(default_factory=list)
     total: int = 0
+
+
+# ── Code retrieval (IDE mode) ─────────────────────────────────────────────
+
+class CodeQueryRequest(BaseModel):
+    """Query a codebase via the code retrieval pipeline."""
+    org_id: str = Field(..., min_length=1, max_length=256)
+    repo: str = Field(..., min_length=1, max_length=256)
+    query: str = Field(..., min_length=1, max_length=5_000)
+    user_id: str = Field(default="", max_length=256)
+    top_k: int = Field(default=10, ge=1, le=50)
+
+    @field_validator("query")
+    @classmethod
+    def strip_code_query(cls, v: str) -> str:
+        return v.strip()
+
+
+class CodeQueryResponse(BaseModel):
+    answer: str = ""
+    sources: List[SourceRecord] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
+class DirectoryNode(BaseModel):
+    name: str
+    type: str = "file"
+    path: str = ""
+    children: List["DirectoryNode"] = Field(default_factory=list)
+
+
+class DirectoryTreeResponse(BaseModel):
+    repo: str
+    tree: DirectoryNode
+
+
+class RepoListResponse(BaseModel):
+    repos: List[str] = Field(default_factory=list)

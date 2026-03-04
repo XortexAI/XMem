@@ -284,8 +284,8 @@ class CodeRetrievalPipeline:
         # ── Code store (MongoDB — raw code) ───────────────────────────
         if code_store is None:
             self.code_store = CodeStore(
-                connection_string=settings.mongodb_uri,
-                database_name=settings.mongodb_database,
+                uri=settings.mongodb_uri,
+                database=settings.mongodb_database,
             )
         else:
             self.code_store = code_store

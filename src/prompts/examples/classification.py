@@ -249,4 +249,29 @@ CLASSIFICATION_EXAMPLES: List[Tuple[str, List[Classification]]] = [
             {"source": "profile", "query": "my son loves dinosaurs"}
         ]
     ),
+    # Multi-event: two events with different dates
+    (
+        "My birthday is on March 15th and our wedding anniversary is on July 22nd",
+        [
+            {"source": "event", "query": "My birthday is on March 15th"},
+            {"source": "event", "query": "our wedding anniversary is on July 22nd"}
+        ]
+    ),
+    # Multi-event: events with profile info
+    (
+        "I started my new job at Google on January 10th and my first performance review is on April 15th",
+        [
+            {"source": "event", "query": "I started my new job at Google on January 10th"},
+            {"source": "event", "query": "my first performance review is on April 15th"},
+            {"source": "profile", "query": "I work at Google"}
+        ]
+    ),
+    # Multi-event: relative dates
+    (
+        "I went to the gym yesterday and I have a doctor appointment tomorrow",
+        [
+            {"source": "event", "query": "I went to the gym yesterday"},
+            {"source": "event", "query": "I have a doctor appointment tomorrow"}
+        ]
+    ),
 ]

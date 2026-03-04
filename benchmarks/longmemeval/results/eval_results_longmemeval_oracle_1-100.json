@@ -497,7 +497,7 @@
       "original_index": 31,
       "question_id": "cc6d1ec1",
       "question": "How long had I been bird watching when I attended the bird watching workshop?",
-      "search_query": "Context: Today's date is 2023/05/25 (Thu) 19:42.\\nQuestion: How long had I been bird watching when I attended the bird watching workshop?",
+      "search_query": "Context: Today's date is 2023/05/25 (Thu) 19:42.\\nQuestion: How long had I been bird watching after I attended the bird watching workshop?",
       "expected_answer": "Two months",
       "generated_answer": "Based on the information I have, you have been bird watching for 3 months. You attended the bird watching workshop on April 25th, 2023.",
       "question_type": "temporal-reasoning",

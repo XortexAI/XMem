@@ -48,9 +48,10 @@ def get_judge_model() -> ChatGoogleGenerativeAI:
     global _judge_model
     if _judge_model is None:
         _judge_model = ChatGoogleGenerativeAI(
-            model="gemini-2.5-pro",
+            model="gemini-3-flash-preview",
             google_api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
-            temperature=0.0
+            temperature=0.0,
+            thinking_level="medium",
         )
     return _judge_model
 
@@ -58,7 +59,15 @@ def get_judge_model() -> ChatGoogleGenerativeAI:
 def _parse_judge_response(content: str) -> float:
     """Parse judge response and return 1.0 for CORRECT, 0.0 for WRONG."""
     if isinstance(content, list):
-        content = "\n".join([str(c) for c in content])
+        parts = []
+        for c in content:
+            if isinstance(c, dict) and "text" in c:
+                parts.append(c["text"])
+            elif isinstance(c, str):
+                parts.append(c)
+            else:
+                parts.append(str(c))
+        content = "\n".join(parts)
     
     json_match = re.search(r'\{[^}]+\}', content)
     if json_match:

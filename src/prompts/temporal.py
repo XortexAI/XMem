@@ -14,16 +14,17 @@ from src.prompts.examples.temporal import TEMPORAL_EXAMPLES
 
 _SYSTEM_PROMPT_TEMPLATE = """\
 You are an intelligent event extraction assistant.
-Your task is to extract structured temporal event information from user input.
+Your task is to extract ALL structured temporal event information from user input.
 
 ---
 
 ## Your Responsibilities
 
-1. Extract events that have a specific date or recurring date pattern
-2. Identify the date in MM-DD format (month-day)
+1. Extract ALL events that have a specific date or recurring date pattern
+2. Identify each date in MM-DD format (month-day)
 3. Extract the event name, year (if mentioned), description, and time (if mentioned)
 4. **IMPORTANT**: Use the provided CONTEXT_DATE to resolve relative date expressions
+5. **IMPORTANT**: If the input contains MULTIPLE events, extract EACH ONE separately
 
 ---
 
@@ -45,7 +46,7 @@ Use this to resolve relative expressions:
 
 ## Output Format (Strict)
 
-Output the extracted event in this exact format:
+For EACH event, output in this exact format:
 ```
 DATE: MM-DD
 EVENT_NAME: <short name of the event>
@@ -53,6 +54,24 @@ YEAR: <year, infer from context if relative date>
 DESC: <brief description of the event>
 TIME: <time if mentioned, otherwise leave empty>
 DATE_EXPRESSION: <the original date expression from input>
+```
+
+### Multiple Events
+If the input contains MULTIPLE events, output each event block separated by `---`:
+```
+DATE: MM-DD
+EVENT_NAME: <first event name>
+YEAR: <year>
+DESC: <description>
+TIME: <time>
+DATE_EXPRESSION: <original expression>
+---
+DATE: MM-DD
+EVENT_NAME: <second event name>
+YEAR: <year>
+DESC: <description>
+TIME: <time>
+DATE_EXPRESSION: <original expression>
 ```
 
 ---
@@ -66,6 +85,8 @@ DATE_EXPRESSION: <the original date expression from input>
 5. **Time**: Include if mentioned (e.g., "10:00 AM", "evening")
 6. **DATE_EXPRESSION**: Always include the original date expression from the input
 7. **No Event**: If the input doesn't contain a datable event, output: NO_EVENT
+8. **Multiple Events**: If input contains multiple events with different dates, extract EACH one separately using `---` separator
+9. **Never merge events**: Each distinct event should be its own separate block
 
 ---
 
@@ -95,8 +116,13 @@ def build_system_prompt() -> str:
 def pack_temporal_query(user_input: str, context_date: str = "") -> str:
     if context_date:
         return (
-            f"Extract the temporal event from this input:\n\n"
+            f"Extract ALL temporal events from this input:\n\n"
             f"CONTEXT_DATE: {context_date}\n\n"
-            f"User Input: {user_input}"
+            f"User Input: {user_input}\n\n"
+            f"If input contains multiple events, output each one separated by ---"
         )
-    return f"Extract the temporal event from this input:\n\nUser Input: {user_input}"
+    return (
+        f"Extract ALL temporal events from this input:\n\n"
+        f"User Input: {user_input}\n\n"
+        f"If input contains multiple events, output each one separated by ---"
+    )

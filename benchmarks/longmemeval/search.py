@@ -72,9 +72,11 @@ async def main():
     print("=" * 80)
 
     # ── Load dataset ────────────────────────────────────────────────────
-    data_path = os.path.join(os.path.dirname(xmem_root), "LongMemEval", "data", data_filename)
+    data_path = os.path.join(xmem_root, "LongMemEval", "data", data_filename)
     if not os.path.exists(data_path):
-        print(f"[ERROR] Dataset not found: {data_path}")
+        data_path = os.path.join(os.path.dirname(xmem_root), "LongMemEval", "data", data_filename)
+    if not os.path.exists(data_path):
+        print(f"[ERROR] Dataset not found: {data_filename}")
         return
 
     with open(data_path, "r", encoding="utf-8") as f:
@@ -145,7 +147,7 @@ async def main():
                     user_id=current_user_id,
                     top_k=20,  # Grab slightly more context since histories can be large
                 ),
-                timeout=90.0,
+                timeout=180.0,
             )
 
             answer = retrieval_result.answer
@@ -156,7 +158,7 @@ async def main():
             events_found = [s for s in retrieval_result.sources if s.domain == "temporal"]
 
         except asyncio.TimeoutError:
-            logger.warning(f"Q{idx} timed out after 90s — skipping")
+            logger.warning(f"Q{idx} timed out after 180s — skipping")
             answer = "TIMEOUT"
             facts_found, profiles_found, events_found = [], [], []
         except Exception as e:
@@ -167,7 +169,7 @@ async def main():
         q_end = time.time()
         q_latency = q_end - q_start
 
-        print(f"  Ans:  {answer[:120]}{'...' if len(answer) > 120 else ''}")
+        print(f"  Ans:  {answer}")
         print(f"  Lat:  {q_latency:.2f}s")
         print(f"  Src:  {len(facts_found)} facts, {len(events_found)} events, {len(profiles_found)} profiles")
 

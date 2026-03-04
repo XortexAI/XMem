@@ -34,5 +34,15 @@ class BaseAgent(ABC):
         response = await self.model.ainvoke(messages)
         content = response.content
         if isinstance(content, list):
-            content = "\n".join(str(c) for c in content)
+            # Gemini thinking models may return list of dicts like
+            # [{'type': 'text', 'text': '...', 'extras': {...}}]
+            parts = []
+            for c in content:
+                if isinstance(c, dict) and "text" in c:
+                    parts.append(c["text"])
+                elif isinstance(c, str):
+                    parts.append(c)
+                else:
+                    parts.append(str(c))
+            content = "\n".join(parts)
         return content

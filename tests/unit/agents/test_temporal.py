@@ -56,13 +56,15 @@ async def main():
         if result.is_empty:
             print("   (no event extracted)\n")
         else:
-            e = result.event
-            print(f"   Date:       {e.date}")
-            print(f"   Event:      {e.event_name or 'N/A'}")
-            print(f"   Year:       {e.year or 'N/A'}")
-            print(f"   Desc:       {e.desc or 'N/A'}")
-            print(f"   Time:       {e.time or 'N/A'}")
-            print(f"   Expression: {e.date_expression or 'N/A'}")
+            for i, e in enumerate(result.events, 1):
+                if len(result.events) > 1:
+                    print(f"   --- Event {i} ---")
+                print(f"   Date:       {e.date}")
+                print(f"   Event:      {e.event_name or 'N/A'}")
+                print(f"   Year:       {e.year or 'N/A'}")
+                print(f"   Desc:       {e.desc or 'N/A'}")
+                print(f"   Time:       {e.time or 'N/A'}")
+                print(f"   Expression: {e.date_expression or 'N/A'}")
             print()
 
 

@@ -96,8 +96,14 @@ async def process_messages(
     images_processed = 0
     all_facts: List[str] = []
     errors: List[str] = []
+    raw_input_chars = 0
+    stored_output_chars = 0
     
     for i, msg in enumerate(messages):
+        # Track raw input size
+        raw_input_chars += len(msg.get("text", ""))
+        raw_input_chars += len(msg.get("agent_response", ""))
+        
         try:
             # Run the ingest pipeline with conversation pair context
             result = await pipeline.run(
@@ -120,6 +126,7 @@ async def process_messages(
                 summary_result = result.get("summary_result")
                 if summary_result and not summary_result.is_empty:
                     all_facts.append(summary_result.summary)
+                    stored_output_chars += len(summary_result.summary)
             
             # Count temporal events
             temporal_weaver = result.get("temporal_weaver")
@@ -138,6 +145,8 @@ async def process_messages(
         "images_processed": images_processed,
         "all_facts": all_facts,
         "errors": errors,
+        "raw_input_chars": raw_input_chars,
+        "stored_output_chars": stored_output_chars,
     }
 
 
@@ -171,9 +180,11 @@ async def main():
     print("=" * 80)
     
     # ── Load dataset ────────────────────────────────────────────────────
-    data_path = os.path.join(os.path.dirname(xmem_root), "LongMemEval", "data", data_filename)
+    data_path = os.path.join(xmem_root, "LongMemEval", "data", data_filename)
     if not os.path.exists(data_path):
-        print(f"[ERROR] Dataset not found: {data_path}")
+        data_path = os.path.join(os.path.dirname(xmem_root), "LongMemEval", "data", data_filename)
+    if not os.path.exists(data_path):
+        print(f"[ERROR] Dataset not found: {data_filename}")
         return
         
     logger.info(f"Loading dataset: {data_path}")
@@ -236,7 +247,7 @@ async def main():
         print(f"  History: {len(sessions)} sessions")
         print(f"{'─' * 60}")
         
-        q_metrics = {"q_id": q_id, "messages": 0, "facts": 0, "events": 0, "errors": [], "time": 0}
+        q_metrics = {"q_id": q_id, "messages": 0, "facts": 0, "events": 0, "errors": [], "time": 0, "raw_input_chars": 0, "stored_output_chars": 0}
         q_start = time.time()
         
         # In LongMemEval, the history is a list of sessions. Each session is a list of turns.
@@ -256,13 +267,17 @@ async def main():
                 q_metrics["facts"] += result["facts_stored"]
                 q_metrics["events"] += result["events_stored"]
                 q_metrics["errors"].extend(result["errors"])
+                q_metrics["raw_input_chars"] += result["raw_input_chars"]
+                q_metrics["stored_output_chars"] += result["stored_output_chars"]
         
         q_time = time.time() - q_start
         q_metrics["time"] = q_time
         question_metrics.append(q_metrics)
         
+        q_ratio = (q_metrics["raw_input_chars"] / q_metrics["stored_output_chars"] if q_metrics["stored_output_chars"] > 0 else 0)
         print(f"\n    [Q{q_idx} SUMMARY]")
-        print(f"    Processed {q_metrics['messages']} pairs ➔ {q_metrics['facts']} facts, {q_metrics['events']} events ({q_time:.1f}s)")
+        print(f"    Processed {q_metrics['messages']} pairs -> {q_metrics['facts']} facts, {q_metrics['events']} events ({q_time:.1f}s)")
+        print(f"    Compression: {q_metrics['raw_input_chars']:,} chars -> {q_metrics['stored_output_chars']:,} chars ({q_ratio:.1f}x)")
         
     elapsed_time = time.time() - start_time
     
@@ -275,6 +290,11 @@ async def main():
     total_facts = sum(qm["facts"] for qm in question_metrics)
     total_events = sum(qm["events"] for qm in question_metrics)
     total_errors = sum(len(qm["errors"]) for qm in question_metrics)
+    total_raw = sum(qm["raw_input_chars"] for qm in question_metrics)
+    total_stored = sum(qm["stored_output_chars"] for qm in question_metrics)
+    raw_tokens = total_raw / 4
+    stored_tokens = total_stored / 4
+    comp_ratio = total_raw / total_stored if total_stored > 0 else 0
     
     print(f"\n  Total Processed over {len(eval_data)} isolated questions:")
     print(f"    Messages:  {total_messages}")
@@ -282,6 +302,12 @@ async def main():
     print(f"    Events:    {total_events}")
     print(f"    Errors:    {total_errors}")
     print(f"    Time:      {elapsed_time:.1f}s")
+    print(f"\n  Token Compression:")
+    print(f"    Raw input:         {total_raw:,} chars (~{raw_tokens:,.0f} tokens)")
+    print(f"    Stored memory:     {total_stored:,} chars (~{stored_tokens:,.0f} tokens)")
+    print(f"    Compression ratio: {comp_ratio:.1f}x")
+    if comp_ratio > 0:
+        print(f"    Space saved:       {((1 - 1/comp_ratio) * 100):.1f}%")
     
     # ── Save results ─────────────────────────────────────────────────────
     results_dir = os.path.join(longmem_dir, "results")
@@ -297,6 +323,11 @@ async def main():
             "total_events_stored": total_events,
             "total_errors": total_errors,
             "total_time_seconds": round(elapsed_time, 2),
+            "compression": {
+                "raw_input_chars": total_raw,
+                "stored_output_chars": total_stored,
+                "compression_ratio": round(comp_ratio, 2),
+            },
         },
         "per_question_metrics": question_metrics
     }

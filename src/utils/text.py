@@ -134,10 +134,10 @@ def parse_raw_response_to_profiles(content: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def parse_raw_response_to_event(content: str) -> dict | None:
-    """Parse the raw LLM response for temporal event extraction.
+def parse_raw_response_to_events(content: str) -> list[dict]:
+    """Parse the raw LLM response for temporal event extraction (multiple events).
 
-    Expected format::
+    Expected format for a single event::
 
         DATE: MM-DD
         EVENT_NAME: <name>
@@ -146,14 +146,37 @@ def parse_raw_response_to_event(content: str) -> dict | None:
         TIME: <time or empty>
         DATE_EXPRESSION: <original date expression>
 
-    Or simply ``NO_EVENT``.
+    Multiple events are separated by ``---``.
 
     Returns:
-        Dict with event data or *None* if no event was found.
+        List of event dicts. Empty list if no events found.
     """
     content = content.strip()
 
     if "NO_EVENT" in content.upper():
+        return []
+
+    # Split on '---' to find multiple event blocks
+    blocks = [b.strip() for b in content.split("---") if b.strip()]
+
+    events: list[dict] = []
+    for block in blocks:
+        event = _parse_single_event_block(block)
+        if event:
+            events.append(event)
+
+    # If no separator was used, try parsing the whole content as a single event
+    if not events:
+        event = _parse_single_event_block(content)
+        if event:
+            events.append(event)
+
+    return events
+
+
+def _parse_single_event_block(block: str) -> dict | None:
+    """Parse a single event block into a dict."""
+    if "NO_EVENT" in block.upper():
         return None
 
     event_data: dict = {
@@ -165,7 +188,7 @@ def parse_raw_response_to_event(content: str) -> dict | None:
         "date_expression": None,
     }
 
-    for line in content.splitlines():
+    for line in block.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -210,6 +233,29 @@ def parse_raw_response_to_event(content: str) -> dict | None:
         return None
 
     return event_data
+
+
+def parse_raw_response_to_event(content: str) -> dict | None:
+    """Parse the raw LLM response for temporal event extraction (single event).
+
+    Backward-compatible wrapper: returns the first event found, or None.
+
+    Expected format::
+
+        DATE: MM-DD
+        EVENT_NAME: <name>
+        YEAR: <year or empty>
+        DESC: <description>
+        TIME: <time or empty>
+        DATE_EXPRESSION: <original date expression>
+
+    Or simply ``NO_EVENT``.
+
+    Returns:
+        Dict with event data or *None* if no event was found.
+    """
+    events = parse_raw_response_to_events(content)
+    return events[0] if events else None
 
 
 # ---------------------------------------------------------------------------

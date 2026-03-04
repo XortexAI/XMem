@@ -42,12 +42,12 @@ try:
         print(f"  Status: {index_info.status.state}")
         
         # Check dimension matches
-        expected_dim = int(os.getenv('PINECONE_DIMENSION', '384'))
+        expected_dim = int(os.getenv('PINECONE_DIMENSION', '768'))
         if index_info.dimension != expected_dim:
             print(f"  ⚠️  WARNING: Index dimension ({index_info.dimension}) doesn't match config ({expected_dim})")
     else:
         print(f"  ⚠️  Index '{index_name}' not found. Available: {index_names}")
-        print(f"  You need to create it with dimension=384, metric=cosine")
+        print(f"  You need to create it with dimension=768, metric=cosine")
         
 except Exception as e:
     print(f"  ❌ Pinecone connection failed: {e}")
@@ -82,21 +82,30 @@ print()
 # Test embedding model
 print("🤖 Testing embedding model...")
 try:
-    from sentence_transformers import SentenceTransformer
+    from google import genai
+    from google.genai import types
     
-    model_name = os.getenv('EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
+    # model_name = os.getenv('EMBEDDING_MODEL', 'all-MiniLM-L6-v2') 
+    model_name = os.getenv('EMBEDDING_MODEL', 'gemini-embedding-001')
     print(f"  Loading model: {model_name}")
     
-    model = SentenceTransformer(model_name)
-    dim = model.get_sentence_embedding_dimension()
+    api_key_to_use = os.getenv('GEMINI_API_KEY')
+    client = genai.Client(api_key=api_key_to_use) if api_key_to_use else genai.Client()
     
     print(f"  ✅ Model loaded successfully")
-    print(f"  Dimension: {dim}")
     
     # Test embedding
     test_text = "Hello world"
-    embedding = model.encode(test_text, normalize_embeddings=True)
-    print(f"  Test embedding shape: {embedding.shape}")
+    result = client.models.embed_content(
+        model=model_name,
+        contents=test_text,
+        config=types.EmbedContentConfig(output_dimensionality=int(os.getenv('PINECONE_DIMENSION', '768')))
+    )
+    [embedding_obj] = result.embeddings
+    dim = len(embedding_obj.values)
+    
+    print(f"  Dimension: {dim}")
+    print(f"  Test embedding shape: ({dim},)")
     
 except Exception as e:
     print(f"  ❌ Embedding model failed: {e}")

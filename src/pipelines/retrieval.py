@@ -192,7 +192,7 @@ class RetrievalPipeline:
             if "searchsummary" not in called_tools:
                 logger.info("  Auto-adding summary context (top_k=5)")
                 extra = await self._search_summary(
-                    query=query, user_id=user_id, top_k=10,
+                    query=query, user_id=user_id, top_k=20,
                 )
                 if extra:
                     sources.extend(extra)
@@ -224,7 +224,15 @@ class RetrievalPipeline:
             logger.info("LLM answered without tool calls")
 
         if isinstance(answer, list):
-            answer = "\n".join(str(c) for c in answer)
+            parts = []
+            for c in answer:
+                if isinstance(c, dict) and "text" in c:
+                    parts.append(c["text"])
+                elif isinstance(c, str):
+                    parts.append(c)
+                else:
+                    parts.append(str(c))
+            answer = "\n".join(parts)
 
         confidence = min(1.0, len(sources) * 0.2) if sources else 0.1
 
@@ -272,7 +280,7 @@ class RetrievalPipeline:
             return await self._search_summary(
                 query=tool_args.get("query", ""),
                 user_id=user_id,
-                top_k=top_k,
+                top_k=15,
             )
         else:
             logger.warning("Unknown tool: %s (normalised: %s)", tool_name, name)

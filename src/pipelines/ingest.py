@@ -58,6 +58,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 from typing_extensions import TypedDict, Annotated
 
+from google import genai
+from google.genai import types
+
 from src.agents.classifier import ClassifierAgent
 from src.agents.code import CodeAgent
 from src.agents.image import ImageAgent
@@ -81,7 +84,7 @@ from src.schemas.code import (
 )
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -94,9 +97,6 @@ logger = logging.getLogger("xmem.pipelines.ingest")
 # ---------------------------------------------------------------------------
 # Embedding helper — wraps Google GenAI into a simple callable
 # ---------------------------------------------------------------------------
-
-from google import genai
-from google.genai import types
 
 _embedding_client: Optional[genai.Client] = None
 
@@ -488,11 +488,18 @@ class IngestPipeline:
         all_facts = []
         last_result = None
 
-        for query in queries:
-            result = await self.profiler.arun({"classifier_output": query})
-            if not result.is_empty:
-                all_facts.extend(result.facts)
-                last_result = result
+        sem = asyncio.Semaphore(5)
+
+        async def _run_profile(query: str):
+            async with sem:
+                return await self.profiler.arun({"classifier_output": query})
+
+        results = await asyncio.gather(*[_run_profile(q) for q in queries])
+
+        for res in results:
+            if not res.is_empty:
+                all_facts.extend(res.facts)
+                last_result = res
 
         if not all_facts:
             return {"status": "no_profile_facts"}
@@ -526,14 +533,21 @@ class IngestPipeline:
         all_items: List[Dict[str, str]] = []
         last_result = None
 
-        for query in queries:
-            result = await self.temporal.arun({
-                "classifier_output": query,
-                "session_datetime": session_dt,
-            })
-            if not result.is_empty:
+        sem = asyncio.Semaphore(5)
+
+        async def _run_temporal(query: str):
+            async with sem:
+                return await self.temporal.arun({
+                    "classifier_output": query,
+                    "session_datetime": session_dt,
+                })
+
+        results = await asyncio.gather(*[_run_temporal(q) for q in queries])
+
+        for res in results:
+            if not res.is_empty:
                 # Iterate over ALL events (supports multiple events per query)
-                for event in result.events:
+                for event in res.events:
                     all_items.append({
                         "date": event.date,
                         "event_name": event.event_name or "",
@@ -542,7 +556,7 @@ class IngestPipeline:
                         "time": event.time or "",
                         "date_expression": event.date_expression or "",
                     })
-                last_result = result
+                last_result = res
 
         if not all_items:
             return {"status": "no_temporal_event"}
@@ -614,10 +628,17 @@ class IngestPipeline:
         all_items: List[str] = []
         last_result = None
 
-        for query in queries:
-            result = await self.code_agent.arun({"classifier_output": query})
-            if not result.is_empty:
-                for ann in result.annotations:
+        sem = asyncio.Semaphore(5)
+
+        async def _run_code(query: str):
+            async with sem:
+                return await self.code_agent.arun({"classifier_output": query})
+
+        results = await asyncio.gather(*[_run_code(q) for q in queries])
+
+        for res in results:
+            if not res.is_empty:
+                for ann in res.annotations:
                     parts = [
                         ann.annotation_type.value,
                         ann.target_symbol or "",
@@ -627,7 +648,7 @@ class IngestPipeline:
                         ann.content,
                     ]
                     all_items.append(" | ".join(parts))
-                last_result = result
+                last_result = res
 
         if not all_items:
             return {"status": "no_code_annotations"}
@@ -657,10 +678,17 @@ class IngestPipeline:
         all_items: List[str] = []
         last_result = None
 
-        for query in queries:
-            result = await self.snippet_agent.arun({"classifier_output": query})
-            if not result.is_empty:
-                for snip in result.snippets:
+        sem = asyncio.Semaphore(5)
+
+        async def _run_snippet(query: str):
+            async with sem:
+                return await self.snippet_agent.arun({"classifier_output": query})
+
+        results = await asyncio.gather(*[_run_snippet(q) for q in queries])
+
+        for res in results:
+            if not res.is_empty:
+                for snip in res.snippets:
                     parts = [
                         snip.content,
                         snip.code_snippet.replace("\n", "\\n") if snip.code_snippet else "",
@@ -669,7 +697,7 @@ class IngestPipeline:
                         ",".join(snip.tags),
                     ]
                     all_items.append(" | ".join(parts))
-                last_result = result
+                last_result = res
 
         if not all_items:
             return {"status": "no_snippets"}

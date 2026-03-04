@@ -1,0 +1,3 @@
+## 2025-03-04 - Parallelize Ingestion Extraction Sub-Queries
+**Learning:** IngestPipeline extraction nodes (`_node_extract_profile`, `_node_extract_temporal`, `_node_extract_code`, `_node_extract_snippet`) process batched sub-queries sequentially by default. This creates a significant performance bottleneck when the classifier identifies multiple intents for a single query (or multiple queries for the same intent), as each sub-query waits for the previous LLM call to finish.
+**Action:** Replaced the sequential `for` loops in these extraction nodes with `asyncio.gather(*[...])` to parallelize the sub-query executions. Used an `asyncio.Semaphore(5)` to limit concurrency, preventing potential LLM API rate limits while still dramatically reducing overall extraction latency.

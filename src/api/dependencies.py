@@ -29,6 +29,7 @@ logger = logging.getLogger("xmem.api.deps")
 
 _ingest_pipeline: Optional[IngestPipeline] = None
 _retrieval_pipeline: Optional[RetrievalPipeline] = None
+_code_pipelines: dict[str, "CodeRetrievalPipeline"] = {}  # keyed by "org_id:repo"
 _pipelines_ready = asyncio.Event()
 _init_error: Optional[str] = None
 _startup_time: float = 0.0
@@ -92,6 +93,18 @@ def get_retrieval_pipeline() -> RetrievalPipeline:
             detail="Retrieval pipeline not available.",
         )
     return _retrieval_pipeline
+
+
+def get_code_pipeline(org_id: str, repo: str = "") -> "CodeRetrievalPipeline":
+    """Lazily create and cache a CodeRetrievalPipeline per org+repo."""
+    from src.pipelines.code_retrieval import CodeRetrievalPipeline
+
+    cache_key = f"{org_id}:{repo}"
+    if cache_key not in _code_pipelines:
+        repos = [repo] if repo else []
+        _code_pipelines[cache_key] = CodeRetrievalPipeline(org_id=org_id, repos=repos)
+        logger.info("Created CodeRetrievalPipeline for %s", cache_key)
+    return _code_pipelines[cache_key]
 
 
 def get_init_error() -> Optional[str]:

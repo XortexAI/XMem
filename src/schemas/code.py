@@ -159,16 +159,36 @@ class AnnotationRecord(BaseModel):
     resolved_by: Optional[str] = None
 
 
+class SnippetType(str, Enum):
+    """Category of a personal code snippet."""
+    ALGORITHM = "algorithm"
+    CONFIG = "config"
+    PATTERN = "pattern"
+    FIX = "fix"
+    UTILITY = "utility"
+    EXPLANATION = "explanation"
+
+
+class SnippetSource(str, Enum):
+    """How the snippet entered the system."""
+    CHAT = "chat"
+    PASTE = "paste"
+    FILE_UPLOAD = "file_upload"
+
+
 class SnippetRecord(BaseModel):
-    """Personal code snippet saved by a user."""
+    """Personal code snippet saved by a user (stored in {user_id}:snippets namespace)."""
     user_id: str
-    title: str
-    content: str
+    content: str                                          # NL description (embedded for search)
+    code_snippet: str = ""                                # the actual code
     language: str = ""
+    snippet_type: SnippetType = SnippetType.ALGORITHM
     tags: List[str] = Field(default_factory=list)
-    repo: Optional[str] = None
-    file_path: Optional[str] = None
+    source: SnippetSource = SnippetSource.CHAT
+    source_session_id: Optional[str] = None
     created_at: str = ""
+    last_accessed: str = ""
+    access_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +224,40 @@ class CodeAnnotationResult(BaseModel):
     @property
     def is_empty(self) -> bool:
         return len(self.annotations) == 0
+
+
+# ---------------------------------------------------------------------------
+# Single-user snippet extraction models
+# ---------------------------------------------------------------------------
+
+class ExtractedSnippet(BaseModel):
+    """A code snippet the snippet agent extracts from a user conversation."""
+    content: str = Field(
+        ..., description="Natural language description of what the code does"
+    )
+    code_snippet: str = Field(
+        default="", description="The actual code (if present in the conversation)"
+    )
+    language: str = Field(
+        default="", description="Programming language (python, cpp, java, etc.)"
+    )
+    snippet_type: SnippetType = Field(
+        default=SnippetType.ALGORITHM,
+        description="Category: algorithm, config, pattern, fix, utility, explanation",
+    )
+    tags: List[str] = Field(
+        default_factory=list,
+        description="Relevant tags for retrieval, e.g. ['dsa', 'binary-search', 'interview']",
+    )
+
+
+class SnippetExtractionResult(BaseModel):
+    """Result of the snippet agent's extraction."""
+    snippets: List[ExtractedSnippet] = Field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return len(self.snippets) == 0
 
 
 # ---------------------------------------------------------------------------

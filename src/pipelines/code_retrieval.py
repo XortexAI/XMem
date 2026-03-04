@@ -38,6 +38,7 @@ from src.schemas.code import (
     annotations_namespace,
     directories_namespace,
     files_namespace,
+    snippets_namespace,
     symbols_namespace,
 )
 from src.schemas.retrieval import RetrievalResult, SourceRecord
@@ -91,7 +92,17 @@ class GetFileContext(BaseModel):
     repo: str = Field(description="Repository name")
 
 
+class SearchSnippets(BaseModel):
+    """Search the user's personal code snippets — algorithms, patterns, fixes,
+    utility code saved from past conversations.
+    Use when the user asks about code they previously discussed or saved."""
+
+    query: str = Field(description="Short query describing the snippet, e.g. 'binary search in C++'")
+
+
 CODE_TOOLS = [SearchSymbols, SearchFiles, SearchAnnotations, ImpactAnalysis, GetFileContext]
+
+SNIPPET_TOOLS = [SearchSnippets]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -288,6 +299,7 @@ class CodeRetrievalPipeline:
 
                 records = await self._execute_tool(
                     tool_name, tool_args, repo=repo, top_k=top_k,
+                    user_id=user_id,
                 )
                 sources.extend(records)
 
@@ -335,6 +347,7 @@ class CodeRetrievalPipeline:
         tool_args: Dict[str, Any],
         repo: str,
         top_k: int,
+        user_id: str = "",
     ) -> List[SourceRecord]:
         name = tool_name.lower().replace("_", "")
 
@@ -353,6 +366,12 @@ class CodeRetrievalPipeline:
         elif name == "searchannotations":
             return await self._search_annotations(
                 query=tool_args.get("query", ""),
+                top_k=top_k,
+            )
+        elif name == "searchsnippets":
+            return await self._search_snippets(
+                query=tool_args.get("query", ""),
+                user_id=user_id,
                 top_k=top_k,
             )
         elif name == "impactanalysis":
@@ -428,6 +447,54 @@ class CodeRetrievalPipeline:
             domain="annotation",
             top_k=top_k,
         )
+
+    # -- Snippets: user-scoped Pinecone semantic search ─────────────────
+
+    async def _search_snippets(
+        self, query: str, user_id: str, top_k: int = 10,
+    ) -> List[SourceRecord]:
+        if not user_id:
+            logger.warning("search_snippets called without user_id")
+            return []
+
+        ns = snippets_namespace(user_id)
+        try:
+            store = self._get_store(ns)
+            results = await store.search_by_text(
+                query_text=query,
+                top_k=top_k,
+            )
+
+            records = []
+            for r in results:
+                meta = r.metadata or {}
+                language = meta.get("language", "")
+                snippet_type = meta.get("snippet_type", "")
+                tags = meta.get("tags", "")
+                code = meta.get("code_snippet", "")
+
+                content = f"[{snippet_type}] {r.content}"
+                if language:
+                    content += f" ({language})"
+                if tags:
+                    content += f" tags: {tags}"
+                if code:
+                    code_preview = code[:200] + "..." if len(code) > 200 else code
+                    content += f"\n```\n{code_preview}\n```"
+
+                records.append(SourceRecord(
+                    domain="snippet",
+                    content=content,
+                    score=r.score,
+                    metadata={"id": r.id, **meta},
+                ))
+
+            logger.info("  → snippets [%s]: %d results", query[:40], len(records))
+            return records
+
+        except Exception as exc:
+            logger.warning("Snippet search failed (%s): %s", ns, exc)
+            return []
 
     # -- Impact Analysis: Neo4j graph traversal ────────────────────────
 

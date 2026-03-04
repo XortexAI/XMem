@@ -5,6 +5,7 @@ from src.agents.code import CodeAgent
 from src.agents.image import ImageAgent
 from src.agents.judge import JudgeAgent
 from src.agents.profiler import ProfilerAgent
+from src.agents.snippet import SnippetAgent
 from src.agents.summarizer import SummarizerAgent
 from src.agents.temporal import TemporalAgent
 
@@ -14,6 +15,7 @@ __all__ = [
     "ImageAgent",
     "JudgeAgent",
     "ProfilerAgent",
+    "SnippetAgent",
     "SummarizerAgent",
     "TemporalAgent",
 ]

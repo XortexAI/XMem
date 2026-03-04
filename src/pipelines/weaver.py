@@ -5,6 +5,7 @@ Takes a JudgeResult and executes each operation against the appropriate store:
   - profile / summary → Pinecone (vector store)
   - temporal → Neo4j (graph DB)
   - code → Pinecone (annotations namespace) + Neo4j (Annotation node + ANNOTATES edge)
+  - snippet → Pinecone (user snippets namespace) — personal code knowledge, no graph
 
 No LLM involved — just structured execution with guard rails.
 """
@@ -59,6 +60,7 @@ class Weaver:
         graph_delete_event: Optional[GraphDeleteEventFn] = None,
         code_vector_store: Optional[BaseVectorStore] = None,
         graph_create_annotation: Optional[GraphCreateAnnotationFn] = None,
+        snippet_vector_store: Optional[BaseVectorStore] = None,
     ) -> None:
         self.vector_store = vector_store
         self.embed_fn = embed_fn
@@ -67,6 +69,7 @@ class Weaver:
         self.graph_delete_event = graph_delete_event
         self.code_vector_store = code_vector_store
         self.graph_create_annotation = graph_create_annotation
+        self.snippet_vector_store = snippet_vector_store
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -126,6 +129,8 @@ class Weaver:
             return await self._execute_temporal(op, user_id)
         elif domain == JudgeDomain.CODE:
             return await self._execute_code(op, user_id)
+        elif domain == JudgeDomain.SNIPPET:
+            return await self._execute_snippet(op, user_id)
         else:
             return await self._execute_vector(op, domain, user_id)
 
@@ -462,6 +467,132 @@ class Weaver:
         )
 
     # ------------------------------------------------------------------
+    # Snippet → Pinecone (user snippets namespace, no Neo4j)
+    # ------------------------------------------------------------------
+
+    async def _execute_snippet(
+        self, op: Operation, user_id: str,
+    ) -> ExecutedOp:
+        try:
+            if op.type == OperationType.ADD:
+                return await self._snippet_add(op, user_id)
+            elif op.type == OperationType.UPDATE:
+                return await self._snippet_update(op, user_id)
+            elif op.type == OperationType.DELETE:
+                return await self._snippet_delete(op)
+            else:
+                return ExecutedOp(
+                    type=op.type, status=OpStatus.SKIPPED,
+                    content=op.content,
+                )
+        except Exception as exc:
+            logger.error("Snippet op %s failed: %s", op.type.value, exc)
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                content=op.content, embedding_id=op.embedding_id,
+                error=str(exc),
+            )
+
+    async def _snippet_add(self, op: Operation, user_id: str) -> ExecutedOp:
+        if not self.embed_fn:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                content=op.content, error="No embed_fn provided",
+            )
+
+        store = self.snippet_vector_store or self.vector_store
+        if not store:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                content=op.content, error="No vector store for snippet domain",
+            )
+
+        parsed = _parse_snippet_content(op.content)
+        searchable = parsed.get("content", op.content)
+        embedding = self.embed_fn(searchable)
+
+        metadata: Dict[str, Any] = {
+            "user_id": user_id,
+            "domain": "snippet",
+            "code_snippet": parsed.get("code_snippet", ""),
+            "language": parsed.get("language", ""),
+            "snippet_type": parsed.get("snippet_type", "algorithm"),
+            "tags": parsed.get("tags", ""),
+            "source": "chat",
+        }
+
+        ids = store.add(
+            texts=[searchable],
+            embeddings=[embedding],
+            metadata=[metadata],
+        )
+        new_id = ids[0] if ids else None
+        return ExecutedOp(
+            type=op.type, status=OpStatus.SUCCESS,
+            content=op.content, new_id=new_id,
+        )
+
+    async def _snippet_update(self, op: Operation, user_id: str) -> ExecutedOp:
+        if not self.embed_fn:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                content=op.content, error="No embed_fn provided",
+            )
+
+        store = self.snippet_vector_store or self.vector_store
+        if not store:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                content=op.content, error="No vector store for snippet domain",
+            )
+
+        parsed = _parse_snippet_content(op.content)
+        searchable = parsed.get("content", op.content)
+        embedding = self.embed_fn(searchable)
+
+        metadata: Dict[str, Any] = {
+            "user_id": user_id,
+            "domain": "snippet",
+            "code_snippet": parsed.get("code_snippet", ""),
+            "language": parsed.get("language", ""),
+            "snippet_type": parsed.get("snippet_type", "algorithm"),
+            "tags": parsed.get("tags", ""),
+            "source": "chat",
+        }
+
+        success = store.update(
+            id=op.embedding_id,
+            text=searchable,
+            embedding=embedding,
+            metadata=metadata,
+        )
+        if success:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.SUCCESS,
+                content=op.content, embedding_id=op.embedding_id,
+            )
+        else:
+            logger.warning(
+                "UPDATE target %s not found — falling back to ADD.", op.embedding_id,
+            )
+            return await self._snippet_add(op, user_id)
+
+    async def _snippet_delete(self, op: Operation) -> ExecutedOp:
+        store = self.snippet_vector_store or self.vector_store
+        if not store:
+            return ExecutedOp(
+                type=op.type, status=OpStatus.FAILED,
+                embedding_id=op.embedding_id,
+                error="No vector store for snippet domain",
+            )
+        success = store.delete(ids=[op.embedding_id])
+        return ExecutedOp(
+            type=op.type,
+            status=OpStatus.SUCCESS if success else OpStatus.FAILED,
+            embedding_id=op.embedding_id,
+        )
+
+    # ------------------------------------------------------------------
     # Logging
     # ------------------------------------------------------------------
 
@@ -535,6 +666,39 @@ def _parse_temporal_content(content: str) -> Dict[str, str]:
         result["time"] = parts[4]
     if len(parts) >= 6 and parts[5]:
         result["date_expression"] = parts[5]
+    return result
+
+
+def _parse_snippet_content(content: str) -> Dict[str, str]:
+    """Parse snippet content formatted as pipe-delimited fields.
+
+    Expected format (from _node_extract_snippet):
+        content | code_snippet | language | snippet_type | tags
+
+    Falls back gracefully if the content doesn't match.
+    """
+    parts = [p.strip() for p in content.split(" | ")]
+    result: Dict[str, str] = {}
+
+    if len(parts) >= 5:
+        result["content"] = parts[0]
+        result["code_snippet"] = parts[1]
+        result["language"] = parts[2]
+        result["snippet_type"] = parts[3]
+        result["tags"] = parts[4]
+    elif len(parts) >= 3:
+        result["content"] = parts[0]
+        result["code_snippet"] = parts[1]
+        result["language"] = parts[2]
+        result["snippet_type"] = "algorithm"
+        result["tags"] = ""
+    else:
+        result["content"] = content
+        result["code_snippet"] = ""
+        result["language"] = ""
+        result["snippet_type"] = "algorithm"
+        result["tags"] = ""
+
     return result
 
 

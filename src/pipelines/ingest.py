@@ -64,6 +64,7 @@ from src.agents.code import CodeAgent
 from src.agents.image import ImageAgent
 from src.agents.judge import JudgeAgent
 from src.agents.profiler import ProfilerAgent
+from src.agents.snippet import SnippetAgent
 from src.agents.summarizer import SummarizerAgent
 from src.agents.temporal import TemporalAgent
 from src.config import settings
@@ -73,7 +74,12 @@ from src.graph.schema import setup_constraints
 from src.models import get_model, get_vision_model
 from src.pipelines.weaver import Weaver
 from src.schemas.classification import ClassificationResult
-from src.schemas.code import CodeAnnotationResult, annotations_namespace
+from src.schemas.code import (
+    CodeAnnotationResult,
+    SnippetExtractionResult,
+    annotations_namespace,
+    snippets_namespace,
+)
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
 from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
@@ -135,6 +141,7 @@ class IngestState(TypedDict, total=False):
     summary_result: SummaryResult
     image_result: ImageResult
     code_result: CodeAnnotationResult
+    snippet_result: SnippetExtractionResult
 
     # ── judge outputs ─────────────────────────────────────────────────
     profile_judge: JudgeResult
@@ -142,6 +149,7 @@ class IngestState(TypedDict, total=False):
     summary_judge: JudgeResult
     image_judge: JudgeResult
     code_judge: JudgeResult
+    snippet_judge: JudgeResult
 
     # ── weaver outputs ────────────────────────────────────────────────
     profile_weaver: WeaverResult
@@ -149,6 +157,7 @@ class IngestState(TypedDict, total=False):
     summary_weaver: WeaverResult
     image_weaver: WeaverResult
     code_weaver: WeaverResult
+    snippet_weaver: WeaverResult
 
     # ── metadata ──────────────────────────────────────────────────────
     status: Annotated[str, lambda a, b: b]
@@ -255,6 +264,7 @@ class IngestPipeline:
         self.summarizer = SummarizerAgent(model=_agent_model("summarizer"))
         self.image_agent = ImageAgent(model=get_vision_model())
         self.code_agent = CodeAgent(model=_agent_model("code"))
+        self.snippet_agent = SnippetAgent(model=_agent_model("code"))
 
         self.judge = JudgeAgent(
             model=_agent_model("judge"),
@@ -262,6 +272,9 @@ class IngestPipeline:
             graph_event_search=self._graph_event_search_wrapper,
             top_k=3,
         )
+
+        # Snippet stores are user-scoped — lazily created per user_id
+        self._snippet_stores: Dict[str, PineconeVectorStore] = {}
 
         # ── Weaver ────────────────────────────────────────────────────
         self.weaver = Weaver(
@@ -345,6 +358,27 @@ class IngestPipeline:
         )
 
     # ------------------------------------------------------------------
+    # User-scoped snippet store
+    # ------------------------------------------------------------------
+
+    def _get_snippet_store(self, user_id: str) -> PineconeVectorStore:
+        """Get or create a PineconeVectorStore for a user's snippets namespace."""
+        if user_id not in self._snippet_stores:
+            ns = snippets_namespace(user_id)
+            self._snippet_stores[user_id] = PineconeVectorStore(
+                api_key=settings.pinecone_api_key,
+                index_name=settings.pinecone_index_name,
+                dimension=settings.pinecone_dimension,
+                metric=settings.pinecone_metric,
+                cloud=settings.pinecone_cloud,
+                region=settings.pinecone_region,
+                namespace=ns,
+                create_if_not_exists=False,
+            )
+            logger.info("Snippet store initialised (ns=%s).", ns)
+        return self._snippet_stores[user_id]
+
+    # ------------------------------------------------------------------
     # LangGraph node functions
     # ------------------------------------------------------------------
 
@@ -404,11 +438,23 @@ class IngestPipeline:
             }))
 
         if code_queries:
-            routes.append(Send("extract_code", {
-                **state,
-                "code_queries": code_queries,
-                "user_id": user_id,
-            }))
+            # Enterprise users → team annotation extraction (Code Agent)
+            # Single users → personal snippet extraction (Snippet Agent)
+            # Tier determined by org_id: "default" means single user
+            is_enterprise = self.org_id != "default"
+
+            if is_enterprise:
+                routes.append(Send("extract_code", {
+                    **state,
+                    "code_queries": code_queries,
+                    "user_id": user_id,
+                }))
+            else:
+                routes.append(Send("extract_snippet", {
+                    **state,
+                    "code_queries": code_queries,
+                    "user_id": user_id,
+                }))
 
         # Image route
         if state.get("image_url"):
@@ -594,6 +640,51 @@ class IngestPipeline:
             "code_weaver": weaver_result,
         }
 
+    async def _node_extract_snippet(self, state: IngestState) -> Dict[str, Any]:
+        """Extract personal code snippets from all batched code queries (single-user)."""
+        queries = state.get("code_queries", [])
+        user_id = state.get("user_id", "default")
+
+        all_items: List[str] = []
+        last_result = None
+
+        for query in queries:
+            result = await self.snippet_agent.arun({"classifier_output": query})
+            if not result.is_empty:
+                for snip in result.snippets:
+                    parts = [
+                        snip.content,
+                        snip.code_snippet.replace("\n", "\\n") if snip.code_snippet else "",
+                        snip.language,
+                        snip.snippet_type.value,
+                        ",".join(snip.tags),
+                    ]
+                    all_items.append(" | ".join(parts))
+                last_result = result
+
+        if not all_items:
+            return {"status": "no_snippets"}
+
+        judge_result = await self.judge.arun({
+            "domain": JudgeDomain.SNIPPET,
+            "new_items": all_items,
+            "user_id": user_id,
+        })
+
+        # Bind the user-scoped snippet store before executing
+        self.weaver.snippet_vector_store = self._get_snippet_store(user_id)
+
+        weaver_result = await self.weaver.execute(
+            judge_result=judge_result,
+            domain=JudgeDomain.SNIPPET,
+            user_id=user_id,
+        )
+        return {
+            "snippet_result": last_result,
+            "snippet_judge": judge_result,
+            "snippet_weaver": weaver_result,
+        }
+
     async def _node_extract_summary(self, state: IngestState) -> Dict[str, Any]:
         result = await self.summarizer.arun({
             "user_query": state.get("user_query", ""),
@@ -642,13 +733,15 @@ class IngestPipeline:
         workflow.add_node("extract_summary", self._node_extract_summary)
         workflow.add_node("extract_image", self._node_extract_image)
         workflow.add_node("extract_code", self._node_extract_code)
+        workflow.add_node("extract_snippet", self._node_extract_snippet)
 
         # Edges
         workflow.add_edge(START, "classify")
         workflow.add_conditional_edges(
             "classify",
             self._route_after_classify,
-            ["extract_profile", "extract_temporal", "extract_summary", "extract_image", "extract_code"],
+            ["extract_profile", "extract_temporal", "extract_summary",
+             "extract_image", "extract_code", "extract_snippet"],
         )
 
         # All extraction lanes → END
@@ -657,6 +750,7 @@ class IngestPipeline:
         workflow.add_edge("extract_summary", END)
         workflow.add_edge("extract_image", END)
         workflow.add_edge("extract_code", END)
+        workflow.add_edge("extract_snippet", END)
 
         return workflow.compile()
 
@@ -741,7 +835,7 @@ class IngestPipeline:
 
     @staticmethod
     def _log_summary(state: Dict[str, Any]) -> None:
-        for domain in ("profile", "temporal", "summary", "image", "code"):
+        for domain in ("profile", "temporal", "summary", "image", "code", "snippet"):
             weaver_key = f"{domain}_weaver"
             wr: Optional[WeaverResult] = state.get(weaver_key)
             if wr:

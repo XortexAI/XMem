@@ -188,35 +188,30 @@ DECISION RULES
 1. **Specific symbol questions** → search_symbols first, then impact_analysis
    if the user wants dependency info.
 2. **"Show me the code"** → search_symbols to find the symbol, then
-   read_symbol_code to fetch the actual source. Never guess at code.
-3. **"Show me a file"** → read_file_code to get the raw file content.
-   For large files prefer read_symbol_code for specific functions.
+   MUST call read_symbol_code to fetch the actual source. NEVER hallucinate or guess at code based on summaries.
+3. **"Show me a file"** → MUST call read_file_code to get the raw file content.
+   NEVER generate or hallucinate file code based on summaries.
 4. **Bug / issue questions** → search_annotations + search_symbols.
 5. **File / module questions** → search_files, then get_file_context for detail.
 6. **Impact / dependency questions** → impact_analysis is your primary tool.
 7. **Broad architecture questions** → search_files + search_annotations.
 8. **Multi-tool is encouraged** — combine tools for complete answers.
 9. **Don't guess** — always search before answering.
+10. **Chain tool calls** — if one tool returns a reference (like a file path), you can call another tool (like read_file_code) in the next turn to get the full content.
+
+⚡ FAST PATH (CRITICAL FOR SPEED):
+- If the user gives an EXACT file path (e.g. "src/agents/judge.py"), call
+  read_file_code IMMEDIATELY in your FIRST turn. DO NOT search first.
+- If the user gives an exact symbol name AND file path, call read_symbol_code
+  IMMEDIATELY. DO NOT search first.
+- Only use search_symbols/search_files when the user gives a vague or partial
+  name that you need to resolve.
 
 ═══════════════════════════════════════════════════════════════════════════
-INDEXED REPOSITORIES
+ANSWERING INSTRUCTIONS
 ═══════════════════════════════════════════════════════════════════════════
 
-{repo_catalog}
-
-"""
-
-_ANSWER_PROMPT = """\
-You are a senior software engineer assistant. Answer the developer's question
-based on the retrieved code knowledge below.
-
-## Retrieved Context:
-{context}
-
-## Developer's Question:
-{query}
-
-## Instructions:
+When you have gathered enough information to fully answer the user's question, respond directly:
 1. Answer directly and technically. Developers want specifics, not fluff.
 2. Reference file paths, function names, and line numbers when available.
 3. If annotations mention bugs or warnings, highlight them prominently.
@@ -225,7 +220,13 @@ based on the retrieved code knowledge below.
 6. Use code formatting (backticks) for symbol names, file paths, and signatures.
 7. Only say "I don't have information about that" if the context is truly empty.
 
-Answer:"""
+═══════════════════════════════════════════════════════════════════════════
+INDEXED REPOSITORIES
+═══════════════════════════════════════════════════════════════════════════
+
+{repo_catalog}
+
+"""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -331,51 +332,83 @@ class CodeRetrievalPipeline:
             HumanMessage(content=query),
         ]
 
-        ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
-        logger.info("LLM tool_calls=%d", len(ai_response.tool_calls or []))
-
         sources: List[SourceRecord] = []
-        tool_messages: List[ToolMessage] = []
+        
+        MAX_TURNS = 5
+        answer = ""
+        import time as _time
+        total_start = _time.perf_counter()
+        
+        for turn in range(MAX_TURNS):
+            t0 = _time.perf_counter()
+            ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
+            llm_ms = (_time.perf_counter() - t0) * 1000
+            
+            if not ai_response.tool_calls:
+                answer = ai_response.content
+                logger.info("Turn %d: LLM answered directly (%.0fms)", turn + 1, llm_ms)
+                break
+                
+            logger.info("Turn %d: LLM tool_calls=%d (%.0fms)", turn + 1, len(ai_response.tool_calls), llm_ms)
+            messages.append(ai_response)
+            
+            turn_records: List[SourceRecord] = []
+            only_read_tools = True
 
-        if ai_response.tool_calls:
             for tc in ai_response.tool_calls:
                 tool_name = tc["name"]
                 tool_args = tc["args"]
                 tool_id = tc["id"]
 
-                logger.info("  Tool: %s(%s)", tool_name, tool_args)
-
+                t1 = _time.perf_counter()
                 records = await self._execute_tool(
                     tool_name, tool_args, repo=repo, top_k=top_k,
                     user_id=user_id,
                 )
+                tool_ms = (_time.perf_counter() - t1) * 1000
+                logger.info("  Tool: %s(%s) → %d results (%.0fms)", tool_name, tool_args, len(records), tool_ms)
+                turn_records.extend(records)
                 sources.extend(records)
 
+                # Track if this turn ONLY used read tools (no search)
+                normalized = tool_name.lower().replace("_", "")
+                if normalized not in ("readfilecode", "readsymbolcode", "getfilecontext"):
+                    only_read_tools = False
+
                 tool_result_text = self._format_tool_results(records)
-                tool_messages.append(
+                messages.append(
                     ToolMessage(content=tool_result_text, tool_call_id=tool_id)
                 )
 
-            context_text = "\n".join(tm.content for tm in tool_messages)
-            answer_prompt = _ANSWER_PROMPT.format(
-                context=context_text,
-                query=query,
-            )
-            final_response = await self.model.ainvoke(
-                [HumanMessage(content=answer_prompt)]
-            )
-            answer = final_response.content
+            # ⚡ SHORT-CIRCUIT: if the LLM only called read tools,
+            # the raw code IS the answer — skip the expensive re-output turn.
+            if only_read_tools and turn_records:
+                code_parts = []
+                for rec in turn_records:
+                    meta = rec.metadata or {}
+                    path = meta.get("file_path", "")
+                    label = f"### {path}\n" if path else ""
+                    code_parts.append(f"{label}```\n{rec.content}\n```")
+                answer = "\n\n".join(code_parts)
+                logger.info("⚡ Short-circuited — returning raw code directly (skipped LLM re-output)")
+                break
         else:
-            answer = ai_response.content
-            logger.info("LLM answered without tool calls")
+            logger.warning("Max turns (%d) reached without final answer.", MAX_TURNS)
+            answer = "I could not complete my analysis within the iteration limit. Here is what I found so far."
 
         if isinstance(answer, list):
-            answer = "\n".join(str(c) for c in answer)
+            parts = []
+            for c in answer:
+                if isinstance(c, dict):
+                    parts.append(c.get("text", ""))
+                else:
+                    parts.append(str(c))
+            answer = "\n".join(p for p in parts if p)
 
         confidence = min(1.0, len(sources) * 0.15) if sources else 0.1
 
         logger.info("=" * 60)
-        logger.info("CODE RETRIEVAL COMPLETE — %d sources", len(sources))
+        logger.info("CODE RETRIEVAL COMPLETE — %d sources (%.1fs total)", len(sources), _time.perf_counter() - total_start)
         logger.info("=" * 60)
 
         return RetrievalResult(

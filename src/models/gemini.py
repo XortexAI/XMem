@@ -25,11 +25,11 @@ def build_gemini_model(
         temperature=temperature if temperature is not None else settings.temperature,
     )
 
-    # For Gemini 3+ / 2.5 thinking models, set thinking_level to reduce latency
-    # Env var GEMINI_THINKING_LEVEL: 'low', 'medium', 'high' (default: 'low')
-    if "gemini-3" in resolved_model or "gemini-2.5" in resolved_model:
-        thinking_level = os.environ.get("GEMINI_THINKING_LEVEL", "low")
-        if thinking_level and thinking_level.lower() in ("low", "medium", "high"):
-            kwargs["thinking_level"] = thinking_level.lower()
+    # For Gemini thinking models, optionally set thinking_level.
+    # Only applied if GEMINI_THINKING_LEVEL is explicitly set in env.
+    # Values: 'low', 'medium', 'high'. If unset, no thinking config is applied.
+    thinking_level = os.environ.get("GEMINI_THINKING_LEVEL", "")
+    if thinking_level and thinking_level.lower() in ("low", "medium", "high"):
+        kwargs["thinking_level"] = thinking_level.lower()
 
     return ChatGoogleGenerativeAI(**kwargs)

@@ -277,7 +277,7 @@ class CodeStore:
 
     def get_last_commit_sha(self, org_id: str, repo: str) -> Optional[str]:
         doc = self.get_last_scan(org_id, repo)
-        return doc["last_commit_sha"] if doc else None
+        return doc.get("last_commit_sha") if doc else None
 
     def start_scan(self, org_id: str, repo: str, commit_sha: str) -> None:
         """Mark a scan as started."""

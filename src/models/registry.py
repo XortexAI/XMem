@@ -33,6 +33,7 @@ _BUILDERS = {
     "gemini": lambda **kw: _build_from_module("gemini", "build_gemini_model", **kw),
     "claude": lambda **kw: _build_from_module("claude", "build_claude_model", **kw),
     "openai": lambda **kw: _build_from_module("openai", "build_openai_model", **kw),
+    "openrouter": lambda **kw: _build_from_module("openrouter", "build_openrouter_model", **kw),
 }
 
 
@@ -40,6 +41,7 @@ _KEY_MAP = {
     "gemini": lambda: settings.gemini_api_key,
     "claude": lambda: settings.claude_api_key,
     "openai": lambda: settings.openai_api_key,
+    "openrouter": lambda: settings.openrouter_api_key,
 }
 
 
@@ -91,6 +93,7 @@ _VISION_MODEL_MAP = {
     "gemini": lambda: settings.gemini_vision_model,
     "claude": lambda: settings.claude_vision_model,
     "openai": lambda: settings.openai_vision_model,
+    "openrouter": lambda: settings.openrouter_vision_model,
 }
 
 

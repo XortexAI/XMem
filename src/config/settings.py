@@ -52,13 +52,26 @@ class Settings(BaseSettings):
         default="gpt-4.1-mini",
         description="OpenAI vision model name (must support image input)"
     )
+
+    openrouter_api_key: Optional[str] = Field(
+        default=None,
+        description="OpenRouter API key"
+    )
+    openrouter_model: str = Field(
+        default="google/gemini-2.5-flash",
+        description="OpenRouter model name (e.g. google/gemini-2.5-flash, anthropic/claude-3.5-sonnet)"
+    )
+    openrouter_vision_model: str = Field(
+        default="google/gemini-2.5-flash",
+        description="OpenRouter vision model name"
+    )
     
     temperature: float = Field(
         default=0.4,
         description="LLM temperature for generation"
     )
     fallback_order: List[str] = Field(
-        default=["gemini", "claude", "openai"],
+        default=["openrouter", "gemini", "claude", "openai"],
         description="Order of LLM providers to try on failure"
     )
 
@@ -167,7 +180,7 @@ class Settings(BaseSettings):
     @field_validator("fallback_order")
     @classmethod
     def validate_fallback_order(cls, v: List[str]) -> List[str]:
-        valid_providers = {"gemini", "claude", "openai"}
+        valid_providers = {"gemini", "claude", "openai", "openrouter"}
         for provider in v:
             if provider not in valid_providers:
                 raise ValueError(
@@ -178,8 +191,8 @@ class Settings(BaseSettings):
      
     def model_post_init(self, __context) -> None:
         """Validate that at least one LLM API key is provided."""
-        if not any([self.gemini_api_key, self.claude_api_key, self.openai_api_key]):
+        if not any([self.gemini_api_key, self.claude_api_key, self.openai_api_key, self.openrouter_api_key]):
             raise ValueError(
                 "At least one LLM API key must be provided "
-                "(GEMINI_API_KEY, CLAUDE_API_KEY, or OPENAI_API_KEY)"
+                "(GEMINI_API_KEY, CLAUDE_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY)"
             )

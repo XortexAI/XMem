@@ -185,7 +185,7 @@ class Enricher:
         from src.models.gemini import build_gemini_model
 
         model = build_gemini_model(
-            model_name=settings.code_model or "gemini-2.0-flash-lite",
+            model_name=settings.code_model or "gemini-3.1-flash-lite-preview",
             temperature=0.2,
         )
 

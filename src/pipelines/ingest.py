@@ -81,7 +81,7 @@ from src.schemas.code import (
 )
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -95,8 +95,8 @@ logger = logging.getLogger("xmem.pipelines.ingest")
 # Embedding helper — wraps Google GenAI into a simple callable
 # ---------------------------------------------------------------------------
 
-from google import genai
-from google.genai import types
+from google import genai  # noqa: E402
+from google.genai import types  # noqa: E402
 
 _embedding_client: Optional[genai.Client] = None
 
@@ -105,7 +105,9 @@ def get_embedding_client() -> genai.Client:
     global _embedding_client
     if _embedding_client is None:
         api_key_to_use = settings.gemini_api_key or None
-        _embedding_client = genai.Client(api_key=api_key_to_use) if api_key_to_use else genai.Client()
+        _embedding_client = (
+            genai.Client(api_key=api_key_to_use) if api_key_to_use else genai.Client()
+        )
         logger.info("Loaded embedding client for model: %s", settings.embedding_model)
     return _embedding_client
 
@@ -116,7 +118,9 @@ def embed_text(text: str) -> List[float]:
     result = client.models.embed_content(
         model=settings.embedding_model,
         contents=text,
-        config=types.EmbedContentConfig(output_dimensionality=settings.pinecone_dimension)
+        config=types.EmbedContentConfig(
+            output_dimensionality=settings.pinecone_dimension
+        ),
     )
     [embedding_obj] = result.embeddings
     return embedding_obj.values
@@ -125,6 +129,7 @@ def embed_text(text: str) -> List[float]:
 # ---------------------------------------------------------------------------
 # LangGraph state (typed dict shared across all nodes)
 # ---------------------------------------------------------------------------
+
 
 class IngestState(TypedDict, total=False):
     # ── input ─────────────────────────────────────────────────────────
@@ -135,10 +140,10 @@ class IngestState(TypedDict, total=False):
     session_datetime: str
 
     # ── routing (internal — set by _route_after_classify) ─────────────
-    profile_queries: List[str]      # batched profile sub-queries
-    temporal_queries: List[str]     # batched temporal sub-queries
-    image_queries: List[str]        # batched image sub-queries
-    code_queries: List[str]         # batched code sub-queries
+    profile_queries: List[str]  # batched profile sub-queries
+    temporal_queries: List[str]  # batched temporal sub-queries
+    image_queries: List[str]  # batched image sub-queries
+    code_queries: List[str]  # batched code sub-queries
 
     # ── classification ────────────────────────────────────────────────
     classification_result: ClassificationResult
@@ -175,6 +180,7 @@ class IngestState(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 # Pipeline class
 # ---------------------------------------------------------------------------
+
 
 class IngestPipeline:
     """End-to-end ingest pipeline wired with real Pinecone + Neo4j."""
@@ -218,7 +224,10 @@ class IngestPipeline:
             namespace=annotations_namespace(org_id),
             create_if_not_exists=False,
         )
-        logger.info("Code annotations vector store initialised (ns=%s).", annotations_namespace(org_id))
+        logger.info(
+            "Code annotations vector store initialised (ns=%s).",
+            annotations_namespace(org_id),
+        )
 
         # ── Neo4j (graph store — temporal) ────────────────────────────
         if neo4j_client:
@@ -303,11 +312,16 @@ class IngestPipeline:
     # ------------------------------------------------------------------
 
     async def _graph_event_search_wrapper(
-        self, event_name: str, user_id: str, top_k: int = 1,
+        self,
+        event_name: str,
+        user_id: str,
+        top_k: int = 1,
     ) -> List[SearchResult]:
         """Bridge Neo4j search results → SearchResult for the Judge."""
         raw = self.neo4j.search_events_by_name(
-            event_name=event_name, user_id=user_id, top_k=top_k,
+            event_name=event_name,
+            user_id=user_id,
+            top_k=top_k,
         )
         results: List[SearchResult] = []
         for r in raw:
@@ -325,23 +339,38 @@ class IngestPipeline:
         return results
 
     async def _graph_create_event(
-        self, user_id: str, date_str: str, event_data: Dict[str, Any],
+        self,
+        user_id: str,
+        date_str: str,
+        event_data: Dict[str, Any],
     ) -> None:
-        self.neo4j.create_event(user_id=user_id, date_str=date_str, event_data=event_data)
+        self.neo4j.create_event(
+            user_id=user_id, date_str=date_str, event_data=event_data
+        )
 
     async def _graph_update_event(
-        self, user_id: str, date_str: str, event_data: Dict[str, Any],
+        self,
+        user_id: str,
+        date_str: str,
+        event_data: Dict[str, Any],
     ) -> None:
-        self.neo4j.update_event(user_id=user_id, date_str=date_str, event_data=event_data)
+        self.neo4j.update_event(
+            user_id=user_id, date_str=date_str, event_data=event_data
+        )
 
     async def _graph_delete_event(
-        self, user_id: str, embedding_id: str = "", **kwargs,
+        self,
+        user_id: str,
+        embedding_id: str = "",
+        **kwargs,
     ) -> None:
         # embedding_id for temporal is "date_str_event_name"
         parts = embedding_id.split("_", 1)
         date_str = parts[0] if parts else ""
         event_name = parts[1] if len(parts) > 1 else None
-        self.neo4j.delete_event(user_id=user_id, date_str=date_str, event_name=event_name)
+        self.neo4j.delete_event(
+            user_id=user_id, date_str=date_str, event_name=event_name
+        )
 
     async def _graph_create_annotation(
         self,
@@ -397,9 +426,11 @@ class IngestPipeline:
         if state.get("image_url"):
             user_query += " [User has attached an image]"
 
-        result = await self.classifier.arun({
-            "user_query": user_query,
-        })
+        result = await self.classifier.arun(
+            {
+                "user_query": user_query,
+            }
+        )
         return {"classification_result": result}
 
     def _route_after_classify(self, state: IngestState) -> List[Send]:
@@ -408,10 +439,15 @@ class IngestPipeline:
         user_id = state.get("user_id", "default")
 
         # Summary always runs
-        routes.append(Send("extract_summary", {
-            **state,
-            "user_id": user_id,
-        }))
+        routes.append(
+            Send(
+                "extract_summary",
+                {
+                    **state,
+                    "user_id": user_id,
+                },
+            )
+        )
 
         # Batch profile, temporal, image, & code queries
         profile_queries: List[str] = []
@@ -432,18 +468,28 @@ class IngestPipeline:
                     code_queries.append(c["query"])
 
         if profile_queries:
-            routes.append(Send("extract_profile", {
-                **state,
-                "profile_queries": profile_queries,
-                "user_id": user_id,
-            }))
+            routes.append(
+                Send(
+                    "extract_profile",
+                    {
+                        **state,
+                        "profile_queries": profile_queries,
+                        "user_id": user_id,
+                    },
+                )
+            )
 
         if temporal_queries:
-            routes.append(Send("extract_temporal", {
-                **state,
-                "temporal_queries": temporal_queries,
-                "user_id": user_id,
-            }))
+            routes.append(
+                Send(
+                    "extract_temporal",
+                    {
+                        **state,
+                        "temporal_queries": temporal_queries,
+                        "user_id": user_id,
+                    },
+                )
+            )
 
         if code_queries:
             # Enterprise users → team annotation extraction (Code Agent)
@@ -452,17 +498,27 @@ class IngestPipeline:
             is_enterprise = self.org_id != "default"
 
             if is_enterprise:
-                routes.append(Send("extract_code", {
-                    **state,
-                    "code_queries": code_queries,
-                    "user_id": user_id,
-                }))
+                routes.append(
+                    Send(
+                        "extract_code",
+                        {
+                            **state,
+                            "code_queries": code_queries,
+                            "user_id": user_id,
+                        },
+                    )
+                )
             else:
-                routes.append(Send("extract_snippet", {
-                    **state,
-                    "code_queries": code_queries,
-                    "user_id": user_id,
-                }))
+                routes.append(
+                    Send(
+                        "extract_snippet",
+                        {
+                            **state,
+                            "code_queries": code_queries,
+                            "user_id": user_id,
+                        },
+                    )
+                )
 
         # Image route
         if state.get("image_url"):
@@ -470,11 +526,16 @@ class IngestPipeline:
                 image_queries.append("Analyze this image for memory-relevant details.")
 
             combined_query = " ".join(image_queries)
-            routes.append(Send("extract_image", {
-                **state,
-                "classifier_output": combined_query,
-                "user_id": user_id,
-            }))
+            routes.append(
+                Send(
+                    "extract_image",
+                    {
+                        **state,
+                        "classifier_output": combined_query,
+                        "user_id": user_id,
+                    },
+                )
+            )
 
         return routes
 
@@ -488,8 +549,15 @@ class IngestPipeline:
         all_facts = []
         last_result = None
 
-        for query in queries:
-            result = await self.profiler.arun({"classifier_output": query})
+        sem = asyncio.Semaphore(5)
+
+        async def _fetch_profile(q: str):
+            async with sem:
+                return await self.profiler.arun({"classifier_output": q})
+
+        results = await asyncio.gather(*(_fetch_profile(q) for q in queries))
+
+        for result in results:
             if not result.is_empty:
                 all_facts.extend(result.facts)
                 last_result = result
@@ -499,11 +567,13 @@ class IngestPipeline:
 
         # Judge all facts together for better dedup
         items = [f.model_dump() for f in all_facts]
-        judge_result = await self.judge.arun({
-            "domain": "profile",
-            "new_items": items,
-            "user_id": user_id,
-        })
+        judge_result = await self.judge.arun(
+            {
+                "domain": "profile",
+                "new_items": items,
+                "user_id": user_id,
+            }
+        )
 
         # Weave
         weaver_result = await self.weaver.execute(
@@ -526,32 +596,45 @@ class IngestPipeline:
         all_items: List[Dict[str, str]] = []
         last_result = None
 
-        for query in queries:
-            result = await self.temporal.arun({
-                "classifier_output": query,
-                "session_datetime": session_dt,
-            })
+        sem = asyncio.Semaphore(5)
+
+        async def _fetch_temporal(q: str):
+            async with sem:
+                return await self.temporal.arun(
+                    {
+                        "classifier_output": q,
+                        "session_datetime": session_dt,
+                    }
+                )
+
+        results = await asyncio.gather(*(_fetch_temporal(q) for q in queries))
+
+        for result in results:
             if not result.is_empty:
                 # Iterate over ALL events (supports multiple events per query)
                 for event in result.events:
-                    all_items.append({
-                        "date": event.date,
-                        "event_name": event.event_name or "",
-                        "desc": event.desc or "",
-                        "year": event.year or "",
-                        "time": event.time or "",
-                        "date_expression": event.date_expression or "",
-                    })
+                    all_items.append(
+                        {
+                            "date": event.date,
+                            "event_name": event.event_name or "",
+                            "desc": event.desc or "",
+                            "year": event.year or "",
+                            "time": event.time or "",
+                            "date_expression": event.date_expression or "",
+                        }
+                    )
                 last_result = result
 
         if not all_items:
             return {"status": "no_temporal_event"}
 
-        judge_result = await self.judge.arun({
-            "domain": "temporal",
-            "new_items": all_items,
-            "user_id": user_id,
-        })
+        judge_result = await self.judge.arun(
+            {
+                "domain": "temporal",
+                "new_items": all_items,
+                "user_id": user_id,
+            }
+        )
 
         weaver_result = await self.weaver.execute(
             judge_result=judge_result,
@@ -577,7 +660,7 @@ class IngestPipeline:
         # Convert observations to list of dicts for Judge
         # items = [obs.model_dump() for obs in result.observations]
 
-        #converted observation of images to summary and stored as summary
+        # converted observation of images to summary and stored as summary
         items = []
         if result.description:
             items.append(f"[Image] {result.description}")
@@ -588,11 +671,13 @@ class IngestPipeline:
         if not items:
             return {"status": "no_image_observations"}
 
-        judge_result = await self.judge.arun({
-            "domain": JudgeDomain.SUMMARY,
-            "new_items": items,
-            "user_id": user_id,
-        })
+        judge_result = await self.judge.arun(
+            {
+                "domain": JudgeDomain.SUMMARY,
+                "new_items": items,
+                "user_id": user_id,
+            }
+        )
 
         weaver_result = await self.weaver.execute(
             judge_result=judge_result,
@@ -614,8 +699,15 @@ class IngestPipeline:
         all_items: List[str] = []
         last_result = None
 
-        for query in queries:
-            result = await self.code_agent.arun({"classifier_output": query})
+        sem = asyncio.Semaphore(5)
+
+        async def _fetch_code(q: str):
+            async with sem:
+                return await self.code_agent.arun({"classifier_output": q})
+
+        results = await asyncio.gather(*(_fetch_code(q) for q in queries))
+
+        for result in results:
             if not result.is_empty:
                 for ann in result.annotations:
                     parts = [
@@ -632,11 +724,13 @@ class IngestPipeline:
         if not all_items:
             return {"status": "no_code_annotations"}
 
-        judge_result = await self.judge.arun({
-            "domain": JudgeDomain.CODE,
-            "new_items": all_items,
-            "user_id": user_id,
-        })
+        judge_result = await self.judge.arun(
+            {
+                "domain": JudgeDomain.CODE,
+                "new_items": all_items,
+                "user_id": user_id,
+            }
+        )
 
         weaver_result = await self.weaver.execute(
             judge_result=judge_result,
@@ -657,13 +751,22 @@ class IngestPipeline:
         all_items: List[str] = []
         last_result = None
 
-        for query in queries:
-            result = await self.snippet_agent.arun({"classifier_output": query})
+        sem = asyncio.Semaphore(5)
+
+        async def _fetch_snippet(q: str):
+            async with sem:
+                return await self.snippet_agent.arun({"classifier_output": q})
+
+        results = await asyncio.gather(*(_fetch_snippet(q) for q in queries))
+
+        for result in results:
             if not result.is_empty:
                 for snip in result.snippets:
                     parts = [
                         snip.content,
-                        snip.code_snippet.replace("\n", "\\n") if snip.code_snippet else "",
+                        snip.code_snippet.replace("\n", "\\n")
+                        if snip.code_snippet
+                        else "",
                         snip.language,
                         snip.snippet_type.value,
                         ",".join(snip.tags),
@@ -674,11 +777,13 @@ class IngestPipeline:
         if not all_items:
             return {"status": "no_snippets"}
 
-        judge_result = await self.judge.arun({
-            "domain": JudgeDomain.SNIPPET,
-            "new_items": all_items,
-            "user_id": user_id,
-        })
+        judge_result = await self.judge.arun(
+            {
+                "domain": JudgeDomain.SNIPPET,
+                "new_items": all_items,
+                "user_id": user_id,
+            }
+        )
 
         # Bind the user-scoped snippet store before executing
         self.weaver.snippet_vector_store = self._get_snippet_store(user_id)
@@ -695,10 +800,12 @@ class IngestPipeline:
         }
 
     async def _node_extract_summary(self, state: IngestState) -> Dict[str, Any]:
-        result = await self.summarizer.arun({
-            "user_query": state.get("user_query", ""),
-            "agent_response": state.get("agent_response", ""),
-        })
+        result = await self.summarizer.arun(
+            {
+                "user_query": state.get("user_query", ""),
+                "agent_response": state.get("agent_response", ""),
+            }
+        )
         if result.is_empty:
             return {"status": "no_summary"}
 
@@ -711,11 +818,13 @@ class IngestPipeline:
         if not items:
             return {"status": "no_summary_items"}
 
-        judge_result = await self.judge.arun({
-            "domain": "summary",
-            "new_items": items,
-            "user_id": state.get("user_id", "default"),
-        })
+        judge_result = await self.judge.arun(
+            {
+                "domain": "summary",
+                "new_items": items,
+                "user_id": state.get("user_id", "default"),
+            }
+        )
 
         weaver_result = await self.weaver.execute(
             judge_result=judge_result,
@@ -749,8 +858,14 @@ class IngestPipeline:
         workflow.add_conditional_edges(
             "classify",
             self._route_after_classify,
-            ["extract_profile", "extract_temporal", "extract_summary",
-             "extract_image", "extract_code", "extract_snippet"],
+            [
+                "extract_profile",
+                "extract_temporal",
+                "extract_summary",
+                "extract_image",
+                "extract_code",
+                "extract_snippet",
+            ],
         )
 
         # All extraction lanes → END
@@ -802,7 +917,10 @@ class IngestPipeline:
         logger.info("  user_query: %s", user_query[:80])
         logger.info("  user_id:    %s", user_id)
         if image_url:
-            logger.info("  image_url:  %s", image_url[:50] + "..." if len(image_url) > 50 else image_url)
+            logger.info(
+                "  image_url:  %s",
+                image_url[:50] + "..." if len(image_url) > 50 else image_url,
+            )
         logger.info("=" * 60)
 
         result = await self.graph.ainvoke(initial_state)
@@ -850,7 +968,11 @@ class IngestPipeline:
             if wr:
                 logger.info(
                     "  %s: %d ops (%d ok, %d skip, %d fail)",
-                    domain, wr.total, wr.succeeded, wr.skipped, wr.failed,
+                    domain,
+                    wr.total,
+                    wr.succeeded,
+                    wr.skipped,
+                    wr.failed,
                 )
             else:
                 logger.info("  %s: (not executed)", domain)

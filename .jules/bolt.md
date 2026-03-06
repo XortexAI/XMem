@@ -1,0 +1,3 @@
+## 2024-05-24 - [Concurrent Async Batch Operations]
+**Learning:** Found sequential processing in `IngestPipeline` batch nodes (`_node_extract_profile`, `_node_extract_temporal`, `_node_extract_code`, `_node_extract_snippet`) that can handle N queries asynchronously. By replacing sequential `for` loops containing `await self.<agent>.arun()` with `asyncio.gather` and using an `asyncio.Semaphore`, we can parallelize extraction and speed up pipeline latency.
+**Action:** When finding loops of independent `await` calls that don't depend on each other's execution output, parallelize them using `asyncio.gather`, while still rate limiting via `asyncio.Semaphore` where external APIs might be called to avoid rate limits.

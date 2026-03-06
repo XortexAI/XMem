@@ -12,7 +12,7 @@ import time
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.api.dependencies import (
     get_code_pipeline,
@@ -100,6 +100,27 @@ async def code_query(req: CodeQueryRequest, request: Request):
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         logger.exception("Code query failed for org=%s repo=%s", req.org_id, req.repo)
         return _error(request, str(exc), 500, elapsed)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# POST /v1/code/query_stream
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/query_stream",
+    summary="Query a codebase with streaming response",
+)
+async def code_query_stream(req: CodeQueryRequest, request: Request):
+    pipeline = get_code_pipeline(org_id=req.org_id, repo=req.repo)
+    return StreamingResponse(
+        pipeline.run_stream(
+            query=req.query,
+            user_id=req.user_id or "",
+            repo=req.repo,
+            top_k=req.top_k,
+        ),
+        media_type="application/x-ndjson",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

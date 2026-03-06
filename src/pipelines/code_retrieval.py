@@ -418,6 +418,87 @@ class CodeRetrievalPipeline:
             confidence=confidence,
         )
 
+    async def run_stream(
+        self,
+        query: str,
+        user_id: str = "",
+        repo: str = "",
+        top_k: int = 10,
+    ):
+        """Streaming version of run(). Yields NDJSON chunks."""
+        import json
+        
+        logger.info("=" * 60)
+        logger.info("CODE RETRIEVAL STREAM START")
+        logger.info("  query: %s", query)
+        logger.info("  org: %s, repo: %s", self.org_id, repo or "(all)")
+        logger.info("=" * 60)
+
+        repo_catalog = self._build_repo_catalog()
+        system_prompt = _SYSTEM_PROMPT.format(repo_catalog=repo_catalog)
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=query),
+        ]
+
+        yield json.dumps({"type": "status", "content": "Analyzing query..."}) + "\n"
+
+        ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
+        
+        sources: List[SourceRecord] = []
+        tool_messages: List[ToolMessage] = []
+
+        if ai_response.tool_calls:
+            yield json.dumps({"type": "status", "content": f"Running {len(ai_response.tool_calls)} search tool(s)..."}) + "\n"
+            
+            for tc in ai_response.tool_calls:
+                tool_name = tc["name"]
+                tool_args = tc["args"]
+                tool_id = tc["id"]
+
+                logger.info("  Tool: %s(%s)", tool_name, tool_args)
+
+                records = await self._execute_tool(
+                    tool_name, tool_args, repo=repo, top_k=top_k,
+                    user_id=user_id,
+                )
+                sources.extend(records)
+
+                tool_result_text = self._format_tool_results(records)
+                tool_messages.append(
+                    ToolMessage(content=tool_result_text, tool_call_id=tool_id)
+                )
+
+            # Send sources early
+            sources_dict = [
+                {"domain": s.domain, "content": s.content, "score": round(s.score, 3), "metadata": s.metadata}
+                for s in sources
+            ]
+            yield json.dumps({"type": "sources", "sources": sources_dict}) + "\n"
+            yield json.dumps({"type": "status", "content": "Generating answer..."}) + "\n"
+
+            context_text = "\n".join(tm.content for tm in tool_messages)
+            answer_prompt = _ANSWER_PROMPT.format(
+                context=context_text,
+                query=query,
+            )
+            
+            async for chunk in self.model.astream([HumanMessage(content=answer_prompt)]):
+                if chunk.content:
+                    yield json.dumps({"type": "chunk", "text": chunk.content}) + "\n"
+                    
+        else:
+            # LLM answered directly without tool calls
+            logger.info("LLM answered without tool calls")
+            if isinstance(ai_response.content, str):
+                yield json.dumps({"type": "chunk", "text": ai_response.content}) + "\n"
+            elif isinstance(ai_response.content, list):
+                for c in ai_response.content:
+                    yield json.dumps({"type": "chunk", "text": str(c)}) + "\n"
+                    
+        yield json.dumps({"type": "done"}) + "\n"
+        logger.info("CODE RETRIEVAL STREAM COMPLETE")
+
     # ------------------------------------------------------------------
     # Tool execution
     # ------------------------------------------------------------------

@@ -19,11 +19,11 @@ from src.prompts.examples.retrieval import RETRIEVAL_EXAMPLES
 _SYSTEM_PROMPT_TEMPLATE = """\
 You are the RETRIEVAL agent in a personal semantic memory system called Xmem.
 
-Your job is to answer questions about the user by searching their stored
+Your job is to answer questions or autocomplete sentences about the user by searching their stored
 memories. You do this in two steps:
 
   1. Decide WHAT information you need → call the right search tool(s).
-  2. Once you receive the results → compose a clear, concise answer.
+  2. Once you receive the results → compose a clear, concise answer, or provide the completion.
 
 ═══════════════════════════════════════════════════════════════════════
 AVAILABLE TOOLS
@@ -131,18 +131,20 @@ def build_system_prompt(profile_catalog: str) -> str:
 # ---------------------------------------------------------------------------
 
 ANSWER_PROMPT = """\
-You are a helpful personal memory assistant. Answer the user's question
+You are a helpful personal memory assistant. Answer or autocomplete the user's input
 based on the retrieved context below.
 
 ## Retrieved Context:
 {context}
 
-## User's Question:
+## User's Input:
 {query}
 
 ## Instructions:
-1. Answer concisely and directly using the retrieved information.
-2. Use "you" when referring to the user (e.g., "Your birthday is…").
+1. **Autocomplete vs Question**:
+   - If the User's Input looks like an incomplete sentence (e.g., "My name is ", "I work at "), your response MUST ONLY be the continuation of that sentence based on the context (e.g., "John Doe."). Do NOT repeat the prompt or answer it like a question.
+   - If the User's Input is a question, answer concisely and directly using the retrieved information.
+2. Use "you" when referring to the user (e.g., "Your birthday is…") if answering a question.
 3. If multiple sources are relevant, combine them naturally.
 4. **Partial matches count** — If the context contains information that is
    related or partially relevant to the question, share what you have.
@@ -157,6 +159,6 @@ based on the retrieved context below.
    values, how the user talks, what they care about.
 7. Do NOT fabricate facts. Only use what's in the retrieved context.
 8. Only say "I don't have that information" as a LAST RESORT — when
-   the context is truly empty or completely unrelated to the question.
+   the context is truly empty or completely unrelated to the input.
 
-Answer:"""
+Answer/Completion:"""

@@ -539,7 +539,9 @@ class Weaver:
                 content=op.content, error="No vector store for code domain",
             )
 
-        embedding = self.embed_fn(op.content)
+        import asyncio
+        loop = asyncio.get_running_loop()
+        embedding = await loop.run_in_executor(None, self.embed_fn, op.content)
         metadata: Dict[str, Any] = {
             "user_id": user_id,
             "domain": "code",
@@ -550,10 +552,15 @@ class Weaver:
             "severity": parsed.get("severity", ""),
         }
 
-        ids = store.add(
-            texts=[op.content],
-            embeddings=[embedding],
-            metadata=[metadata],
+        from functools import partial
+        ids = await loop.run_in_executor(
+            None,
+            partial(
+                store.add,
+                texts=[op.content],
+                embeddings=[embedding],
+                metadata=[metadata],
+            )
         )
         new_id = ids[0] if ids else None
 
@@ -592,7 +599,9 @@ class Weaver:
             )
 
         parsed = _parse_code_annotation_content(op.content)
-        embedding = self.embed_fn(op.content)
+        import asyncio
+        loop = asyncio.get_running_loop()
+        embedding = await loop.run_in_executor(None, self.embed_fn, op.content)
         metadata: Dict[str, Any] = {
             "user_id": user_id,
             "domain": "code",
@@ -603,11 +612,16 @@ class Weaver:
             "severity": parsed.get("severity", ""),
         }
 
-        success = store.update(
-            id=op.embedding_id,
-            text=op.content,
-            embedding=embedding,
-            metadata=metadata,
+        from functools import partial
+        success = await loop.run_in_executor(
+            None,
+            partial(
+                store.update,
+                id=op.embedding_id,
+                text=op.content,
+                embedding=embedding,
+                metadata=metadata,
+            )
         )
         if success:
             return ExecutedOp(
@@ -628,7 +642,10 @@ class Weaver:
                 embedding_id=op.embedding_id,
                 error="No vector store for code domain",
             )
-        success = store.delete(ids=[op.embedding_id])
+        import asyncio
+        loop = asyncio.get_running_loop()
+        from functools import partial
+        success = await loop.run_in_executor(None, partial(store.delete, ids=[op.embedding_id]))
         return ExecutedOp(
             type=op.type,
             status=OpStatus.SUCCESS if success else OpStatus.FAILED,
@@ -678,7 +695,9 @@ class Weaver:
 
         parsed = _parse_snippet_content(op.content)
         searchable = parsed.get("content", op.content)
-        embedding = self.embed_fn(searchable)
+        import asyncio
+        loop = asyncio.get_running_loop()
+        embedding = await loop.run_in_executor(None, self.embed_fn, searchable)
 
         metadata: Dict[str, Any] = {
             "user_id": user_id,
@@ -690,10 +709,15 @@ class Weaver:
             "source": "chat",
         }
 
-        ids = store.add(
-            texts=[searchable],
-            embeddings=[embedding],
-            metadata=[metadata],
+        from functools import partial
+        ids = await loop.run_in_executor(
+            None,
+            partial(
+                store.add,
+                texts=[searchable],
+                embeddings=[embedding],
+                metadata=[metadata],
+            )
         )
         new_id = ids[0] if ids else None
         return ExecutedOp(
@@ -717,7 +741,9 @@ class Weaver:
 
         parsed = _parse_snippet_content(op.content)
         searchable = parsed.get("content", op.content)
-        embedding = self.embed_fn(searchable)
+        import asyncio
+        loop = asyncio.get_running_loop()
+        embedding = await loop.run_in_executor(None, self.embed_fn, searchable)
 
         metadata: Dict[str, Any] = {
             "user_id": user_id,
@@ -729,11 +755,16 @@ class Weaver:
             "source": "chat",
         }
 
-        success = store.update(
-            id=op.embedding_id,
-            text=searchable,
-            embedding=embedding,
-            metadata=metadata,
+        from functools import partial
+        success = await loop.run_in_executor(
+            None,
+            partial(
+                store.update,
+                id=op.embedding_id,
+                text=searchable,
+                embedding=embedding,
+                metadata=metadata,
+            )
         )
         if success:
             return ExecutedOp(
@@ -754,7 +785,10 @@ class Weaver:
                 embedding_id=op.embedding_id,
                 error="No vector store for snippet domain",
             )
-        success = store.delete(ids=[op.embedding_id])
+        import asyncio
+        loop = asyncio.get_running_loop()
+        from functools import partial
+        success = await loop.run_in_executor(None, partial(store.delete, ids=[op.embedding_id]))
         return ExecutedOp(
             type=op.type,
             status=OpStatus.SUCCESS if success else OpStatus.FAILED,

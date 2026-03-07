@@ -307,8 +307,16 @@ class IngestPipeline:
         self, event_name: str, user_id: str, top_k: int = 1,
     ) -> List[SearchResult]:
         """Bridge Neo4j search results → SearchResult for the Judge."""
-        raw = self.neo4j.search_events_by_name(
-            event_name=event_name, user_id=user_id, top_k=top_k,
+        loop = asyncio.get_running_loop()
+        from functools import partial
+        raw = await loop.run_in_executor(
+            None,
+            partial(
+                self.neo4j.search_events_by_name,
+                event_name=event_name,
+                user_id=user_id,
+                top_k=top_k,
+            )
         )
         results: List[SearchResult] = []
         for r in raw:
@@ -328,12 +336,32 @@ class IngestPipeline:
     async def _graph_create_event(
         self, user_id: str, date_str: str, event_data: Dict[str, Any],
     ) -> None:
-        self.neo4j.create_event(user_id=user_id, date_str=date_str, event_data=event_data)
+        loop = asyncio.get_running_loop()
+        from functools import partial
+        await loop.run_in_executor(
+            None,
+            partial(
+                self.neo4j.create_event,
+                user_id=user_id,
+                date_str=date_str,
+                event_data=event_data,
+            )
+        )
 
     async def _graph_update_event(
         self, user_id: str, date_str: str, event_data: Dict[str, Any],
     ) -> None:
-        self.neo4j.update_event(user_id=user_id, date_str=date_str, event_data=event_data)
+        loop = asyncio.get_running_loop()
+        from functools import partial
+        await loop.run_in_executor(
+            None,
+            partial(
+                self.neo4j.update_event,
+                user_id=user_id,
+                date_str=date_str,
+                event_data=event_data,
+            )
+        )
 
     async def _graph_delete_event(
         self, user_id: str, embedding_id: str = "", **kwargs,
@@ -342,7 +370,18 @@ class IngestPipeline:
         parts = embedding_id.split("_", 1)
         date_str = parts[0] if parts else ""
         event_name = parts[1] if len(parts) > 1 else None
-        self.neo4j.delete_event(user_id=user_id, date_str=date_str, event_name=event_name)
+        
+        loop = asyncio.get_running_loop()
+        from functools import partial
+        await loop.run_in_executor(
+            None,
+            partial(
+                self.neo4j.delete_event,
+                user_id=user_id,
+                date_str=date_str,
+                event_name=event_name,
+            )
+        )
 
     async def _graph_create_annotation(
         self,
@@ -355,15 +394,21 @@ class IngestPipeline:
         target_symbol: Optional[str] = None,
     ) -> str:
         """Bridge for creating code annotations in the code graph."""
-        return self.code_graph.create_annotation(
-            org_id=self.org_id,
-            content=content,
-            annotation_type=annotation_type,
-            severity=severity,
-            author_id=author_id,
-            repo=repo,
-            target_file=target_file,
-            target_symbol=target_symbol,
+        loop = asyncio.get_running_loop()
+        from functools import partial
+        return await loop.run_in_executor(
+            None,
+            partial(
+                self.code_graph.create_annotation,
+                org_id=self.org_id,
+                content=content,
+                annotation_type=annotation_type,
+                severity=severity,
+                author_id=author_id,
+                repo=repo,
+                target_file=target_file,
+                target_symbol=target_symbol,
+            )
         )
 
     # ------------------------------------------------------------------

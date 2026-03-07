@@ -272,21 +272,11 @@ class JudgeAgent(BaseAgent):
                     filters["user_id"] = user_id
                 filters["domain"] = JudgeDomain.PROFILE.value
 
-                search_fn = getattr(self.vector_store, "search_by_metadata", None)
-                if search_fn is not None:
-                    results = search_fn(filters=filters, top_k=self.top_k)
-                    matches[item_str] = results if results else []
-                else:
-                    self.logger.debug(
-                        "Vector store has no search_by_metadata — "
-                        "falling back to semantic search for profile."
-                    )
-                    # Graceful fallback to semantic search
-                    results = await self._search_vector_store(
-                        query_text=item_str,
-                        filters={"user_id": user_id, "domain": "profile"} if user_id else None,
-                    )
-                    matches[item_str] = results
+                results = self.vector_store.search_by_metadata(
+                    filters=filters,
+                    top_k=self.top_k,
+                )
+                matches[item_str] = results if results else []
             except Exception as exc:
                 self.logger.warning(
                     "Profile metadata search failed for '%s': %s",
@@ -307,14 +297,11 @@ class JudgeAgent(BaseAgent):
         if not self.vector_store:
             return []
 
-        search_fn = getattr(self.vector_store, "search_by_text", None)
-        if search_fn is not None:
-            return await search_fn(query_text, top_k=self.top_k, filters=filters)
-
-        self.logger.debug(
-            "Vector store has no search_by_text — skipping search for this item."
+        return await self.vector_store.search_by_text(
+            query_text,
+            top_k=self.top_k,
+            filters=filters,
         )
-        return []
 
     # -- Temporal: Neo4j (graph DB) ----------------------------------------
 

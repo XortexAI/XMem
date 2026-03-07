@@ -79,11 +79,13 @@ class PineconeVectorStore(BaseVectorStore):
         ├── __init__()          # Constructor - sets up Pinecone connection
         │
         ├── CRUD Operations (from BaseVectorStore):
-        │   ├── add()           # Add vectors to the index
-        │   ├── search()        # Find similar vectors
-        │   ├── update()        # Update existing vector
-        │   ├── delete()        # Remove vectors
-        │   └── get()           # Retrieve vectors by ID
+        │   ├── add()                # Add vectors to the index
+        │   ├── search()             # Find similar vectors
+        │   ├── update()             # Update existing vector
+        │   ├── delete()             # Remove vectors
+        │   ├── get()                # Retrieve vectors by ID
+        │   ├── search_by_metadata() # Retrieve by metadata only
+        │   └── search_by_text()     # Embed text and search
         │
         ├── Management Operations (from BaseVectorStore):
         │   ├── health_check()  # Check connection status
@@ -859,7 +861,7 @@ class PineconeVectorStore(BaseVectorStore):
         )
     
     # ========================================================================
-    # PINECONE-SPECIFIC METHODS (not in BaseVectorStore)
+    # PINECONE-SPECIFIC METHODS (Internal helpers)
     # ========================================================================
     
     @with_retry(config=PINECONE_RETRY_CONFIG)
@@ -940,7 +942,7 @@ class PineconeVectorStore(BaseVectorStore):
         logger.info(f"Successfully deleted index: {self._index_name}")
     
     # ========================================================================
-    # METADATA-ONLY SEARCH (no embedding required)
+    # METADATA-ONLY SEARCH (BaseVectorStore interface)
     # ========================================================================
 
     @with_retry(config=PINECONE_RETRY_CONFIG)
@@ -951,6 +953,8 @@ class PineconeVectorStore(BaseVectorStore):
     ) -> List[SearchResult]:
         """
         Query Pinecone using only metadata filters.
+
+        This implements the abstract search_by_metadata() method from BaseVectorStore.
 
         Pinecone always requires a vector in the query call, so we supply a
         zero-vector and rely entirely on the metadata filter for selection.
@@ -1002,7 +1006,7 @@ class PineconeVectorStore(BaseVectorStore):
         return search_results
 
     # ========================================================================
-    # TEXT SEARCH (embeds the query, then searches by vector + filters)
+    # TEXT SEARCH (BaseVectorStore interface)
     # ========================================================================
 
     async def search_by_text(
@@ -1013,6 +1017,8 @@ class PineconeVectorStore(BaseVectorStore):
     ) -> List[SearchResult]:
         """
         Embed a query string and search for similar vectors.
+
+        This implements the abstract search_by_text() method from BaseVectorStore.
 
         This is a convenience wrapper that:
         1. Generates an embedding for `query_text` using Google GenAI embeddings.

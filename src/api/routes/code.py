@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.api.dependencies import (
+    enforce_rate_limit,
     get_code_pipeline,
     require_api_key,
 )
@@ -34,7 +35,7 @@ logger = logging.getLogger("xmem.api.routes.code")
 router = APIRouter(
     prefix="/v1/code",
     tags=["code"],
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
 )
 
 
@@ -52,7 +53,9 @@ def _wrap(request: Request, data: Any, elapsed_ms: float) -> JSONResponse:
     return resp
 
 
-def _error(request: Request, detail: str, code: int, elapsed_ms: float = 0) -> JSONResponse:
+def _error(
+    request: Request, detail: str, code: int, elapsed_ms: float = 0
+) -> JSONResponse:
     body = APIResponse(
         status=StatusEnum.ERROR,
         request_id=getattr(request.state, "request_id", None),
@@ -65,6 +68,7 @@ def _error(request: Request, detail: str, code: int, elapsed_ms: float = 0) -> J
 # ═══════════════════════════════════════════════════════════════════════════
 # POST /v1/code/query
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @router.post(
     "/query",
@@ -86,8 +90,10 @@ async def code_query(req: CodeQueryRequest, request: Request):
             answer=result.answer,
             sources=[
                 SourceRecord(
-                    domain=s.domain, content=s.content,
-                    score=round(s.score, 3), metadata=s.metadata,
+                    domain=s.domain,
+                    content=s.content,
+                    score=round(s.score, 3),
+                    metadata=s.metadata,
                 )
                 for s in result.sources
             ],
@@ -105,6 +111,7 @@ async def code_query(req: CodeQueryRequest, request: Request):
 # ═══════════════════════════════════════════════════════════════════════════
 # POST /v1/code/query_stream
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @router.post(
     "/query_stream",
@@ -126,6 +133,7 @@ async def code_query_stream(req: CodeQueryRequest, request: Request):
 # ═══════════════════════════════════════════════════════════════════════════
 # GET /v1/code/directory-tree
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _build_tree(file_paths: List[str], repo: str) -> DirectoryNode:
     """Build a hierarchical tree from flat file paths."""
@@ -188,6 +196,7 @@ async def directory_tree(
 # ═══════════════════════════════════════════════════════════════════════════
 # GET /v1/code/repos
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @router.get(
     "/repos",

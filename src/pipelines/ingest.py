@@ -81,7 +81,7 @@ from src.schemas.code import (
 )
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -95,8 +95,8 @@ logger = logging.getLogger("xmem.pipelines.ingest")
 # Embedding helper — wraps Google GenAI into a simple callable
 # ---------------------------------------------------------------------------
 
-from google import genai
-from google.genai import types
+from google import genai  # noqa: E402
+from google.genai import types  # noqa: E402
 
 _embedding_client: Optional[genai.Client] = None
 
@@ -488,9 +488,12 @@ class IngestPipeline:
         all_facts = []
         last_result = None
 
-        results = await asyncio.gather(
-            *(self.profiler.arun({"classifier_output": q}) for q in queries)
-        )
+        # Prevent LLM API rate limiting by capping concurrent sub-queries
+        sem = asyncio.Semaphore(5)
+        async def _bounded_extract(q):
+            async with sem:
+                return await self.profiler.arun({"classifier_output": q})
+        results = await asyncio.gather(*(_bounded_extract(q) for q in queries))
         for result in results:
             if not result.is_empty:
                 all_facts.extend(result.facts)
@@ -528,12 +531,15 @@ class IngestPipeline:
         all_items: List[Dict[str, str]] = []
         last_result = None
 
-        results = await asyncio.gather(
-            *(self.temporal.arun({
+        # Prevent LLM API rate limiting by capping concurrent sub-queries
+        sem = asyncio.Semaphore(5)
+        async def _bounded_extract(q):
+            async with sem:
+                return await self.temporal.arun({
                 "classifier_output": q,
                 "session_datetime": session_dt,
-            }) for q in queries)
-        )
+            })
+        results = await asyncio.gather(*(_bounded_extract(q) for q in queries))
         for result in results:
             if not result.is_empty:
                 for event in result.events:
@@ -617,9 +623,12 @@ class IngestPipeline:
         all_items: List[str] = []
         last_result = None
 
-        results = await asyncio.gather(
-            *(self.code_agent.arun({"classifier_output": q}) for q in queries)
-        )
+        # Prevent LLM API rate limiting by capping concurrent sub-queries
+        sem = asyncio.Semaphore(5)
+        async def _bounded_extract(q):
+            async with sem:
+                return await self.code_agent.arun({"classifier_output": q})
+        results = await asyncio.gather(*(_bounded_extract(q) for q in queries))
         for result in results:
             if not result.is_empty:
                 for ann in result.annotations:
@@ -662,9 +671,12 @@ class IngestPipeline:
         all_items: List[str] = []
         last_result = None
 
-        results = await asyncio.gather(
-            *(self.snippet_agent.arun({"classifier_output": q}) for q in queries)
-        )
+        # Prevent LLM API rate limiting by capping concurrent sub-queries
+        sem = asyncio.Semaphore(5)
+        async def _bounded_extract(q):
+            async with sem:
+                return await self.snippet_agent.arun({"classifier_output": q})
+        results = await asyncio.gather(*(_bounded_extract(q) for q in queries))
         for result in results:
             if not result.is_empty:
                 for snip in result.snippets:

@@ -229,6 +229,26 @@ INDEXED REPOSITORIES
 """
 
 
+_ANSWER_PROMPT = """\
+You are the CODE RETRIEVAL agent in XMem. Use the retrieved context below to
+answer the user's question. Be direct, technical, and reference file paths,
+function names, and line numbers when available. Use code formatting for
+symbol names and paths. If the context is truly empty, say so.
+
+═══════════════════════════════════════════════════════════════════════════
+RETRIEVED CONTEXT
+═══════════════════════════════════════════════════════════════════════════
+
+{context}
+
+═══════════════════════════════════════════════════════════════════════════
+USER QUESTION
+═══════════════════════════════════════════════════════════════════════════
+
+{query}
+"""
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Embedding helper
 # ═══════════════════════════════════════════════════════════════════════════

@@ -488,8 +488,10 @@ class IngestPipeline:
         all_facts = []
         last_result = None
 
-        for query in queries:
-            result = await self.profiler.arun({"classifier_output": query})
+        results = await asyncio.gather(
+            *(self.profiler.arun({"classifier_output": q}) for q in queries)
+        )
+        for result in results:
             if not result.is_empty:
                 all_facts.extend(result.facts)
                 last_result = result
@@ -526,13 +528,14 @@ class IngestPipeline:
         all_items: List[Dict[str, str]] = []
         last_result = None
 
-        for query in queries:
-            result = await self.temporal.arun({
-                "classifier_output": query,
+        results = await asyncio.gather(
+            *(self.temporal.arun({
+                "classifier_output": q,
                 "session_datetime": session_dt,
-            })
+            }) for q in queries)
+        )
+        for result in results:
             if not result.is_empty:
-                # Iterate over ALL events (supports multiple events per query)
                 for event in result.events:
                     all_items.append({
                         "date": event.date,
@@ -614,8 +617,10 @@ class IngestPipeline:
         all_items: List[str] = []
         last_result = None
 
-        for query in queries:
-            result = await self.code_agent.arun({"classifier_output": query})
+        results = await asyncio.gather(
+            *(self.code_agent.arun({"classifier_output": q}) for q in queries)
+        )
+        for result in results:
             if not result.is_empty:
                 for ann in result.annotations:
                     parts = [
@@ -657,8 +662,10 @@ class IngestPipeline:
         all_items: List[str] = []
         last_result = None
 
-        for query in queries:
-            result = await self.snippet_agent.arun({"classifier_output": query})
+        results = await asyncio.gather(
+            *(self.snippet_agent.arun({"classifier_output": q}) for q in queries)
+        )
+        for result in results:
             if not result.is_empty:
                 for snip in result.snippets:
                     parts = [

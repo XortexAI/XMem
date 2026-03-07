@@ -49,6 +49,7 @@ Usage::
 
 from __future__ import annotations
 
+import functools
 import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
@@ -109,9 +110,9 @@ def get_embedding_client() -> genai.Client:
         logger.info("Loaded embedding client for model: %s", settings.embedding_model)
     return _embedding_client
 
-
-def embed_text(text: str) -> List[float]:
-    """Embed a single text string → list of floats."""
+@functools.lru_cache(max_size = 4096)
+def embed_text(text: str) -> tuple[float, ...]:
+    """Embed a single text string → tuple of floats."""
     client = get_embedding_client()
     result = client.models.embed_content(
         model=settings.embedding_model,
@@ -119,7 +120,7 @@ def embed_text(text: str) -> List[float]:
         config=types.EmbedContentConfig(output_dimensionality=settings.pinecone_dimension)
     )
     [embedding_obj] = result.embeddings
-    return embedding_obj.values
+    return tuple(embedding_obj.values)
 
 
 # ---------------------------------------------------------------------------

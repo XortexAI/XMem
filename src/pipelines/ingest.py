@@ -110,7 +110,7 @@ def get_embedding_client() -> genai.Client:
         logger.info("Loaded embedding client for model: %s", settings.embedding_model)
     return _embedding_client
 
-@functools.lru_cache(max_size = 4096)
+@functools.lru_cache(maxsize = 4096)
 def embed_text(text: str) -> tuple[float, ...]:
     """Embed a single text string → tuple of floats."""
     client = get_embedding_client()

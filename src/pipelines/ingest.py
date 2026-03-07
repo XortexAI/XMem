@@ -488,8 +488,16 @@ class IngestPipeline:
         all_facts = []
         last_result = None
 
-        for query in queries:
-            result = await self.profiler.arun({"classifier_output": query})
+        # Concurrent LLM calls with semaphore limit
+        sem = asyncio.Semaphore(5)
+
+        async def run_query(query: str):
+            async with sem:
+                return await self.profiler.arun({"classifier_output": query})
+
+        results = await asyncio.gather(*(run_query(q) for q in queries))
+
+        for result in results:
             if not result.is_empty:
                 all_facts.extend(result.facts)
                 last_result = result
@@ -526,11 +534,19 @@ class IngestPipeline:
         all_items: List[Dict[str, str]] = []
         last_result = None
 
-        for query in queries:
-            result = await self.temporal.arun({
-                "classifier_output": query,
-                "session_datetime": session_dt,
-            })
+        # Concurrent LLM calls with semaphore limit
+        sem = asyncio.Semaphore(5)
+
+        async def run_query(query: str):
+            async with sem:
+                return await self.temporal.arun({
+                    "classifier_output": query,
+                    "session_datetime": session_dt,
+                })
+
+        results = await asyncio.gather(*(run_query(q) for q in queries))
+
+        for result in results:
             if not result.is_empty:
                 # Iterate over ALL events (supports multiple events per query)
                 for event in result.events:
@@ -614,8 +630,16 @@ class IngestPipeline:
         all_items: List[str] = []
         last_result = None
 
-        for query in queries:
-            result = await self.code_agent.arun({"classifier_output": query})
+        # Concurrent LLM calls with semaphore limit
+        sem = asyncio.Semaphore(5)
+
+        async def run_query(query: str):
+            async with sem:
+                return await self.code_agent.arun({"classifier_output": query})
+
+        results = await asyncio.gather(*(run_query(q) for q in queries))
+
+        for result in results:
             if not result.is_empty:
                 for ann in result.annotations:
                     parts = [
@@ -657,8 +681,16 @@ class IngestPipeline:
         all_items: List[str] = []
         last_result = None
 
-        for query in queries:
-            result = await self.snippet_agent.arun({"classifier_output": query})
+        # Concurrent LLM calls with semaphore limit
+        sem = asyncio.Semaphore(5)
+
+        async def run_query(query: str):
+            async with sem:
+                return await self.snippet_agent.arun({"classifier_output": query})
+
+        results = await asyncio.gather(*(run_query(q) for q in queries))
+
+        for result in results:
             if not result.is_empty:
                 for snip in result.snippets:
                     parts = [

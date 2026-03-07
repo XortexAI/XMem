@@ -395,37 +395,26 @@ class PineconeVectorStore(BaseVectorStore):
         # --------------------------------------------------------------------
         
         if metadata is None:
-            # Create list of empty dicts, one per text
-            metadata = [{} for _ in texts]
+            # OPTIMIZATION: Use list of references to SAME empty dict
+            # This is safe because we only READ from it in the loop
+            # and create new dicts with {**meta, ...}
+            # Faster than [{} for _ in texts] which allocates N dicts
+            metadata = [{}] * len(texts)
         
         # --------------------------------------------------------------------
         # STEP 4: Prepare vectors for Pinecone upsert
         # --------------------------------------------------------------------
         
-        # Build list of vector objects for Pinecone
-        vectors: List[Dict[str, Any]] = []
-        
-        # zip(): Combines multiple iterables element-by-element
-        # zip([1,2], [a,b], [x,y]) -> [(1,a,x), (2,b,y)]
-        # enumerate(): Adds index to each element
-        # enumerate(zip(...)) -> [(0, (1,a,x)), (1, (2,b,y))]
-        for i, (text, embedding, vec_id, meta) in enumerate(
-            zip(texts, embeddings, ids, metadata)
-        ):
-            # Create a copy of metadata and add the text content
-            # {**meta, "content": text} = dict unpacking + new key
-            # This creates a new dict with all of meta's keys plus "content"
-            meta_with_content: Dict[str, Any] = {
-                **meta,           # Unpack all existing metadata
-                "content": text   # Add text as "content" field
+        # Build list of vector objects for Pinecone using list comprehension
+        # Faster than explicit loop with append()
+        vectors: List[Dict[str, Any]] = [
+            {
+                "id": vec_id,
+                "values": embedding,
+                "metadata": {**meta, "content": text}
             }
-            
-            # Build the vector object in Pinecone's expected format
-            vectors.append({
-                "id": vec_id,              # Unique identifier
-                "values": embedding,       # The embedding vector
-                "metadata": meta_with_content  # Metadata including content
-            })
+            for text, embedding, vec_id, meta in zip(texts, embeddings, ids, metadata)
+        ]
         
         # --------------------------------------------------------------------
         # STEP 5: Upsert vectors in batches

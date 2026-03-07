@@ -1030,13 +1030,19 @@ class PineconeVectorStore(BaseVectorStore):
             List[SearchResult] — matched records sorted by similarity.
         """
         from src.pipelines.ingest import embed_text
+        import asyncio
 
-        query_embedding = embed_text(query_text)
-        return self.search(
-            query_embedding=query_embedding,
-            top_k=top_k,
-            filters=filters,
-        )
+        loop = asyncio.get_running_loop()
+
+        def _do_search() -> List[SearchResult]:
+            query_embedding = embed_text(query_text)
+            return self.search(
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filters=filters,
+            )
+
+        return await loop.run_in_executor(None, _do_search)
 
     # ========================================================================
     # PRIVATE HELPER METHODS

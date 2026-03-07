@@ -18,11 +18,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # ── Project root setup ────────────────────────────────────────────
 import sys
@@ -46,11 +47,48 @@ for name in [
 
 from src.pipelines.ingest import IngestPipeline
 from src.pipelines.retrieval import RetrievalPipeline
+from src.config import settings
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Log capture — collects pipeline log messages during a run
 # ═══════════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Rate Limiting Middleware
+# ═══════════════════════════════════════════════════════════════════
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app):
+        super().__init__(app)
+        self.rate_limit_records: Dict[str, List[float]] = {}
+
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else "unknown"
+        current_time = time.time()
+
+        if client_ip not in self.rate_limit_records:
+            self.rate_limit_records[client_ip] = []
+
+        # Filter timestamps older than 60 seconds
+        self.rate_limit_records[client_ip] = [
+            t for t in self.rate_limit_records[client_ip]
+            if current_time - t < 60
+        ]
+
+        if len(self.rate_limit_records[client_ip]) >= settings.rate_limit:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "Too many requests",
+                    "detail": f"Rate limit exceeded: {settings.rate_limit} per minute"
+                },
+                headers={"Retry-After": "60"}
+            )
+
+        self.rate_limit_records[client_ip].append(current_time)
+        return await call_next(request)
 
 class StepCapture(logging.Handler):
     """Captures log records into a list of step dicts."""
@@ -122,6 +160,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Xmem Test Frontend", lifespan=lifespan)
+
+app.add_middleware(RateLimitMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

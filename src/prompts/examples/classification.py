@@ -249,29 +249,41 @@ CLASSIFICATION_EXAMPLES: List[Tuple[str, List[Classification]]] = [
             {"source": "profile", "query": "my son loves dinosaurs"}
         ]
     ),
-    # Multi-event: two events with different dates
+    # Multi-event: two events → ONE event line with all info
     (
         "My birthday is on March 15th and our wedding anniversary is on July 22nd",
         [
-            {"source": "event", "query": "My birthday is on March 15th"},
-            {"source": "event", "query": "our wedding anniversary is on July 22nd"}
+            {"source": "event", "query": "My birthday is on March 15th and our wedding anniversary is on July 22nd"}
         ]
     ),
-    # Multi-event: events with profile info
+    # Multi-event: events with profile info → ONE event line + ONE profile line
     (
         "I started my new job at Google on January 10th and my first performance review is on April 15th",
         [
-            {"source": "event", "query": "I started my new job at Google on January 10th"},
-            {"source": "event", "query": "my first performance review is on April 15th"},
+            {"source": "event", "query": "I started my new job at Google on January 10th and my first performance review is on April 15th"},
             {"source": "profile", "query": "I work at Google"}
         ]
     ),
-    # Multi-event: relative dates
+    # Multi-event: relative dates → ONE event line
     (
         "I went to the gym yesterday and I have a doctor appointment tomorrow",
         [
-            {"source": "event", "query": "I went to the gym yesterday"},
-            {"source": "event", "query": "I have a doctor appointment tomorrow"}
+            {"source": "event", "query": "I went to the gym yesterday and I have a doctor appointment tomorrow"}
+        ]
+    ),
+    # Multiple profile facts → ONE profile line
+    (
+        "I live in New Delhi and my name is Vedant",
+        [
+            {"source": "profile", "query": "I live in New Delhi and my name is Vedant"}
+        ]
+    ),
+    # Mixed: multiple profile + multiple events → ONE of each
+    (
+        "I live in Delhi, my name is Vedant, and my birthday is on September 15th",
+        [
+            {"source": "profile", "query": "I live in Delhi and my name is Vedant"},
+            {"source": "event", "query": "my birthday is on September 15th"}
         ]
     ),
 ]

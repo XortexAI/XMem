@@ -62,9 +62,14 @@ Before classifying, scan for ANY time reference:
 If temporal marker found → likely `event`
 
 ### 2. Decomposition (Multi-Intent)
-If input contains MULTIPLE distinct pieces of information, split them:
+If input contains information for MULTIPLE agents, route to each relevant agent.
+However, each agent must appear AT MOST ONCE. Consolidate all relevant information
+for the same agent into a single query.
 - "I'm John and my birthday is March 15th" → `profile` (name) + `event` (birthday)
 - "I moved to NYC last year and now work at Google" → `event` (move) + `profile` (job)
+- "I live in Delhi and my name is Vedant" → `profile` (name AND location — ONE profile line)
+- "My birthday is March 15th and our anniversary is July 22nd" → `event` (both events — ONE event line)
+- "I started my new job at Google on Jan 10th and my review is April 15th" → `event` (both events) + `profile` (job)
 
 ### 3. Skip Trivial Messages
 Pure greetings/acknowledgments with NO factual content → empty list
@@ -77,6 +82,7 @@ Pure greetings/acknowledgments with NO factual content → empty list
 One classification per line:
 - Format: `SOURCE{tab}QUERY`
 - `SOURCE` must be: `code`, `profile`, `event`, or `image`
+- **Each SOURCE must appear AT MOST ONCE** — combine all relevant info for that agent into one QUERY
 - For trivial inputs, output nothing
 
 ---

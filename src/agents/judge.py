@@ -17,6 +17,7 @@ The judge ONLY decides — it never performs any writes itself.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Callable, Dict, List, Optional
 
@@ -218,28 +219,27 @@ class JudgeAgent(BaseAgent):
                 items_strings, new_items, user_id,
             )
 
-        # Summary / other: fall back to semantic search
-        matches: Dict[str, List[SearchResult]] = {}
+        # Summary / other: parallel semantic search across all items
+        filters: Dict[str, Any] = {}
+        if user_id:
+            filters["user_id"] = user_id
+        filters["domain"] = domain.value
 
-        for item_str in items_strings:
+        async def _search_one(item_str: str) -> tuple[str, List[SearchResult]]:
             try:
-                filters: Dict[str, Any] = {}
-                if user_id:
-                    filters["user_id"] = user_id
-                filters["domain"] = domain.value
-
                 results = await self._search_vector_store(
                     query_text=item_str,
                     filters=filters if filters else None,
                 )
-                matches[item_str] = results
+                return item_str, results
             except Exception as exc:
                 self.logger.warning(
                     "Vector search failed for '%s': %s", item_str[:60], exc
                 )
-                matches[item_str] = []
+                return item_str, []
 
-        return matches
+        pairs = await asyncio.gather(*(_search_one(s) for s in items_strings))
+        return dict(pairs)
 
     # -- Profile: deterministic metadata lookup ----------------------------
 
@@ -249,52 +249,54 @@ class JudgeAgent(BaseAgent):
         new_items: list,
         user_id: str,
     ) -> Dict[str, List[SearchResult]]:
-        """Fetch existing profile records by exact topic_subtopic match.
+        """Fetch existing profile records by exact topic_subtopic match (parallel).
 
         Builds a metadata key ``main_content = "topic_subtopic"`` from the
         incoming item and queries Pinecone with a metadata-only filter.
         This is faster and more reliable than semantic similarity.
         """
-        matches: Dict[str, List[SearchResult]] = {}
+        search_fn = getattr(self.vector_store, "search_by_metadata", None)
 
-        for idx, item_str in enumerate(items_strings):
+        async def _lookup_one(idx: int, item_str: str) -> tuple[str, List[SearchResult]]:
             try:
                 item = new_items[idx] if idx < len(new_items) else {}
                 meta_key = _build_profile_metadata_key(item)
 
                 if not meta_key:
-                    # Can't build key — fall back gracefully
-                    matches[item_str] = []
-                    continue
+                    return item_str, []
 
                 filters: Dict[str, Any] = {"main_content": meta_key}
                 if user_id:
                     filters["user_id"] = user_id
                 filters["domain"] = JudgeDomain.PROFILE.value
 
-                search_fn = getattr(self.vector_store, "search_by_metadata", None)
                 if search_fn is not None:
-                    results = search_fn(filters=filters, top_k=self.top_k)
-                    matches[item_str] = results if results else []
+                    # search_by_metadata is sync — run in thread pool
+                    results = await asyncio.to_thread(
+                        search_fn, filters=filters, top_k=self.top_k,
+                    )
+                    return item_str, results if results else []
                 else:
                     self.logger.debug(
                         "Vector store has no search_by_metadata — "
                         "falling back to semantic search for profile."
                     )
-                    # Graceful fallback to semantic search
                     results = await self._search_vector_store(
                         query_text=item_str,
                         filters={"user_id": user_id, "domain": "profile"} if user_id else None,
                     )
-                    matches[item_str] = results
+                    return item_str, results
             except Exception as exc:
                 self.logger.warning(
                     "Profile metadata search failed for '%s': %s",
                     item_str[:60], exc,
                 )
-                matches[item_str] = []
+                return item_str, []
 
-        return matches
+        pairs = await asyncio.gather(
+            *(_lookup_one(i, s) for i, s in enumerate(items_strings))
+        )
+        return dict(pairs)
 
     # -- Semantic search fallback (summary domain) -------------------------
 
@@ -328,31 +330,30 @@ class JudgeAgent(BaseAgent):
             self.logger.debug("No graph_event_search provided — skipping Neo4j lookup.")
             return {}
 
-        matches: Dict[str, List[SearchResult]] = {}
-
-        for idx, item_str in enumerate(items_strings):
+        async def _lookup_one(idx: int, item_str: str) -> tuple[str, List[SearchResult]]:
             try:
-                # Use the event_name for the Neo4j similarity search
                 event = new_items[idx] if idx < len(new_items) else {}
                 event_name = event.get("event_name", "") if isinstance(event, dict) else ""
 
                 if not event_name:
-                    matches[item_str] = []
-                    continue
+                    return item_str, []
 
                 results = await self.graph_event_search(
                     event_name=event_name,
                     user_id=user_id,
                     top_k=self.top_k,
                 )
-                matches[item_str] = results if results else []
+                return item_str, results if results else []
             except Exception as exc:
                 self.logger.warning(
                     "Neo4j event search failed for '%s': %s", item_str[:60], exc
                 )
-                matches[item_str] = []
+                return item_str, []
 
-        return matches
+        pairs = await asyncio.gather(
+            *(_lookup_one(i, s) for i, s in enumerate(items_strings))
+        )
+        return dict(pairs)
 
     # -- Response parsing --------------------------------------------------
 

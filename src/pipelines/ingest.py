@@ -413,7 +413,7 @@ class IngestPipeline:
             "user_id": user_id,
         }))
 
-        # Batch profile, temporal, image, & code queries
+        # Collect queries per domain — merge duplicates so each agent runs once
         profile_queries: List[str] = []
         temporal_queries: List[str] = []
         image_queries: List[str] = []
@@ -481,26 +481,19 @@ class IngestPipeline:
     # ── Extraction nodes ──────────────────────────────────────────────
 
     async def _node_extract_profile(self, state: IngestState) -> Dict[str, Any]:
-        """Extract profile facts from all batched profile queries."""
+        """Extract profile facts from the classifier query."""
         queries = state.get("profile_queries", [])
         user_id = state.get("user_id", "default")
 
-        all_facts = []
-        last_result = None
+        # Merge into a single query (safety net if classifier outputs duplicate lines)
+        combined_query = " ".join(queries)
+        result = await self.profiler.arun({"classifier_output": combined_query})
 
-        results = await asyncio.gather(
-            *(self.profiler.arun({"classifier_output": q}) for q in queries)
-        )
-        for result in results:
-            if not result.is_empty:
-                all_facts.extend(result.facts)
-                last_result = result
-
-        if not all_facts:
+        if result.is_empty:
             return {"status": "no_profile_facts"}
 
         # Judge all facts together for better dedup
-        items = [f.model_dump() for f in all_facts]
+        items = [f.model_dump() for f in result.facts]
         judge_result = await self.judge.arun({
             "domain": "profile",
             "new_items": items,
@@ -514,41 +507,37 @@ class IngestPipeline:
             user_id=user_id,
         )
         return {
-            "profile_result": last_result,
+            "profile_result": result,
             "profile_judge": judge_result,
             "profile_weaver": weaver_result,
         }
 
     async def _node_extract_temporal(self, state: IngestState) -> Dict[str, Any]:
-        """Extract temporal events from all batched temporal queries."""
+        """Extract temporal events from the classifier query."""
         queries = state.get("temporal_queries", [])
         user_id = state.get("user_id", "default")
         session_dt = state.get("session_datetime", "")
 
-        all_items: List[Dict[str, str]] = []
-        last_result = None
+        # Merge into a single query
+        combined_query = " ".join(queries)
+        result = await self.temporal.arun({
+            "classifier_output": combined_query,
+            "session_datetime": session_dt,
+        })
 
-        results = await asyncio.gather(
-            *(self.temporal.arun({
-                "classifier_output": q,
-                "session_datetime": session_dt,
-            }) for q in queries)
-        )
-        for result in results:
-            if not result.is_empty:
-                for event in result.events:
-                    all_items.append({
-                        "date": event.date,
-                        "event_name": event.event_name or "",
-                        "desc": event.desc or "",
-                        "year": event.year or "",
-                        "time": event.time or "",
-                        "date_expression": event.date_expression or "",
-                    })
-                last_result = result
-
-        if not all_items:
+        if result.is_empty:
             return {"status": "no_temporal_event"}
+
+        all_items: List[Dict[str, str]] = []
+        for event in result.events:
+            all_items.append({
+                "date": event.date,
+                "event_name": event.event_name or "",
+                "desc": event.desc or "",
+                "year": event.year or "",
+                "time": event.time or "",
+                "date_expression": event.date_expression or "",
+            })
 
         judge_result = await self.judge.arun({
             "domain": "temporal",
@@ -562,7 +551,7 @@ class IngestPipeline:
             user_id=user_id,
         )
         return {
-            "temporal_result": last_result,
+            "temporal_result": result,
             "temporal_judge": judge_result,
             "temporal_weaver": weaver_result,
         }
@@ -610,32 +599,28 @@ class IngestPipeline:
         }
 
     async def _node_extract_code(self, state: IngestState) -> Dict[str, Any]:
-        """Extract code annotations from all batched code queries."""
+        """Extract code annotations from the classifier query."""
         queries = state.get("code_queries", [])
         user_id = state.get("user_id", "default")
 
-        all_items: List[str] = []
-        last_result = None
+        # Merge into a single query
+        combined_query = " ".join(queries)
+        result = await self.code_agent.arun({"classifier_output": combined_query})
 
-        results = await asyncio.gather(
-            *(self.code_agent.arun({"classifier_output": q}) for q in queries)
-        )
-        for result in results:
-            if not result.is_empty:
-                for ann in result.annotations:
-                    parts = [
-                        ann.annotation_type.value,
-                        ann.target_symbol or "",
-                        ann.target_file or "",
-                        ann.repo or "",
-                        ann.severity.value if ann.severity else "",
-                        ann.content,
-                    ]
-                    all_items.append(" | ".join(parts))
-                last_result = result
-
-        if not all_items:
+        if result.is_empty:
             return {"status": "no_code_annotations"}
+
+        all_items: List[str] = []
+        for ann in result.annotations:
+            parts = [
+                ann.annotation_type.value,
+                ann.target_symbol or "",
+                ann.target_file or "",
+                ann.repo or "",
+                ann.severity.value if ann.severity else "",
+                ann.content,
+            ]
+            all_items.append(" | ".join(parts))
 
         judge_result = await self.judge.arun({
             "domain": JudgeDomain.CODE,
@@ -649,37 +634,33 @@ class IngestPipeline:
             user_id=user_id,
         )
         return {
-            "code_result": last_result,
+            "code_result": result,
             "code_judge": judge_result,
             "code_weaver": weaver_result,
         }
 
     async def _node_extract_snippet(self, state: IngestState) -> Dict[str, Any]:
-        """Extract personal code snippets from all batched code queries (single-user)."""
+        """Extract personal code snippets from the classifier query (single-user)."""
         queries = state.get("code_queries", [])
         user_id = state.get("user_id", "default")
 
-        all_items: List[str] = []
-        last_result = None
+        # Merge into a single query
+        combined_query = " ".join(queries)
+        result = await self.snippet_agent.arun({"classifier_output": combined_query})
 
-        results = await asyncio.gather(
-            *(self.snippet_agent.arun({"classifier_output": q}) for q in queries)
-        )
-        for result in results:
-            if not result.is_empty:
-                for snip in result.snippets:
-                    parts = [
-                        snip.content,
-                        snip.code_snippet.replace("\n", "\\n") if snip.code_snippet else "",
-                        snip.language,
-                        snip.snippet_type.value,
-                        ",".join(snip.tags),
-                    ]
-                    all_items.append(" | ".join(parts))
-                last_result = result
-
-        if not all_items:
+        if result.is_empty:
             return {"status": "no_snippets"}
+
+        all_items: List[str] = []
+        for snip in result.snippets:
+            parts = [
+                snip.content,
+                snip.code_snippet.replace("\n", "\\n") if snip.code_snippet else "",
+                snip.language,
+                snip.snippet_type.value,
+                ",".join(snip.tags),
+            ]
+            all_items.append(" | ".join(parts))
 
         judge_result = await self.judge.arun({
             "domain": JudgeDomain.SNIPPET,
@@ -696,7 +677,7 @@ class IngestPipeline:
             user_id=user_id,
         )
         return {
-            "snippet_result": last_result,
+            "snippet_result": result,
             "snippet_judge": judge_result,
             "snippet_weaver": weaver_result,
         }

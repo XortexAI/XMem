@@ -68,6 +68,7 @@ from src.agents.snippet import SnippetAgent
 from src.agents.summarizer import SummarizerAgent
 from src.agents.temporal import TemporalAgent
 from src.config import settings
+from src.config.effort import EffortConfig, EffortLevel, get_effort_config
 from src.graph.code_graph_client import CodeGraphClient
 from src.graph.neo4j_client import Neo4jClient
 from src.graph.schema import setup_constraints
@@ -134,6 +135,7 @@ class IngestState(TypedDict, total=False):
     user_id: str
     image_url: str
     session_datetime: str
+    effort_config: EffortConfig
 
     # ── routing (internal — set by _route_after_classify) ─────────────
     profile_queries: List[str]      # batched profile sub-queries
@@ -740,6 +742,7 @@ class IngestPipeline:
         result = await self.summarizer.arun({
             "user_query": state.get("user_query", ""),
             "agent_response": state.get("agent_response", ""),
+            "effort_config": state.get("effort_config", get_effort_config(EffortLevel.LOW)),
         })
         if result.is_empty:
             return {"status": "no_summary"}
@@ -816,6 +819,7 @@ class IngestPipeline:
         user_id: str = "default",
         session_datetime: str = "",
         image_url: str = "",
+        effort_level: str = "low",
     ) -> Dict[str, Any]:
         """Run the full ingest pipeline.
 
@@ -825,16 +829,20 @@ class IngestPipeline:
             user_id: User identifier for storage scoping.
             session_datetime: Optional datetime context for temporal events.
             image_url: URL or base64 data-URI of an attached image.
+            effort_level: ``"low"`` (fast/cheap) or ``"high"`` (accurate/slower).
 
         Returns:
             Final LangGraph state dict with all intermediate results.
         """
+        effort_cfg = get_effort_config(effort_level)
+
         initial_state: IngestState = {
             "user_query": user_query,
             "agent_response": agent_response,
             "user_id": user_id,
             "session_datetime": session_datetime,
             "image_url": image_url,
+            "effort_config": effort_cfg,
             "errors": [],
             "status": "running",
         }
@@ -843,6 +851,7 @@ class IngestPipeline:
         logger.info("INGEST PIPELINE START")
         logger.info("  user_query: %s", user_query[:80])
         logger.info("  user_id:    %s", user_id)
+        logger.info("  effort:     %s", effort_cfg.level.value)
         if image_url:
             logger.info("  image_url:  %s", image_url[:50] + "..." if len(image_url) > 50 else image_url)
         logger.info("=" * 60)
@@ -863,10 +872,11 @@ class IngestPipeline:
         user_id: str = "default",
         session_datetime: str = "",
         image_url: str = "",
+        effort_level: str = "low",
     ) -> Dict[str, Any]:
         """Synchronous wrapper for run."""
         return asyncio.run(
-            self.run(user_query, agent_response, user_id, session_datetime, image_url)
+            self.run(user_query, agent_response, user_id, session_datetime, image_url, effort_level)
         )
 
     # ------------------------------------------------------------------

@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from src.config.effort import EffortLevel
+
 
 # ── Shared envelope ────────────────────────────────────────────────────────
 
@@ -63,6 +65,10 @@ class IngestRequest(BaseModel):
     image_url: str = Field(
         default="", max_length=50_000,
         description="URL or base64 data-URI of an attached image",
+    )
+    effort_level: EffortLevel = Field(
+        default=EffortLevel.LOW,
+        description="Processing effort: 'low' (fast/cheap) or 'high' (accurate/slower)",
     )
 
     @field_validator("user_query")

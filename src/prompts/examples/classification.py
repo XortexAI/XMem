@@ -39,10 +39,6 @@ CLASSIFICATION_EXAMPLES: List[Tuple[str, List[Classification]]] = [
         [{"source": "profile", "query": "I'm a vegetarian and love Italian food"}]
     ),
     (
-        "My birthday is on March 15th",
-        [{"source": "event", "query": "My birthday is on March 15th"}]
-    ),
-    (
         "Our wedding anniversary is July 22nd, 2019",
         [{"source": "event", "query": "Our wedding anniversary is July 22nd, 2019"}]
     ),
@@ -87,10 +83,6 @@ CLASSIFICATION_EXAMPLES: List[Tuple[str, List[Classification]]] = [
         [{"source": "profile", "query": "I prefer writing code in TypeScript over JavaScript"}]
     ),
     (
-        "Mom's birthday is February 14th",
-        [{"source": "event", "query": "Mom's birthday is February 14th"}]
-    ),
-    (
         "I ran a charity race last Saturday",
         [{"source": "event", "query": "I ran a charity race last Saturday"}]
     ),
@@ -118,40 +110,12 @@ CLASSIFICATION_EXAMPLES: List[Tuple[str, List[Classification]]] = [
         ]
     ),
     (
-        "How do I set up a Docker container for my Node.js app?",
-        [{"source": "code", "query": "How do I set up a Docker container for my Node.js app?"}]
-    ),
-    (
-        "Debug this kubernetes pod crash",
-        [{"source": "code", "query": "Debug this kubernetes pod crash"}]
-    ),
-    (
-        "Write unit tests for this function using pytest",
-        [{"source": "code", "query": "Write unit tests for this function using pytest"}]
-    ),
-    (
-        "How do I mock API calls in Jest?",
-        [{"source": "code", "query": "How do I mock API calls in Jest?"}]
-    ),
-    (
-        "Explain how to make a REST API call with authentication",
-        [{"source": "code", "query": "Explain how to make a REST API call with authentication"}]
-    ),
-    (
-        "Convert this JSON response to a Python dictionary",
-        [{"source": "code", "query": "Convert this JSON response to a Python dictionary"}]
-    ),
-    (
         "I usually wake up at 6 AM every day",
         [{"source": "profile", "query": "I usually wake up at 6 AM every day"}]
     ),
     (
         "I never drink coffee after 3 PM",
         [{"source": "profile", "query": "I never drink coffee after 3 PM"}]
-    ),
-    (
-        "I believe in work-life balance",
-        [{"source": "profile", "query": "I believe in work-life balance"}]
     ),
     (
         "Privacy is very important to me",
@@ -182,16 +146,8 @@ CLASSIFICATION_EXAMPLES: List[Tuple[str, List[Classification]]] = [
         [{"source": "event", "query": "Remind me to call mom tomorrow evening"}]
     ),
     (
-        "I have a dentist appointment this Friday at 2:30 PM",
-        [{"source": "event", "query": "I have a dentist appointment this Friday at 2:30 PM"}]
-    ),
-    (
         "I visited Paris in August 2022",
         [{"source": "event", "query": "I visited Paris in August 2022"}]
-    ),
-    (
-        "We got married 5 years ago",
-        [{"source": "event", "query": "We got married 5 years ago"}]
     ),
     (
         "I finished my master's degree back in 2019",

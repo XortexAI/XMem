@@ -69,18 +69,6 @@ TEMPORAL_EXAMPLES: List[Tuple[str, str, str]] = [
         "10:43 am on 4 February, 2023",
         "DATE: 03-04\nEVENT_NAME: Dance Competition\nYEAR: 2023\nDESC: Dance competition preparation\nTIME: \nDATE_EXPRESSION: next month",
     ),
-    # Memorial/Important date
-    (
-        "My father passed away on September 3rd, 2018",
-        "8:29 pm on 13 June, 2023",
-        "DATE: 09-03\nEVENT_NAME: Father's Memorial\nYEAR: 2018\nDESC: Memorial day for user's father\nTIME: \nDATE_EXPRESSION: September 3rd, 2018",
-    ),
-    # Graduation/Achievement
-    (
-        "I graduated from college on May 20th, 2020",
-        "7:18 pm on 27 May, 2023",
-        "DATE: 05-20\nEVENT_NAME: College Graduation\nYEAR: 2020\nDESC: User's college graduation date\nTIME: \nDATE_EXPRESSION: May 20th, 2020",
-    ),
     # No event case
     (
         "I really like pizza",
@@ -104,18 +92,6 @@ TEMPORAL_EXAMPLES: List[Tuple[str, str, str]] = [
         "Lost my job as a banker yesterday, so I'm gonna take a shot at starting my own business.",
         "4:04 pm on 20 January, 2023",
         "DATE: 01-19\nEVENT_NAME: Lost Job\nYEAR: 2023\nDESC: Lost job as a banker\nTIME: \nDATE_EXPRESSION: yesterday",
-    ),
-    # Trip/Travel event
-    (
-        "I've been to Paris yesterday! It was sooo cool.",
-        "2:32 pm on 29 January, 2023",
-        "DATE: 01-28\nEVENT_NAME: Paris Trip\nYEAR: 2023\nDESC: Visited Paris\nTIME: \nDATE_EXPRESSION: yesterday",
-    ),
-    # Multi-event: birthday + anniversary
-    (
-        "My birthday is on March 15th and our wedding anniversary is on July 22nd",
-        "4:04 pm on 20 January, 2023",
-        "DATE: 03-15\nEVENT_NAME: Birthday\nYEAR: \nDESC: User's birthday\nTIME: \nDATE_EXPRESSION: March 15th\n---\nDATE: 07-22\nEVENT_NAME: Wedding Anniversary\nYEAR: \nDESC: User's wedding anniversary\nTIME: \nDATE_EXPRESSION: July 22nd",
     ),
     # Multi-event: different event types
     (

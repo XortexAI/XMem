@@ -33,6 +33,7 @@ from src.config import settings
 from src.graph.neo4j_client import Neo4jClient
 from src.prompts.retrieval import ANSWER_PROMPT, build_system_prompt
 from src.schemas.retrieval import RetrievalResult, SourceRecord
+from src.schemas.code import snippets_namespace
 from src.storage.pinecone import PineconeVectorStore
 
 load_dotenv()
@@ -67,7 +68,14 @@ class SearchSummary(BaseModel):
     query: str = Field(description="Short search query, e.g. 'what does the user enjoy'")
 
 
-TOOLS = [SearchProfile, SearchTemporal, SearchSummary]
+class SearchSnippet(BaseModel):
+    """Search for personal code snippets previously saved by the user.
+    Use when the question asks about a specific piece of code, script, or technical configuration the user wrote."""
+
+    query: str = Field(description="Short search query, e.g. 'python database connection script'")
+
+
+TOOLS = [SearchProfile, SearchTemporal, SearchSummary, SearchSnippet]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -123,6 +131,7 @@ class RetrievalPipeline:
             self.neo4j = neo4j_client
 
         self.embed_fn = embed_fn
+        self._snippet_stores: Dict[str, PineconeVectorStore] = {}
 
         logger.info("RetrievalPipeline initialized")
 
@@ -282,6 +291,12 @@ class RetrievalPipeline:
                 user_id=user_id,
                 top_k=15,
             )
+        elif name == "searchsnippet":
+            return await self._search_snippet(
+                query=tool_args.get("query", ""),
+                user_id=user_id,
+                top_k=5,
+            )
         else:
             logger.warning("Unknown tool: %s (normalised: %s)", tool_name, name)
             return []
@@ -414,6 +429,58 @@ class RetrievalPipeline:
             ))
 
         logger.info("  → Summary [%s]: %d results", query, len(records))
+        return records
+
+    # -- Snippet: Pinecone semantic search ─────────────────────────────
+
+    def _get_snippet_store(self, user_id: str) -> PineconeVectorStore:
+        if user_id not in self._snippet_stores:
+            ns = snippets_namespace(user_id)
+            self._snippet_stores[user_id] = PineconeVectorStore(
+                api_key=settings.pinecone_api_key,
+                index_name=settings.pinecone_index_name,
+                dimension=settings.pinecone_dimension,
+                metric=settings.pinecone_metric,
+                cloud=settings.pinecone_cloud,
+                region=settings.pinecone_region,
+                namespace=ns,
+                create_if_not_exists=False,
+            )
+        return self._snippet_stores[user_id]
+
+    async def _search_snippet(
+        self,
+        query: str,
+        user_id: str,
+        top_k: int = 5,
+    ) -> List[SourceRecord]:
+        """Semantic search over user code snippets (sandboxed namespace)."""
+        store = self._get_snippet_store(user_id)
+        
+        # In the sandboxed namespace, we can just search. We pass domain filter just in case.
+        results = await store.search_by_text(
+            query_text=query,
+            top_k=top_k,
+            filters={"domain": "snippet"},
+        )
+
+        records = []
+        for r in results:
+            content = r.content
+            snippet = r.metadata.get("code_snippet", "")
+            if snippet:
+                # Add the actual code block directly into the context content for LLM
+                lang = r.metadata.get("language", "")
+                content += f"\n```{lang}\n{snippet}\n```"
+
+            records.append(SourceRecord(
+                domain="snippet",
+                content=content,
+                score=r.score,
+                metadata={"id": r.id, **r.metadata},
+            ))
+
+        logger.info("  → Snippet [%s]: %d results", query, len(records))
         return records
 
     # ------------------------------------------------------------------

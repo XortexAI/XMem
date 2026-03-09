@@ -916,9 +916,9 @@ class IngestPipeline:
         image_url: str,
         cfg: EffortConfig,
     ) -> Dict[str, Any]:
-        """HIGH-effort path: chunk user_query → parallel pipeline calls → merge.
+        """HIGH-effort path: chunk user_query → sequential pipeline calls → merge.
 
-        Each chunk gets the full pipeline run independently and in parallel.
+        Each chunk gets the full pipeline run independently and sequentially.
         The ``agent_response`` is passed to every chunk so summary extraction
         always has the full assistant context.  Image is only forwarded to the
         first chunk to avoid duplicate image processing.
@@ -938,20 +938,19 @@ class IngestPipeline:
             cfg.chunk_threshold_tokens,
         )
 
-        # Fire every chunk through the pipeline concurrently.
+        # Process every chunk through the pipeline sequentially to avoid duplicates.
         # Image is only sent with chunk[0] to avoid duplicate processing.
-        tasks = [
-            self._invoke_graph(
+        chunk_results: List[Dict[str, Any]] = []
+        for idx, chunk in enumerate(chunks):
+            logger.info("Processing chunk %d/%d...", idx + 1, len(chunks))
+            res = await self._invoke_graph(
                 user_query=chunk,
                 agent_response=agent_response,
                 user_id=user_id,
                 session_datetime=session_datetime,
                 image_url=image_url if idx == 0 else "",
             )
-            for idx, chunk in enumerate(chunks)
-        ]
-
-        chunk_results: List[Dict[str, Any]] = await asyncio.gather(*tasks)
+            chunk_results.append(res)
 
         # ── Merge states ─────────────────────────────────────────────
         # All writes (Pinecone / Neo4j) already happened inside each chunk's

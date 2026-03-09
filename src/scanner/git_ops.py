@@ -59,6 +59,11 @@ class DiffResult:
         ]
 
 
+def _validate_no_options(arg: str, arg_name: str) -> None:
+    if str(arg).startswith("-"):
+        raise ValueError(f"Invalid {arg_name}: cannot start with '-' to prevent command injection")
+
+
 def _run_git(args: List[str], cwd: str, timeout: int = 600) -> str:
     """Run a git command and return stdout."""
     cmd = ["git"] + args
@@ -89,6 +94,8 @@ def clone_repo(
     If ``token`` is provided, it is injected into the URL for private repos
     (format: ``https://{token}@github.com/org/repo.git``).
     """
+    _validate_no_options(repo_url, "repo_url")
+    _validate_no_options(branch, "branch")
     if token and repo_url.startswith("https://"):
         repo_url = repo_url.replace("https://", f"https://{token}@")
 
@@ -97,7 +104,7 @@ def clone_repo(
     args = ["clone", "--branch", branch, "--single-branch"]
     if depth:
         args += ["--depth", str(depth)]
-    args += [repo_url, local_path]
+    args += ["--", repo_url, local_path]
 
     _run_git(args, cwd=str(Path(local_path).parent), timeout=1800)
     sha = get_head_sha(local_path)
@@ -107,6 +114,7 @@ def clone_repo(
 
 def pull_latest(local_path: str, branch: str = "main") -> str:
     """Pull the latest changes. Returns the new HEAD SHA."""
+    _validate_no_options(branch, "branch")
     _run_git(["checkout", branch], cwd=local_path)
     _run_git(["pull", "origin", branch], cwd=local_path, timeout=600)
     sha = get_head_sha(local_path)

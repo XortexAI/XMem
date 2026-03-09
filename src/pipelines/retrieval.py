@@ -19,6 +19,7 @@ Usage:
 """
 
 from __future__ import annotations
+import asyncio
 
 import logging
 import os
@@ -168,7 +169,8 @@ class RetrievalPipeline:
 
         if ai_response.tool_calls:
             called_tools = set()
-            for tc in ai_response.tool_calls:
+
+            async def _process_tool_call(tc):
                 tool_name = tc["name"]
                 tool_args = tc["args"]
                 tool_id = tc["id"]
@@ -178,14 +180,17 @@ class RetrievalPipeline:
                 records = await self._execute_tool(
                     tool_name, tool_args, user_id, top_k,
                 )
-                sources.extend(records)
 
-                # Build ToolMessage for the LLM
                 tool_result_text = self._format_tool_results(records)
-                tool_messages.append(
-                    ToolMessage(content=tool_result_text, tool_call_id=tool_id)
-                )
+                tool_msg = ToolMessage(content=tool_result_text, tool_call_id=tool_id)
 
+                return tool_name, records, tool_msg
+
+            results = await asyncio.gather(*(_process_tool_call(tc) for tc in ai_response.tool_calls))
+
+            for tool_name, records, tool_msg in results:
+                sources.extend(records)
+                tool_messages.append(tool_msg)
                 called_tools.add(tool_name.lower().replace("_", ""))
 
             # Auto-add summary context when only profile or temporal was requested

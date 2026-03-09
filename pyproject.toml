@@ -59,7 +59,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "-ra -q --cov=src"
+addopts = "-ra -q"
 testpaths = [
     "tests",
 ]

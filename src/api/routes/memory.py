@@ -111,6 +111,7 @@ async def ingest_memory(req: IngestRequest, request: Request):
             user_id=req.user_id,
             session_datetime=req.session_datetime,
             image_url=req.image_url,
+            effort_level=req.effort_level,
         )
         data = IngestResponse(
             model=_model_name(pipeline.model),

@@ -64,6 +64,10 @@ class IngestRequest(BaseModel):
         default="", max_length=50_000,
         description="URL or base64 data-URI of an attached image",
     )
+    effort_level: str = Field(
+        default="low",
+        description="'low' (fast, single pass) or 'high' (chunked parallel extraction)",
+    )
 
     @field_validator("user_query")
     @classmethod

@@ -235,10 +235,10 @@ class ExtractedSnippet(BaseModel):
     content: str = Field(
         ..., description="Natural language description of what the code does"
     )
-    code_snippet: str = Field(
+    code_snippet: Optional[str] = Field(
         default="", description="The actual code (if present in the conversation)"
     )
-    language: str = Field(
+    language: Optional[str] = Field(
         default="", description="Programming language (python, cpp, java, etc.)"
     )
     snippet_type: SnippetType = Field(

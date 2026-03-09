@@ -55,6 +55,11 @@ AVAILABLE TOOLS
    **How it works:** Embeds your query and finds similar conversation
    summaries. Good fallback when no profile topic matches.
 
+### 4. search_snippet(query)
+   **What it searches:** Pinecone vector store (the user's private code snippets).
+   **When to use:** The question asks for code, scripts, configurations, or technical solutions the user previously wrote or saved.
+   **How it works:** Embeds your query and searches the user's isolated snippets namespace. It returns the raw code blocks.
+
 ═══════════════════════════════════════════════════════════════════════
 AVAILABLE PROFILES (topic / sub_topic)
 ═══════════════════════════════════════════════════════════════════════
@@ -72,7 +77,9 @@ DECISION RULES
 2. **Temporal for dates** — Any question with "when", a date reference,
    or event-related language → search_temporal.
 
-3. **Summary as fallback** — For broad questions like "what do you know
+3. **Snippets for code** — Any question asking to retrieve a previously written script, code block, or technical configuration → search_snippet.
+
+4. **Summary as fallback** — For broad questions like "what do you know
    about me" or when no profile topic matches → search_summary.
 
 4. **Multi-tool is fine** — If the question spans domains, call

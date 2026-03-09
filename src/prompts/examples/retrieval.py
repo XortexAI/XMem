@@ -194,4 +194,30 @@ RETRIEVAL_EXAMPLES: List[Tuple[str, str, List[Dict[str, Any]]]] = [
             },
         ],
     ),
+    
+    # ── Code Snippet lookups ──────────────────────────────────────────
+
+    (
+        "Can you show me the python script I wrote for database connection?",
+        "  - work / company",
+        [
+            {
+                "tool": "search_snippet",
+                "args": {"query": "python database connection script"},
+                "why": "Asking for a previously written script/code → search_snippet",
+            },
+        ],
+    ),
+
+    (
+        "What was my neo4j cypher query for deleting events?",
+        "  - work / company",
+        [
+            {
+                "tool": "search_snippet",
+                "args": {"query": "neo4j cypher query delete events"},
+                "why": "Asking for a previously written query/code → search_snippet",
+            },
+        ],
+    ),
 ]

@@ -88,6 +88,7 @@ from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
 from src.storage.base import BaseVectorStore, SearchResult
 from src.storage.pinecone import PineconeVectorStore
+from src.config.effort import EffortLevel, EffortConfig, get_effort_config, chunk_text, estimate_tokens
 
 logger = logging.getLogger("xmem.pipelines.ingest")
 
@@ -816,19 +817,85 @@ class IngestPipeline:
         user_id: str = "default",
         session_datetime: str = "",
         image_url: str = "",
+        effort_level: EffortLevel | str = EffortLevel.LOW,
     ) -> Dict[str, Any]:
         """Run the full ingest pipeline.
 
         Args:
-            user_query: The raw user message.
-            agent_response: The assistant's response (for summary extraction).
-            user_id: User identifier for storage scoping.
+            user_query:       The raw user message.
+            agent_response:   The assistant's response (for summary extraction).
+            user_id:          User identifier for storage scoping.
             session_datetime: Optional datetime context for temporal events.
-            image_url: URL or base64 data-URI of an attached image.
+            image_url:        URL or base64 data-URI of an attached image.
+            effort_level:     ``'low'`` (default) or ``'high'``.
+
+                              * **LOW**  — single pipeline call, fast.
+                              * **HIGH** — splits ``user_query`` into
+                                overlapping ≈200-token chunks, runs the full
+                                pipeline on every chunk **in parallel**, then
+                                merges the results.  Ensures nothing is missed
+                                in long inputs at the cost of more LLM calls.
 
         Returns:
             Final LangGraph state dict with all intermediate results.
+            In HIGH mode this is the merged state across all chunks.
         """
+        effort_cfg: EffortConfig = get_effort_config(effort_level)
+
+        logger.info("=" * 60)
+        logger.info("INGEST PIPELINE START  [effort=%s]", effort_cfg.level.value.upper())
+        logger.info("  user_query: %s", user_query[:80])
+        logger.info("  user_id:    %s", user_id)
+        if image_url:
+            logger.info(
+                "  image_url:  %s",
+                image_url[:50] + "..." if len(image_url) > 50 else image_url,
+            )
+        logger.info("=" * 60)
+
+        # ── HIGH effort: chunk + parallel dispatch ────────────────────
+        if (
+            effort_cfg.level == EffortLevel.HIGH
+            and estimate_tokens(user_query) > effort_cfg.chunk_threshold_tokens
+        ):
+            result = await self._run_high_effort(
+                user_query=user_query,
+                agent_response=agent_response,
+                user_id=user_id,
+                session_datetime=session_datetime,
+                image_url=image_url,
+                cfg=effort_cfg,
+            )
+        else:
+            # ── LOW effort (or short input): single pipeline call ─────
+            result = await self._invoke_graph(
+                user_query=user_query,
+                agent_response=agent_response,
+                user_id=user_id,
+                session_datetime=session_datetime,
+                image_url=image_url,
+            )
+
+        logger.info("=" * 60)
+        logger.info("INGEST PIPELINE COMPLETE")
+        self._log_summary(result)
+        logger.info("=" * 60)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _invoke_graph(
+        self,
+        user_query: str,
+        agent_response: str,
+        user_id: str,
+        session_datetime: str,
+        image_url: str,
+    ) -> Dict[str, Any]:
+        """Single, unconditional pipeline call (LOW path)."""
         initial_state: IngestState = {
             "user_query": user_query,
             "agent_response": agent_response,
@@ -838,23 +905,82 @@ class IngestPipeline:
             "errors": [],
             "status": "running",
         }
+        return await self.graph.ainvoke(initial_state)
 
-        logger.info("=" * 60)
-        logger.info("INGEST PIPELINE START")
-        logger.info("  user_query: %s", user_query[:80])
-        logger.info("  user_id:    %s", user_id)
-        if image_url:
-            logger.info("  image_url:  %s", image_url[:50] + "..." if len(image_url) > 50 else image_url)
-        logger.info("=" * 60)
+    async def _run_high_effort(
+        self,
+        user_query: str,
+        agent_response: str,
+        user_id: str,
+        session_datetime: str,
+        image_url: str,
+        cfg: EffortConfig,
+    ) -> Dict[str, Any]:
+        """HIGH-effort path: chunk user_query → parallel pipeline calls → merge.
 
-        result = await self.graph.ainvoke(initial_state)
+        Each chunk gets the full pipeline run independently and in parallel.
+        The ``agent_response`` is passed to every chunk so summary extraction
+        always has the full assistant context.  Image is only forwarded to the
+        first chunk to avoid duplicate image processing.
+        """
+        chunks = chunk_text(
+            user_query,
+            chunk_size_tokens=cfg.chunk_size_tokens,
+            overlap_tokens=cfg.overlap_tokens,
+        )
 
-        logger.info("=" * 60)
-        logger.info("INGEST PIPELINE COMPLETE")
-        self._log_summary(result)
-        logger.info("=" * 60)
+        logger.info(
+            "HIGH-effort ingest: %d chunk(s)  "
+            "(chunk_size=%d tok, overlap=%d tok, threshold=%d tok)",
+            len(chunks),
+            cfg.chunk_size_tokens,
+            cfg.overlap_tokens,
+            cfg.chunk_threshold_tokens,
+        )
 
-        return result
+        # Fire every chunk through the pipeline concurrently.
+        # Image is only sent with chunk[0] to avoid duplicate processing.
+        tasks = [
+            self._invoke_graph(
+                user_query=chunk,
+                agent_response=agent_response,
+                user_id=user_id,
+                session_datetime=session_datetime,
+                image_url=image_url if idx == 0 else "",
+            )
+            for idx, chunk in enumerate(chunks)
+        ]
+
+        chunk_results: List[Dict[str, Any]] = await asyncio.gather(*tasks)
+
+        # ── Merge states ─────────────────────────────────────────────
+        # All writes (Pinecone / Neo4j) already happened inside each chunk's
+        # pipeline run.  We merge the returned state dicts so callers get a
+        # sensible aggregate view.
+        merged: Dict[str, Any] = {}
+        all_errors: List[str] = []
+
+        for state in chunk_results:
+            # Accumulate errors from every chunk.
+            all_errors.extend(state.get("errors") or [])
+
+            # For every key, prefer the last non-None value; this gives
+            # callers the final-chunk's extraction results while retaining
+            # earlier chunks' results when a later chunk produced nothing.
+            for key, value in state.items():
+                if key == "errors":
+                    continue
+                if value is not None:
+                    merged[key] = value
+
+        merged["errors"] = all_errors
+        merged["status"] = "completed"
+        logger.info(
+            "HIGH-effort merge complete: %d chunk(s) processed, %d error(s).",
+            len(chunk_results),
+            len(all_errors),
+        )
+        return merged
 
     def run_sync(
         self,
@@ -863,10 +989,18 @@ class IngestPipeline:
         user_id: str = "default",
         session_datetime: str = "",
         image_url: str = "",
+        effort_level: EffortLevel | str = EffortLevel.LOW,
     ) -> Dict[str, Any]:
         """Synchronous wrapper for run."""
         return asyncio.run(
-            self.run(user_query, agent_response, user_id, session_datetime, image_url)
+            self.run(
+                user_query,
+                agent_response,
+                user_id,
+                session_datetime,
+                image_url,
+                effort_level,
+            )
         )
 
     # ------------------------------------------------------------------

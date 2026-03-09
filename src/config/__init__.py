@@ -37,6 +37,9 @@ from .settings import Settings
 # All subsequent imports get the same instance
 settings = Settings()
 
+# Import effort-level configuration
+from .effort import EffortLevel, EffortConfig, get_effort_config, chunk_text, estimate_tokens
+
 # Import logging utilities
 from .logging import (
     # Setup function (call once at app startup)
@@ -59,7 +62,14 @@ __all__ = [
     # Settings
     "Settings",
     "settings",
-    
+
+    # Effort
+    "EffortLevel",
+    "EffortConfig",
+    "get_effort_config",
+    "chunk_text",
+    "estimate_tokens",
+
     # Logging
     "setup_logging",
     "get_logger",

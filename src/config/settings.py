@@ -65,7 +65,28 @@ class Settings(BaseSettings):
         default="google/gemini-2.5-flash",
         description="OpenRouter vision model name"
     )
-    
+
+    aws_access_key_id: Optional[str] = Field(
+        default=None,
+        description="AWS access key ID for Bedrock"
+    )
+    aws_secret_access_key: Optional[str] = Field(
+        default=None,
+        description="AWS secret access key for Bedrock"
+    )
+    bedrock_region: str = Field(
+        default="us-east-1",
+        description="AWS region for Bedrock"
+    )
+    bedrock_model: str = Field(
+        default="us.amazon.nova-lite-v1:0",
+        description="Bedrock model ID (e.g. us.amazon.nova-lite-v1:0, us.amazon.nova-pro-v1:0)"
+    )
+    bedrock_vision_model: str = Field(
+        default="us.amazon.nova-lite-v1:0",
+        description="Bedrock vision model ID (Nova Lite supports image input)"
+    )
+
     temperature: float = Field(
         default=0.4,
         description="LLM temperature for generation"
@@ -180,7 +201,7 @@ class Settings(BaseSettings):
     @field_validator("fallback_order")
     @classmethod
     def validate_fallback_order(cls, v: List[str]) -> List[str]:
-        valid_providers = {"gemini", "claude", "openai", "openrouter"}
+        valid_providers = {"gemini", "claude", "openai", "openrouter", "bedrock"}
         for provider in v:
             if provider not in valid_providers:
                 raise ValueError(
@@ -191,8 +212,8 @@ class Settings(BaseSettings):
      
     def model_post_init(self, __context) -> None:
         """Validate that at least one LLM API key is provided."""
-        if not any([self.gemini_api_key, self.claude_api_key, self.openai_api_key, self.openrouter_api_key]):
+        if not any([self.gemini_api_key, self.claude_api_key, self.openai_api_key, self.openrouter_api_key, self.aws_access_key_id]):
             raise ValueError(
                 "At least one LLM API key must be provided "
-                "(GEMINI_API_KEY, CLAUDE_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY)"
+                "(GEMINI_API_KEY, CLAUDE_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, or AWS_ACCESS_KEY_ID)"
             )

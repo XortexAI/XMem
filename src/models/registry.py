@@ -34,6 +34,7 @@ _BUILDERS = {
     "claude": lambda **kw: _build_from_module("claude", "build_claude_model", **kw),
     "openai": lambda **kw: _build_from_module("openai", "build_openai_model", **kw),
     "openrouter": lambda **kw: _build_from_module("openrouter", "build_openrouter_model", **kw),
+    "bedrock": lambda **kw: _build_from_module("bedrock", "build_bedrock_model", **kw),
 }
 
 
@@ -42,6 +43,7 @@ _KEY_MAP = {
     "claude": lambda: settings.claude_api_key,
     "openai": lambda: settings.openai_api_key,
     "openrouter": lambda: settings.openrouter_api_key,
+    "bedrock": lambda: settings.aws_access_key_id,
 }
 
 
@@ -94,6 +96,7 @@ _VISION_MODEL_MAP = {
     "claude": lambda: settings.claude_vision_model,
     "openai": lambda: settings.openai_vision_model,
     "openrouter": lambda: settings.openrouter_vision_model,
+    "bedrock": lambda: settings.bedrock_vision_model,
 }
 
 

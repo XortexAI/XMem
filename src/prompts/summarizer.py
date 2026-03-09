@@ -68,7 +68,7 @@ Skip these types of exchanges:
 
 ## OUTPUT FORMAT
 
-Return **2-5 concise bullet points** in this format:
+Return as many concise bullet points as necessary to capture:
 - [Summary point with specific details]
 - [Another summary point]
 - [Another summary point]
@@ -158,5 +158,5 @@ def pack_summary_query(user_query: str, agent_response: str) -> str:
         f"<agent_response>\n{agent_response}\n</agent_response>\n"
         f"</conversation>\n\n"
         f"Summarize this conversation. Include user context, problems/solutions, "
-        f"and key advice. Return 2-5 bullet points or empty string if trivial."
+        f"and key advice. Return 1 bullet point for every discrete piece of information (extract as many as needed to capture all facts) or empty string if trivial."
     )

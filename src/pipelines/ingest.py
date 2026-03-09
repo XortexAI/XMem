@@ -452,12 +452,7 @@ class IngestPipeline:
         """Fan out to extraction agents based on classification."""
         routes: List[Send] = []
         user_id = state.get("user_id", "default")
-
-        # Summary always runs
-        routes.append(Send("extract_summary", {
-            **state,
-            "user_id": user_id,
-        }))
+        user_query = state.get("user_query", "").strip()
 
         # Collect queries per domain — merge duplicates so each agent runs once
         profile_queries: List[str] = []
@@ -476,6 +471,19 @@ class IngestPipeline:
                     image_queries.append(c["query"])
                 elif c["source"] == "code":
                     code_queries.append(c["query"])
+
+        # Determine if we should run the summary extraction
+        # Heuristic: Don't summarize tiny acknowledgments or greetings (unless they had classified facts)
+        words = user_query.split()
+        is_trivial = len(words) < 4 and not any([profile_queries, temporal_queries, code_queries, image_queries])
+
+        if not is_trivial:
+            routes.append(Send("extract_summary", {
+                **state,
+                "user_id": user_id,
+            }))
+        else:
+            logger.info("Skipping summary extraction for trivial query.")
 
         if profile_queries:
             routes.append(Send("extract_profile", {

@@ -56,3 +56,25 @@ class TestParseClassifications:
         assert parse_raw_response_to_classifications("") == []
         assert parse_raw_response_to_classifications("(empty)") == []
 
+
+    def test_short_parts_edge_case(self):
+        """
+        Tests the edge case where parts < 2.
+        This branch is normally unreachable with standard strings because we previously
+        ensure that LLM_TAB_SEPARATOR is in the line.
+        We test it using a mock object that overrides __contains__ and split.
+        """
+        class MockStr(str):
+            def __contains__(self, item):
+                return True
+            def split(self, *args, **kwargs):
+                return ["single_part"]
+
+        class MockContent:
+            def strip(self):
+                return self
+            def splitlines(self):
+                return [MockStr("dummy")]
+
+        result = parse_raw_response_to_classifications(MockContent())
+        assert result == []

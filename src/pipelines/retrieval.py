@@ -21,8 +21,9 @@ Usage:
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Callable, Dict, List, Optional
+
+import asyncio
 
 from dotenv import load_dotenv
 from langchain_core.language_models import BaseChatModel
@@ -177,7 +178,8 @@ class RetrievalPipeline:
 
         if ai_response.tool_calls:
             called_tools = set()
-            for tc in ai_response.tool_calls:
+
+            async def _process_tool_call(tc):
                 tool_name = tc["name"]
                 tool_args = tc["args"]
                 tool_id = tc["id"]
@@ -187,15 +189,31 @@ class RetrievalPipeline:
                 records = await self._execute_tool(
                     tool_name, tool_args, user_id, top_k,
                 )
+
+                return {
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "records": records,
+                    "called_tool": tool_name.lower().replace("_", "")
+                }
+
+            # Execute all tool calls concurrently
+            tool_call_results = await asyncio.gather(
+                *(_process_tool_call(tc) for tc in ai_response.tool_calls)
+            )
+
+            # Process results sequentially to maintain order and safely append to lists
+            for result in tool_call_results:
+                records = result["records"]
                 sources.extend(records)
 
                 # Build ToolMessage for the LLM
                 tool_result_text = self._format_tool_results(records)
                 tool_messages.append(
-                    ToolMessage(content=tool_result_text, tool_call_id=tool_id)
+                    ToolMessage(content=tool_result_text, tool_call_id=result["tool_id"])
                 )
 
-                called_tools.add(tool_name.lower().replace("_", ""))
+                called_tools.add(result["called_tool"])
 
             # Auto-add summary context when only profile or temporal was requested
             if "searchsummary" not in called_tools:

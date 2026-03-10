@@ -28,6 +28,7 @@ from src.api.middleware import (
 from src.api.routes.code import router as code_router
 from src.api.routes.health import router as health_router
 from src.api.routes.memory import router as memory_router
+from src.api.routes.scanner import router as scanner_router
 from src.api.schemas import APIResponse, StatusEnum
 from src.config import settings
 
@@ -105,6 +106,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(memory_router)
     app.include_router(code_router)
+    app.include_router(scanner_router)
 
     @app.exception_handler(Exception)
     async def _unhandled_exception(request: Request, exc: Exception):

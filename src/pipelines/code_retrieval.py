@@ -37,7 +37,6 @@ from src.graph.code_graph_client import CodeGraphClient
 from src.scanner.code_store import CodeStore
 from src.schemas.code import (
     annotations_namespace,
-    directories_namespace,
     files_namespace,
     snippets_namespace,
     symbols_namespace,
@@ -375,7 +374,7 @@ class CodeRetrievalPipeline:
             turn_records: List[SourceRecord] = []
             only_read_tools = True
 
-            for tc in ai_response.tool_calls:
+            async def _process_tool_call(tc: Dict[str, Any]) -> Dict[str, Any]:
                 tool_name = tc["name"]
                 tool_args = tc["args"]
                 tool_id = tc["id"]
@@ -387,6 +386,20 @@ class CodeRetrievalPipeline:
                 )
                 tool_ms = (_time.perf_counter() - t1) * 1000
                 logger.info("  Tool: %s(%s) → %d results (%.0fms)", tool_name, tool_args, len(records), tool_ms)
+                return {
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "records": records,
+                }
+
+            import asyncio
+            results = await asyncio.gather(*[_process_tool_call(tc) for tc in ai_response.tool_calls])
+
+            for res in results:
+                tool_name = res["tool_name"]
+                tool_id = res["tool_id"]
+                records = res["records"]
+
                 turn_records.extend(records)
                 sources.extend(records)
 
@@ -471,17 +484,28 @@ class CodeRetrievalPipeline:
         if ai_response.tool_calls:
             yield json.dumps({"type": "status", "content": f"Running {len(ai_response.tool_calls)} search tool(s)..."}) + "\n"
             
-            for tc in ai_response.tool_calls:
+            async def _process_tool_call_stream(tc: Dict[str, Any]) -> Dict[str, Any]:
                 tool_name = tc["name"]
                 tool_args = tc["args"]
                 tool_id = tc["id"]
-
                 logger.info("  Tool: %s(%s)", tool_name, tool_args)
-
                 records = await self._execute_tool(
                     tool_name, tool_args, repo=repo, top_k=top_k,
                     user_id=user_id,
                 )
+                return {
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "records": records,
+                }
+
+            import asyncio
+            results = await asyncio.gather(*[_process_tool_call_stream(tc) for tc in ai_response.tool_calls])
+
+            for res in results:
+                tool_id = res["tool_id"]
+                records = res["records"]
+
                 sources.extend(records)
 
                 tool_result_text = self._format_tool_results(records)

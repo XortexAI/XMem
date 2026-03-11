@@ -33,6 +33,11 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "httpx>=0.26.0",
     "numpy>=1.26.0",
+    tree-sitter,
+    tree-sitter-typescript,
+    tree-sitter-javascript,
+    tree-sitter-go
+
 ]
 
 [project.optional-dependencies]

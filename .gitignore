@@ -51,11 +51,9 @@ logs/
 # =============================================================================
 
 # Dev-only folders
-docs/
 frontend/
 scripts/
 tests/
-docker/
 benchmarks/
 LongMemEval/
 
@@ -65,7 +63,6 @@ CHANGELOG.md
 ruff.toml
 
 # GitHub templates (empty)
-.github/
 
 # Empty source stubs
 src/memory/

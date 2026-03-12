@@ -22,7 +22,7 @@ LLMs are brilliant, but they suffer from "goldfish memory." If you switch from C
 ## Watch the Demo
 
 <div align="center">
-  <video src="demo.mp4" width="100%" controls></video>
+  <video src="https://github.com/XortexAI/XMem/raw/main/demo.mp4" width="100%" controls></video>
 </div>
 
 ---

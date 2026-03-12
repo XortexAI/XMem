@@ -21,7 +21,9 @@ LLMs are brilliant, but they suffer from "goldfish memory." If you switch from C
 
 ## Watch the Demo
 
-<video src="demo.mp4" controls="controls" width="100%"></video>
+
+https://github.com/user-attachments/assets/8e3349ab-63c9-4046-821d-ca8097948440
+
 
 ---
 

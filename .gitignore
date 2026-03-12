@@ -45,3 +45,51 @@ coverage.xml
 # Logs
 logs/
 *.log
+
+# =============================================================================
+# Project exclusions (empty stubs, dev-only folders, unused scaffolding)
+# =============================================================================
+
+# Dev-only folders
+docs/
+frontend/
+scripts/
+tests/
+docker/
+benchmarks/
+LongMemEval/
+
+# Empty root files
+Makefile
+CHANGELOG.md
+ruff.toml
+
+# GitHub templates (empty)
+.github/
+
+# Empty source stubs
+src/memory/
+src/_version.py
+src/__init__.py
+src/agents/weaver.py
+src/agents/verification.py
+src/agents/synthesizer.py
+src/pipelines/connector.py
+src/utils/metrics.py
+src/schemas/memory.py
+src/schemas/session.py
+src/schemas/__init__.py
+src/schemas/agents.py
+src/schemas/api.py
+src/schemas/pipeline.py
+src/storage/mongodb.py
+src/storage/chroma.py
+src/prompts/verification.py
+src/prompts/__init__.py
+src/prompts/synthesizer.py
+src/api/routes/sessions.py
+src/api/routes/search.py
+
+# Misc
+error.json
+MIGRATION_PLAN.md

@@ -1,0 +1,3 @@
+## 2024-05-24 - [Concurrent Execution in Weaver Pipeline]
+**Learning:** Sequential non-batched operations in `Weaver` (`src/pipelines/weaver.py`) were creating a significant I/O bottleneck when executing operations. Awaiting `self._execute_one` in a `for` loop executes tasks sequentially, while operations that wrap thread executors (like `run_in_executor`) are better handled concurrently using `asyncio.gather` for non-dependent operations.
+**Action:** When executing an array of parallelizable I/O-bound tasks in async pipelines (specifically external DB calls like Neo4j or Pinecone), use `asyncio.gather` instead of sequential `for` loops to minimize latency and improve performance significantly.

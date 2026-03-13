@@ -23,6 +23,7 @@ def build_gemini_model(
         model=resolved_model,
         google_api_key=api_key,
         temperature=temperature if temperature is not None else settings.temperature,
+        max_output_tokens=8192,
     )
 
     # For Gemini thinking models, optionally set thinking_level.

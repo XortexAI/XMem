@@ -6,10 +6,6 @@ S = LLM_TAB_SEPARATOR
 
 PROFILE_EXAMPLES: List[Tuple[str, str]] = [
     (
-        "Hi, how are you?",
-        "NONE",
-    ),
-    (
         "I work as a Senior Software Engineer at Google and have 5 years of experience in Python and TensorFlow",
         f"""\
         work{S}company{S}Google
@@ -52,20 +48,6 @@ PROFILE_EXAMPLES: List[Tuple[str, str]] = [
         contact_info{S}city{S}Austin
         contact_info{S}country{S}United States (Texas)
         interest{S}hobbies{S}painting, pottery
-        """,
-    ),
-    (
-        "My husband's name is Peter and we have a dog called Max",
-        f"""\
-        demographics{S}marital_status{S}married
-        demographics{S}spouse_name{S}Peter
-        interest{S}hobbies{S}has a dog named Max
-        """,
-    ),
-    (
-        "Me and my college friends have been close for 4 years now",
-        f"""\
-        demographics{S}relationship{S}close college friends for 4 years
         """,
     ),
     (

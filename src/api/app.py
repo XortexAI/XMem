@@ -30,7 +30,6 @@ from src.api.routes.health import router as health_router
 from src.api.routes.memory import router as memory_router
 from src.api.routes.scanner import router as scanner_router
 from src.api.schemas import APIResponse, StatusEnum
-from src.config import settings
 
 logger = logging.getLogger("xmem.api")
 

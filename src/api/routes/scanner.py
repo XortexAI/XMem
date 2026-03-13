@@ -70,7 +70,7 @@ def _parse_github_url(url: str) -> tuple:
     if m:
         return m.group(1), m.group(2)
     raise ValueError(
-        f"Invalid GitHub URL. Expected format: https://github.com/org/repo"
+        "Invalid GitHub URL. Expected format: https://github.com/org/repo"
     )
 
 

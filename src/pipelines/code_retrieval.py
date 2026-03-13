@@ -37,7 +37,6 @@ from src.graph.code_graph_client import CodeGraphClient
 from src.scanner.code_store import CodeStore
 from src.schemas.code import (
     annotations_namespace,
-    directories_namespace,
     files_namespace,
     snippets_namespace,
     symbols_namespace,

@@ -41,13 +41,12 @@ STRUCTURED LOGGING:
 
 import logging
 
-from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
+from logging.handlers import RotatingFileHandler
 import sys
-import os
 from pathlib import Path
 from typing import Optional
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 class LogLevel(str, Enum):

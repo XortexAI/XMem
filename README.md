@@ -38,7 +38,7 @@ What makes it different:
 ---
 
 ## Watch the Demo
-
+Just type “X” on any AI platform of your choice and choose between the four modes Xmem offers to seamlessly store and search your memories, or ask questions about your repository using the Xide feature.
 
 https://github.com/user-attachments/assets/8e3349ab-63c9-4046-821d-ca8097948440
 

@@ -176,7 +176,10 @@ uvicorn src.api.app:create_app --factory --host 0.0.0.0 --port 8000
 **Minimum `.env` configuration:**
 ```ini
 # At least one LLM provider
-GEMINI_API_KEY=your_key
+AWS_ACCESS_KEY_ID=your_aws_access_key_id_here
+AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key_here
+BEDROCK_REGION=us-east-1
+BEDROCK_MODEL=us.amazon.nova-pro-v1:0
 # Or: CLAUDE_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY
 
 # Vector store (required)

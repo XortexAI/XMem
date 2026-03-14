@@ -53,7 +53,7 @@ We tested XMem against every major memory solution on two established academic b
 ### LongMemEval-S
 The industry-standard benchmark for long-term conversational memory. Tests whether a system can recall facts, track preference changes, reason about time, and maintain context across sessions.
 
-| Category | XMem(Gemini-3.1-flash-lite) | Backboard.io (GPT-4o) | Mastra (GPT-4o) | Supermemory (GPT-4o) |
+| Category | XMem(amazon.nova-lite) | Backboard.io (GPT-4o) | Mastra (GPT-4o) | Supermemory (GPT-4o) |
 | :--- | :---: | :---: | :---: | :---: |
 | **Single-Session Assistant** | **96.43** | 98.2 | 82.1 | 96.43 |
 | **Single-Session User** | **97.1** | 97.1 | 98.6 | 97.14 |

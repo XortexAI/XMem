@@ -195,11 +195,13 @@ MONGODB_URI=mongodb://localhost:27017
 ### 2. Install the Chrome Extension
 
 ```bash
-cd xmem-extension
+git clone https://github.com/XortexAI/xmem-extension.git
 npm install && npm run build
 ```
 
 Load `dist/` in Chrome via `chrome://extensions` → "Load unpacked". Point it to your server URL.
+
+https://github.com/user-attachments/assets/97793cf9-d247-4d02-9c31-3cc9bbbf89aa
 
 ### 3. Use the SDKs
 

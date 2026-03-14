@@ -69,7 +69,7 @@ Tests compositional reasoning over memory — can the system connect facts acros
 
 | Method | Single-Hop (%) | Multi-Hop (%) | Open Domain (%) | Temporal (%) | Overall (%) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **XMEM (Ours)** | **90.6** | **92.3** | **74.3** | **89.2** | **82.9** |
+| **XMEM (Ours)** | **90.6** | **92.3** | **91.2** | **91.9** | **91.5** |
 | Zep | 74.11 | 66.04 | 67.71 | 79.79 | 75.14 |
 | Memobase (v0.0.37) | 70.92 | 46.88 | 77.17 | 85.05 | 75.78 |
 | Mem0g(YC 24) | 65.71 | 47.19 | 75.71 | 58.13 | 68.44 |

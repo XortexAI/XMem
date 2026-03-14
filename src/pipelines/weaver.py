@@ -12,6 +12,7 @@ No LLM involved — just structured execution with guard rails.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -123,12 +124,11 @@ class Weaver:
             if not add_batch_ops:
                 return
 
-            # Prepare data for batch add
-            valid_ops = []
-            texts = []
-            embeddings = []
-            metadatas = []
+            loop = asyncio.get_running_loop()
 
+            # Filter valid ops and create tasks
+            ops_to_process = []
+            tasks = []
             for op in add_batch_ops:
                 if not op.content:
                     logger.warning("ADD with empty content — skipping.")
@@ -137,22 +137,35 @@ class Weaver:
                         error="ADD requires content",
                     ))
                     continue
+                ops_to_process.append(op)
+                tasks.append(loop.run_in_executor(None, self.embed_fn, op.content))
 
-                try:
-                    emb = self.embed_fn(op.content)
-                    meta = {"user_id": user_id, "domain": domain.value}
-                    meta.update(_extract_structured_metadata(op.content))
+            if not ops_to_process:
+                return
 
-                    valid_ops.append(op)
-                    texts.append(op.content)
-                    embeddings.append(emb)
-                    metadatas.append(meta)
-                except Exception as exc:
-                    logger.error("Embedding generation failed for ADD: %s", exc)
+            # Execute embedding generations concurrently
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Prepare data for batch add
+            valid_ops = []
+            texts = []
+            embeddings = []
+            metadatas = []
+
+            for op, result in zip(ops_to_process, results):
+                if isinstance(result, Exception):
+                    logger.error("Embedding generation failed for ADD: %s", result)
                     executed_ops.append(ExecutedOp(
                         type=op.type, status=OpStatus.FAILED,
-                        content=op.content, error=str(exc)
+                        content=op.content, error=str(result)
                     ))
+                else:
+                    meta = {"user_id": user_id, "domain": domain.value}
+                    meta.update(_extract_structured_metadata(op.content))
+                    valid_ops.append(op)
+                    texts.append(op.content)
+                    embeddings.append(result)
+                    metadatas.append(meta)
 
             if valid_ops:
                 try:

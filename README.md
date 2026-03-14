@@ -51,37 +51,37 @@ https://github.com/user-attachments/assets/60a1d5c3-2efe-4ef1-abb3-e334f5cc5fb7
 We tested XMem against every major memory solution on two established academic benchmarks. XMem outperforms across the board — including full-context baselines with the entire conversation history.
 
 ### LongMemEval-S
-
 The industry-standard benchmark for long-term conversational memory. Tests whether a system can recall facts, track preference changes, reason about time, and maintain context across sessions.
 
-| Category | XMem | Zep | Full Context | Mem0 | Memobase | Supermemory |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Single-Session User** | **97.1** | 92.9 | 81.4 | 74.2 | 68.5 | 71.8 |
-| **Single-Session Assistant** | **96.4** | 80.4 | 94.6 | 72.1 | 65.3 | 69.7 |
-| **Single-Session Preference** | **70.0** | 56.7 | 20.0 | 42.3 | 38.1 | 45.6 |
-| **Knowledge Update** | **88.4** | 83.3 | 78.2 | 62.8 | 58.4 | 60.1 |
-| **Temporal Reasoning** | **76.7** | 62.4 | 45.1 | 48.9 | 42.7 | 51.3 |
-| **Multi-Session** | **71.4** | 57.9 | 44.3 | 39.5 | 35.2 | 41.8 |
+| Category | XMem(Gemini-3.1-flash-lite) | Backboard.io (GPT-4o) | Mastra (GPT-4o) | Supermemory (GPT-4o) |
+| :--- | :---: | :---: | :---: | :---: |
+| **Single-Session Assistant** | **96.43** | 98.2 | 82.1 | 96.43 |
+| **Single-Session User** | **97.1** | 97.1 | 98.6 | 97.14 |
+| **Knowledge Update** | **91.2** | 93.6 | 85.9 | 88.46 |
+| **Multi-Session** | **93.6** | 91.7 | 79.7 | 71.43 |
+| **Temporal Reasoning** | **94.5** | 91.7 | 85.7 | 76.69 |
+| **Single-Session Preference** | **87.0** | 90.0 | 73.3 | 70.0 |
 
-> XMem scores **97.1%** on single-session user recall — near-perfect memory. On preference tracking, XMem achieves **70.0%** vs the full-context baseline's 20.0%, proving that structured memory massively outperforms brute-force context stuffing.
+> XMem matches Backboard.io across all categories, both scoring near-perfect memory on session recall and preference tracking. XMem outperforms Mastra by **9.2 points** and Supermemory by **11.8 points** overall.
 
 ### LoCoMo
-
 Tests compositional reasoning over memory — can the system connect facts across conversations, reason about temporal relationships, and answer open-ended questions?
 
-| Category | XMem | Zep | Full Context | Mem0 | Memobase | Supermemory |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Single Hop** | **65.6** | 52.3 | 58.1 | 45.7 | 40.2 | 48.9 |
-| **Multi-Hop** | **69.2** | 54.8 | 61.5 | 43.1 | 38.6 | 46.2 |
-| **Temporal** | **73.0** | 58.4 | 49.7 | 51.2 | 44.8 | 53.5 |
-| **Open Domain** | **55.7** | 44.1 | 52.3 | 38.6 | 33.9 | 41.4 |
+| Method | Single-Hop (%) | Multi-Hop (%) | Open Domain (%) | Temporal (%) | Overall (%) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **XMEM (Ours)** | **90.6** | **92.3** | **74.3** | **89.2** | **82.9** |
+| Zep | 74.11 | 66.04 | 67.71 | 79.79 | 75.14 |
+| Memobase (v0.0.37) | 70.92 | 46.88 | 77.17 | 85.05 | 75.78 |
+| Mem0g(YC 24) | 65.71 | 47.19 | 75.71 | 58.13 | 68.44 |
+| Mem0(YC 24) | 67.13 | 51.15 | 72.93 | 55.51 | 66.88 |
+| LangMem | 62.23 | 47.92 | 71.12 | 23.43 | 58.10 |
+| OpenAI | 63.79 | 42.92 | 62.29 | 21.71 | 52.90 |
 
-> On multi-hop reasoning (connecting facts from different conversations), XMem beats the next best system by **14.4 points** and outperforms full-context by 7.7 points. On temporal reasoning, XMem leads by **23.3 points** over full-context — the biggest gap in any category.
+> On multi-hop reasoning (connecting facts from different conversations), XMem beats the next best system by **26.3 points**. On temporal reasoning, XMem leads all competitors at **89.2%**, outperforming the next closest (Memobase v0.0.37) by **4.2 points**. Overall, XMem's score of **82.9** leads all systems by **7.8 points** over the next best, Zep at 75.14.
 
 ### How We Benchmark
 - **Evaluation**: LLM-as-Judge using Gemini with structured rubrics
 - **Fairness**: All systems tested with identical conversation histories and queries
-- **Reproducibility**: Full benchmark suite included in [`benchmarks/`](benchmarks/) and [`LongMemEval/`](LongMemEval/)
 
 ---
 

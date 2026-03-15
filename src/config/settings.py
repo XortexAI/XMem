@@ -135,7 +135,7 @@ class Settings(BaseSettings):
     
     embedding_model: str = Field(
         default="gemini-embedding-001",
-        description="Google Gemini model for embeddings"
+        description="Embedding model name (e.g. gemini-embedding-001, amazon.nova-2-multimodal-embeddings-v1:0)"
     )
 
     mongodb_uri: str = Field(

@@ -94,13 +94,21 @@ logger = logging.getLogger("xmem.pipelines.ingest")
 
 
 # ---------------------------------------------------------------------------
-# Embedding helper — wraps Google GenAI into a simple callable
+# Embedding helper — supports Google GenAI and Amazon Bedrock (Nova)
 # ---------------------------------------------------------------------------
+
+import json as _json
 
 from google import genai
 from google.genai import types
 
 _embedding_client: Optional[genai.Client] = None
+_bedrock_embedding_client = None
+
+
+def _is_bedrock_embedding() -> bool:
+    """Check if the configured embedding model is an Amazon Bedrock model."""
+    return settings.embedding_model.lower().startswith("amazon.")
 
 
 def get_embedding_client() -> genai.Client:
@@ -108,20 +116,76 @@ def get_embedding_client() -> genai.Client:
     if _embedding_client is None:
         api_key_to_use = settings.gemini_api_key or None
         _embedding_client = genai.Client(api_key=api_key_to_use) if api_key_to_use else genai.Client()
-        logger.info("Loaded embedding client for model: %s", settings.embedding_model)
+        logger.info("Loaded Gemini embedding client for model: %s", settings.embedding_model)
     return _embedding_client
 
-@functools.lru_cache(maxsize = 4096)
+
+def _get_bedrock_embedding_client():
+    global _bedrock_embedding_client
+    if _bedrock_embedding_client is None:
+        import boto3
+        from botocore.config import Config
+
+        kwargs = {
+            "region_name": settings.bedrock_region,
+            "config": Config(read_timeout=60),
+        }
+        if settings.aws_access_key_id and settings.aws_secret_access_key:
+            kwargs["aws_access_key_id"] = settings.aws_access_key_id
+            kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+
+        _bedrock_embedding_client = boto3.client("bedrock-runtime", **kwargs)
+        logger.info("Loaded Bedrock embedding client for model: %s", settings.embedding_model)
+    return _bedrock_embedding_client
+
+
+@functools.lru_cache(maxsize=4096)
 def embed_text(text: str) -> tuple[float, ...]:
-    """Embed a single text string → tuple of floats."""
+    """Embed a single text string → tuple of floats.
+
+    Dispatches to Google GenAI or Amazon Bedrock based on the
+    EMBEDDING_MODEL setting.
+    """
+    if _is_bedrock_embedding():
+        return _embed_text_bedrock(text)
+    return _embed_text_gemini(text)
+
+
+def _embed_text_gemini(text: str) -> tuple[float, ...]:
     client = get_embedding_client()
     result = client.models.embed_content(
         model=settings.embedding_model,
         contents=text,
-        config=types.EmbedContentConfig(output_dimensionality=settings.pinecone_dimension)
+        config=types.EmbedContentConfig(output_dimensionality=settings.pinecone_dimension),
     )
     [embedding_obj] = result.embeddings
     return tuple(embedding_obj.values)
+
+
+def _embed_text_bedrock(text: str) -> tuple[float, ...]:
+    client = _get_bedrock_embedding_client()
+
+    request_body = {
+        "taskType": "SINGLE_EMBEDDING",
+        "singleEmbeddingParams": {
+            "embeddingPurpose": "GENERIC_INDEX",
+            "embeddingDimension": settings.pinecone_dimension,
+            "text": {
+                "truncationMode": "END",
+                "value": text,
+            },
+        },
+    }
+
+    response = client.invoke_model(
+        body=_json.dumps(request_body),
+        modelId=settings.embedding_model,
+        accept="application/json",
+        contentType="application/json",
+    )
+
+    response_body = _json.loads(response["body"].read())
+    return tuple(response_body["embedding"])
 
 
 # ---------------------------------------------------------------------------

@@ -185,7 +185,7 @@ def _embed_text_bedrock(text: str) -> tuple[float, ...]:
     )
 
     response_body = _json.loads(response["body"].read())
-    return tuple(response_body["embedding"])
+    return tuple(response_body["embeddings"][0]["embedding"])
 
 
 # ---------------------------------------------------------------------------

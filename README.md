@@ -175,24 +175,65 @@ uvicorn src.api.app:create_app --factory --host 0.0.0.0 --port 8000
 
 **Minimum `.env` configuration:**
 ```ini
-# At least one LLM provider
+# =============================================================================
+# Amazon Bedrock LLM Configuration
+# =============================================================================
 AWS_ACCESS_KEY_ID=your_aws_access_key_id_here
 AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key_here
 BEDROCK_REGION=us-east-1
-BEDROCK_MODEL=us.amazon.nova-pro-v1:0
-# Or: CLAUDE_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY
+BEDROCK_MODEL=amazon.nova-2-lite-v1:0
 
-# Vector store (required)
-PINECONE_API_KEY=your_key
-PINECONE_INDEX_NAME=xmem-index
+# =============================================================================
+# Core Settings
+# =============================================================================
+TEMPERATURE=0.3
+FALLBACK_ORDER='["bedrock"]'
 
-# Graph store (required for temporal + code features)
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=your_password
+# =============================================================================
+# Vector Store Configuration (Pinecone)
+# =============================================================================
+PINECONE_API_KEY=your_pinecone_api_key_here
+PINECONE_INDEX_NAME=your_pinecone_index_name_here
+PINECONE_NAMESPACE=default
+PINECONE_DIMENSION=384
+PINECONE_METRIC=cosine
+PINECONE_CLOUD=aws
+PINECONE_REGION=us-east-1
+EMBEDDING_MODEL=amazon.nova-2-multimodal-embeddings-v1:0
 
-# Document store (required for code scanner)
-MONGODB_URI=mongodb://localhost:27017
+# =============================================================================
+# Database Configuration
+# =============================================================================
+# MongoDB (for code files)
+MONGODB_URI=your_mongodb_uri_here
+MONGODB_DATABASE=xmem
+
+# Neo4j (for graph-based temporal/relational memory)
+NEO4J_URI=your_neo4j_uri_here
+NEO4J_USERNAME=your_neo4j_username_here
+NEO4J_PASSWORD=your_neo4j_password_here
+
+# =============================================================================
+# API Configuration
+# =============================================================================
+API_HOST=0.0.0.0
+API_PORT=8000
+CORS_ORIGINS='["http://localhost:3000", "http://localhost:5173"]'
+RATE_LIMIT=60
+
+# =============================================================================
+# Logging Configuration
+# =============================================================================
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+LOG_FILE_PATH=logs/xmem.log
+
+# =============================================================================
+# Observability (Opik)
+# =============================================================================
+OPIK_API_KEY=your_opik_api_key_here
+OPIK_WORKSPACE=your_opik_workspace_here
+OPIK_PROJECT=your_opik_project_here
 ```
 
 ### 2. Install the Chrome Extension

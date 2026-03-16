@@ -92,9 +92,11 @@ class Weaver:
             batched_executed = await self._execute_batched_vector(judge_result.operations, domain, user_id)
             result.executed.extend(batched_executed)
         else:
-            for op in judge_result.operations:
-                executed = await self._execute_one(op, domain, user_id)
-                result.executed.append(executed)
+            import asyncio
+            # Execute non-batched operations concurrently to significantly reduce latency
+            tasks = [self._execute_one(op, domain, user_id) for op in judge_result.operations]
+            executed_ops = await asyncio.gather(*tasks)
+            result.executed.extend(executed_ops)
 
         self._log_summary(domain, result)
         return result

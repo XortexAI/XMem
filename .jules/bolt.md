@@ -1,0 +1,3 @@
+## 2024-03-16 - [Optimize non-batched vector operations in Weaver]
+**Learning:** Network/I/O bound operations in an asynchronous environment should not be sequentially looped. The `Weaver` pipeline was executing non-batched operations sequentially, causing performance to degrade linearly with the number of operations (`O(N)`).
+**Action:** Used `asyncio.gather` to concurrently execute non-batched operations, turning an `O(N)` network wait time into approximately `O(1)` (limited by connection pool and concurrency caps). Applied to `src/pipelines/weaver.py`'s execution method. Always look for synchronous or sequentially awaited operations when iterating over a batch of network requests.

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Union
 
-from src.config.constants import LLM_TAB_SEPARATOR
 
 
 @dataclass

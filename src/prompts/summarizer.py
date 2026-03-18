@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List, Tuple
+from typing import List
 import inspect
 
 from src.prompts.examples.summary import SUMMARY_EXAMPLES

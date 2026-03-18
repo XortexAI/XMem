@@ -20,10 +20,8 @@ import ast
 import hashlib
 import logging
 import re
-import textwrap
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Tree-sitter imports (optional — graceful degradation if not installed)
 try:

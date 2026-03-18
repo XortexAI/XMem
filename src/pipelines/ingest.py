@@ -82,7 +82,7 @@ from src.schemas.code import (
 )
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult

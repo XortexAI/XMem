@@ -1,0 +1,3 @@
+## 2024-05-27 - Batch processing for Code Symbol Indexing
+**Learning:** Indexing large codebases with individual database and vector store writes results in severe N+1 query overhead, particularly due to the latency of multiple API calls per symbol to Pinecone, MongoDB, and Neo4j. Even minor code changes can trigger hundreds of individual sequential updates.
+**Action:** Use batch processing for symbol updates. Collect all changed symbols within `Indexer._process_file` and perform bulk upserts using `CodeStore.upsert_symbols_bulk`, `PineconeVectorStore.add`, and a newly added `CodeGraphClient.upsert_symbols_bulk`. Also ensure embeddings are generated in batches using `embed_texts`.

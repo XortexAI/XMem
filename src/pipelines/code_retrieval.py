@@ -25,6 +25,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -37,7 +38,6 @@ from src.graph.code_graph_client import CodeGraphClient
 from src.scanner.code_store import CodeStore
 from src.schemas.code import (
     annotations_namespace,
-    directories_namespace,
     files_namespace,
     snippets_namespace,
     symbols_namespace,
@@ -589,14 +589,24 @@ class CodeRetrievalPipeline:
     ) -> List[SourceRecord]:
         if not repo:
             logger.warning("search_symbols called without repo — searching all repos")
-            results = []
-            for r in self.repos:
-                results.extend(await self._search_namespace(
+
+            # Fetch from all repos concurrently
+            tasks = [
+                self._search_namespace(
                     namespace=symbols_namespace(self.org_id, r),
                     query=query,
                     domain="symbol",
                     top_k=top_k,
-                ))
+                )
+                for r in self.repos
+            ]
+            results_list = await asyncio.gather(*tasks)
+
+            # Flatten results
+            results = []
+            for res in results_list:
+                results.extend(res)
+
             return results[:top_k]
 
         return await self._search_namespace(
@@ -612,14 +622,23 @@ class CodeRetrievalPipeline:
         self, query: str, repo: str, top_k: int = 10,
     ) -> List[SourceRecord]:
         if not repo:
-            results = []
-            for r in self.repos:
-                results.extend(await self._search_namespace(
+            # Fetch from all repos concurrently
+            tasks = [
+                self._search_namespace(
                     namespace=files_namespace(self.org_id, r),
                     query=query,
                     domain="file",
                     top_k=top_k,
-                ))
+                )
+                for r in self.repos
+            ]
+            results_list = await asyncio.gather(*tasks)
+
+            # Flatten results
+            results = []
+            for res in results_list:
+                results.extend(res)
+
             return results[:top_k]
 
         return await self._search_namespace(

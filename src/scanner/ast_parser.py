@@ -20,10 +20,8 @@ import ast
 import hashlib
 import logging
 import re
-import textwrap
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Tree-sitter imports (optional — graceful degradation if not installed)
 try:
@@ -190,14 +188,16 @@ class PythonParser:
     def _extract_imports(self, tree: ast.Module) -> List[ParsedImport]:
         imports: List[ParsedImport] = []
 
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
+        class ImportVisitor(ast.NodeVisitor):
+            def visit_Import(self, node: ast.Import) -> None:
                 for alias in node.names:
                     imports.append(ParsedImport(
                         module=alias.name,
                         alias=alias.asname,
                     ))
-            elif isinstance(node, ast.ImportFrom):
+                self.generic_visit(node)
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
                 module = node.module or ""
                 names = [a.name for a in node.names]
                 imports.append(ParsedImport(
@@ -205,7 +205,9 @@ class PythonParser:
                     names=names,
                     is_relative=node.level > 0,
                 ))
+                self.generic_visit(node)
 
+        ImportVisitor().visit(tree)
         return imports
 
     # -- Symbols -----------------------------------------------------------
@@ -334,25 +336,36 @@ class PythonParser:
     ) -> List[ParsedCall]:
         """Extract function calls from within each symbol's AST subtree."""
         calls: List[ParsedCall] = []
-        known_names = {s.name for s in symbols}
 
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        class CallVisitor(ast.NodeVisitor):
+            def __init__(self, parser_instance):
+                self.current_caller: Optional[str] = None
+                self.parser = parser_instance
 
-            caller = node.name
-            for child in ast.walk(node):
-                if not isinstance(child, ast.Call):
-                    continue
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                prev_caller = self.current_caller
+                self.current_caller = node.name
+                self.generic_visit(node)
+                self.current_caller = prev_caller
 
-                callee = self._call_to_name(child)
-                if callee and callee != caller:
-                    calls.append(ParsedCall(
-                        caller_name=caller,
-                        callee_name=callee,
-                        is_direct=True,
-                    ))
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                prev_caller = self.current_caller
+                self.current_caller = node.name
+                self.generic_visit(node)
+                self.current_caller = prev_caller
 
+            def visit_Call(self, node: ast.Call) -> None:
+                if self.current_caller:
+                    callee = self.parser._call_to_name(node)
+                    if callee and callee != self.current_caller:
+                        calls.append(ParsedCall(
+                            caller_name=self.current_caller,
+                            callee_name=callee,
+                            is_direct=True,
+                        ))
+                self.generic_visit(node)
+
+        CallVisitor(self).visit(tree)
         return calls
 
     def _call_to_name(self, node: ast.Call) -> Optional[str]:
@@ -417,19 +430,45 @@ class PythonParser:
 
     def _compute_complexity(self, node: ast.AST) -> int:
         """Compute cyclomatic complexity from AST nodes. No LLM needed."""
-        complexity = 1
-        for child in ast.walk(node):
-            if isinstance(child, (ast.If, ast.IfExp)):
-                complexity += 1
-            elif isinstance(child, (ast.For, ast.AsyncFor, ast.While)):
-                complexity += 1
-            elif isinstance(child, ast.ExceptHandler):
-                complexity += 1
-            elif isinstance(child, ast.BoolOp):
-                complexity += len(child.values) - 1
-            elif isinstance(child, ast.Assert):
-                complexity += 1
-        return complexity
+        class ComplexityVisitor(ast.NodeVisitor):
+            def __init__(self):
+                self.complexity = 1
+
+            def visit_If(self, n: ast.If) -> None:
+                self.complexity += 1
+                self.generic_visit(n)
+
+            def visit_IfExp(self, n: ast.IfExp) -> None:
+                self.complexity += 1
+                self.generic_visit(n)
+
+            def visit_For(self, n: ast.For) -> None:
+                self.complexity += 1
+                self.generic_visit(n)
+
+            def visit_AsyncFor(self, n: ast.AsyncFor) -> None:
+                self.complexity += 1
+                self.generic_visit(n)
+
+            def visit_While(self, n: ast.While) -> None:
+                self.complexity += 1
+                self.generic_visit(n)
+
+            def visit_ExceptHandler(self, n: ast.ExceptHandler) -> None:
+                self.complexity += 1
+                self.generic_visit(n)
+
+            def visit_BoolOp(self, n: ast.BoolOp) -> None:
+                self.complexity += len(n.values) - 1
+                self.generic_visit(n)
+
+            def visit_Assert(self, n: ast.Assert) -> None:
+                self.complexity += 1
+                self.generic_visit(n)
+
+        visitor = ComplexityVisitor()
+        visitor.visit(node)
+        return visitor.complexity
 
 
 # ---------------------------------------------------------------------------
@@ -911,7 +950,6 @@ class TreeSitterParser:
     ) -> List[ParsedCall]:
         """Extract function calls from the AST."""
         calls: List[ParsedCall] = []
-        known_names = {s.name for s in symbols}
         
         # Map line ranges to symbol names
         symbol_ranges: List[Tuple[int, int, str]] = []
@@ -1092,7 +1130,6 @@ class TreeSitterParser:
                 # Count && and || operators
                 op = n.child_by_field_name("operator")
                 if op:
-                    op_text = self._get_node_text(op, node.parent.parent if node.parent and node.parent.parent else node)
                     # This is a bit hacky, but tree-sitter stores the operator as text
                     if "&&" in str(n) or "||" in str(n):
                         complexity += 1

@@ -67,10 +67,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from ..config import get_logger
 from ..utils.exceptions import (
-    VectorStoreError,
-    VectorStoreConnectionError,
     VectorStoreValidationError,
-    VectorNotFoundError,
 )
 
 logger = get_logger(__name__)

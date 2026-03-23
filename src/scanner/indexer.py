@@ -32,10 +32,8 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from src.scanner.ast_parser import ParsedFile, ParsedSymbol, parse_file, compute_content_hash
 from src.scanner.code_store import CodeStore
 from src.scanner.git_ops import (
-    DiffResult,
     clone_or_pull,
     get_diff,
-    get_head_sha,
     get_language,
     list_all_files,
     should_skip_file,

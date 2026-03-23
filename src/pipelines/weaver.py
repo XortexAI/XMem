@@ -12,6 +12,7 @@ No LLM involved — just structured execution with guard rails.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -129,30 +130,37 @@ class Weaver:
             embeddings = []
             metadatas = []
 
-            for op in add_batch_ops:
+            loop = asyncio.get_running_loop()
+
+            async def _process_add_op(op):
                 if not op.content:
                     logger.warning("ADD with empty content — skipping.")
-                    executed_ops.append(ExecutedOp(
+                    return op, None, None, ExecutedOp(
                         type=op.type, status=OpStatus.SKIPPED,
                         error="ADD requires content",
-                    ))
-                    continue
-
+                    )
                 try:
-                    emb = self.embed_fn(op.content)
+                    emb = await loop.run_in_executor(None, self.embed_fn, op.content)
                     meta = {"user_id": user_id, "domain": domain.value}
                     meta.update(_extract_structured_metadata(op.content))
+                    return op, emb, meta, None
+                except Exception as exc:
+                    logger.error("Embedding generation failed for ADD: %s", exc)
+                    return op, None, None, ExecutedOp(
+                        type=op.type, status=OpStatus.FAILED,
+                        content=op.content, error=str(exc)
+                    )
 
+            results = await asyncio.gather(*(_process_add_op(op) for op in add_batch_ops))
+
+            for op, emb, meta, err_op in results:
+                if err_op:
+                    executed_ops.append(err_op)
+                else:
                     valid_ops.append(op)
                     texts.append(op.content)
                     embeddings.append(emb)
                     metadatas.append(meta)
-                except Exception as exc:
-                    logger.error("Embedding generation failed for ADD: %s", exc)
-                    executed_ops.append(ExecutedOp(
-                        type=op.type, status=OpStatus.FAILED,
-                        content=op.content, error=str(exc)
-                    ))
 
             if valid_ops:
                 try:

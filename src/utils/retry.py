@@ -50,7 +50,7 @@ from functools import wraps
 import time
 import logging
 from dataclasses import dataclass, field
-from .exceptions import XMemError, ValidationError
+from .exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")

@@ -12,6 +12,7 @@ No LLM involved — just structured execution with guard rails.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -92,9 +93,11 @@ class Weaver:
             batched_executed = await self._execute_batched_vector(judge_result.operations, domain, user_id)
             result.executed.extend(batched_executed)
         else:
-            for op in judge_result.operations:
-                executed = await self._execute_one(op, domain, user_id)
-                result.executed.append(executed)
+            # Optimized: Execute independent non-batched operations concurrently
+            # to prevent sequential waiting and reduce overall latency.
+            coroutines = [self._execute_one(op, domain, user_id) for op in judge_result.operations]
+            executed_results = await asyncio.gather(*coroutines)
+            result.executed.extend(executed_results)
 
         self._log_summary(domain, result)
         return result
@@ -129,30 +132,44 @@ class Weaver:
             embeddings = []
             metadatas = []
 
-            for op in add_batch_ops:
-                if not op.content:
-                    logger.warning("ADD with empty content — skipping.")
-                    executed_ops.append(ExecutedOp(
-                        type=op.type, status=OpStatus.SKIPPED,
-                        error="ADD requires content",
-                    ))
-                    continue
+            loop = asyncio.get_running_loop()
 
+            # Optimized: Execute embedding generation (which is blocking)
+            # concurrently in a threadpool using run_in_executor
+            # to prevent blocking the async event loop.
+            async def _process_op(op: Operation):
+                if not op.content:
+                    return op, None, None, "ADD requires content"
                 try:
-                    emb = self.embed_fn(op.content)
+                    emb = await loop.run_in_executor(None, self.embed_fn, op.content)
                     meta = {"user_id": user_id, "domain": domain.value}
                     meta.update(_extract_structured_metadata(op.content))
+                    return op, emb, meta, None
+                except Exception as exc:
+                    return op, None, None, exc
 
+            tasks = [_process_op(op) for op in add_batch_ops]
+            results = await asyncio.gather(*tasks)
+
+            for op, emb, meta, exc in results:
+                if exc:
+                    if exc == "ADD requires content":
+                        logger.warning("ADD with empty content — skipping.")
+                        executed_ops.append(ExecutedOp(
+                            type=op.type, status=OpStatus.SKIPPED,
+                            error=exc,
+                        ))
+                    else:
+                        logger.error("Embedding generation failed for ADD: %s", exc)
+                        executed_ops.append(ExecutedOp(
+                            type=op.type, status=OpStatus.FAILED,
+                            content=op.content, error=str(exc)
+                        ))
+                else:
                     valid_ops.append(op)
                     texts.append(op.content)
                     embeddings.append(emb)
                     metadatas.append(meta)
-                except Exception as exc:
-                    logger.error("Embedding generation failed for ADD: %s", exc)
-                    executed_ops.append(ExecutedOp(
-                        type=op.type, status=OpStatus.FAILED,
-                        content=op.content, error=str(exc)
-                    ))
 
             if valid_ops:
                 try:

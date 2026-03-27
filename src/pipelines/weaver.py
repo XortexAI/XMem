@@ -126,7 +126,6 @@ class Weaver:
             # Prepare data for batch add
             valid_ops = []
             texts = []
-            embeddings = []
             metadatas = []
 
             for op in add_batch_ops:
@@ -137,25 +136,23 @@ class Weaver:
                         error="ADD requires content",
                     ))
                     continue
-
-                try:
-                    emb = self.embed_fn(op.content)
-                    meta = {"user_id": user_id, "domain": domain.value}
-                    meta.update(_extract_structured_metadata(op.content))
-
-                    valid_ops.append(op)
-                    texts.append(op.content)
-                    embeddings.append(emb)
-                    metadatas.append(meta)
-                except Exception as exc:
-                    logger.error("Embedding generation failed for ADD: %s", exc)
-                    executed_ops.append(ExecutedOp(
-                        type=op.type, status=OpStatus.FAILED,
-                        content=op.content, error=str(exc)
-                    ))
+                valid_ops.append(op)
+                texts.append(op.content)
+                meta = {"user_id": user_id, "domain": domain.value}
+                meta.update(_extract_structured_metadata(op.content))
+                metadatas.append(meta)
 
             if valid_ops:
                 try:
+                    import asyncio
+                    loop = asyncio.get_running_loop()
+
+                    # Generate embeddings concurrently to avoid blocking
+                    async def fetch_embedding(text):
+                        return await loop.run_in_executor(None, self.embed_fn, text)
+
+                    embeddings = await asyncio.gather(*(fetch_embedding(text) for text in texts))
+
                     ids = self.vector_store.add(
                         texts=texts,
                         embeddings=embeddings,

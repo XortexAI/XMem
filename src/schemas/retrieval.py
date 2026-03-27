@@ -5,7 +5,7 @@ Retrieval schemas — data models for the retrieval pipeline.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 @dataclass

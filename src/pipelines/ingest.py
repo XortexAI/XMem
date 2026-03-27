@@ -82,7 +82,7 @@ from src.schemas.code import (
 )
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -186,6 +186,28 @@ def _embed_text_bedrock(text: str) -> tuple[float, ...]:
 
     response_body = _json.loads(response["body"].read())
     return tuple(response_body["embeddings"][0]["embedding"])
+
+
+def embed_texts(texts: List[str]) -> List[tuple[float, ...]]:
+    """Embed a list of text strings → list of tuples of floats.
+    Optimizes latency for Gemini and Bedrock models by using their respective batch APIs (if applicable)
+    or by falling back to sequential execution.
+    """
+    if not texts:
+        return []
+
+    if _is_bedrock_embedding():
+        # Bedrock batch API is typically async / S3 based, so we fallback to sequential for low-latency needs
+        return [_embed_text_bedrock(t) for t in texts]
+
+    # Gemini allows multiple contents
+    client = get_embedding_client()
+    result = client.models.embed_content(
+        model=settings.embedding_model,
+        contents=texts,
+        config=types.EmbedContentConfig(output_dimensionality=settings.pinecone_dimension),
+    )
+    return [tuple(e.values) for e in result.embeddings]
 
 
 # ---------------------------------------------------------------------------

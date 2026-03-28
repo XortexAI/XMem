@@ -25,6 +25,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -37,7 +38,6 @@ from src.graph.code_graph_client import CodeGraphClient
 from src.scanner.code_store import CodeStore
 from src.schemas.code import (
     annotations_namespace,
-    directories_namespace,
     files_namespace,
     snippets_namespace,
     symbols_namespace,
@@ -375,11 +375,9 @@ class CodeRetrievalPipeline:
             turn_records: List[SourceRecord] = []
             only_read_tools = True
 
-            for tc in ai_response.tool_calls:
+            async def _process_tool_call(tc: Dict[str, Any]) -> tuple[List[SourceRecord], Dict[str, Any], bool]:
                 tool_name = tc["name"]
                 tool_args = tc["args"]
-                tool_id = tc["id"]
-
                 t1 = _time.perf_counter()
                 records = await self._execute_tool(
                     tool_name, tool_args, repo=repo, top_k=top_k,
@@ -387,17 +385,23 @@ class CodeRetrievalPipeline:
                 )
                 tool_ms = (_time.perf_counter() - t1) * 1000
                 logger.info("  Tool: %s(%s) → %d results (%.0fms)", tool_name, tool_args, len(records), tool_ms)
+
+                normalized = tool_name.lower().replace("_", "")
+                is_read_only = normalized in ("readfilecode", "readsymbolcode", "getfilecontext")
+                return records, tc, is_read_only
+
+            results = await asyncio.gather(*[_process_tool_call(tc) for tc in ai_response.tool_calls])
+
+            for records, tc, is_read_only in results:
+                if not is_read_only:
+                    only_read_tools = False
+
                 turn_records.extend(records)
                 sources.extend(records)
 
-                # Track if this turn ONLY used read tools (no search)
-                normalized = tool_name.lower().replace("_", "")
-                if normalized not in ("readfilecode", "readsymbolcode", "getfilecontext"):
-                    only_read_tools = False
-
                 tool_result_text = self._format_tool_results(records)
                 messages.append(
-                    ToolMessage(content=tool_result_text, tool_call_id=tool_id)
+                    ToolMessage(content=tool_result_text, tool_call_id=tc["id"])
                 )
 
             # ⚡ SHORT-CIRCUIT: if the LLM only called read tools,
@@ -471,22 +475,23 @@ class CodeRetrievalPipeline:
         if ai_response.tool_calls:
             yield json.dumps({"type": "status", "content": f"Running {len(ai_response.tool_calls)} search tool(s)..."}) + "\n"
             
-            for tc in ai_response.tool_calls:
+            async def _process_stream_tool_call(tc: Dict[str, Any]) -> tuple[List[SourceRecord], Dict[str, Any]]:
                 tool_name = tc["name"]
                 tool_args = tc["args"]
-                tool_id = tc["id"]
-
                 logger.info("  Tool: %s(%s)", tool_name, tool_args)
-
                 records = await self._execute_tool(
                     tool_name, tool_args, repo=repo, top_k=top_k,
                     user_id=user_id,
                 )
-                sources.extend(records)
+                return records, tc
 
+            results = await asyncio.gather(*[_process_stream_tool_call(tc) for tc in ai_response.tool_calls])
+
+            for records, tc in results:
+                sources.extend(records)
                 tool_result_text = self._format_tool_results(records)
                 tool_messages.append(
-                    ToolMessage(content=tool_result_text, tool_call_id=tool_id)
+                    ToolMessage(content=tool_result_text, tool_call_id=tc["id"])
                 )
 
             # Send sources early

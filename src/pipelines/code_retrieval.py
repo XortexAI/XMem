@@ -37,7 +37,6 @@ from src.graph.code_graph_client import CodeGraphClient
 from src.scanner.code_store import CodeStore
 from src.schemas.code import (
     annotations_namespace,
-    directories_namespace,
     files_namespace,
     snippets_namespace,
     symbols_namespace,
@@ -375,7 +374,8 @@ class CodeRetrievalPipeline:
             turn_records: List[SourceRecord] = []
             only_read_tools = True
 
-            for tc in ai_response.tool_calls:
+            import asyncio
+            async def _process_tool_call(tc):
                 tool_name = tc["name"]
                 tool_args = tc["args"]
                 tool_id = tc["id"]
@@ -387,18 +387,23 @@ class CodeRetrievalPipeline:
                 )
                 tool_ms = (_time.perf_counter() - t1) * 1000
                 logger.info("  Tool: %s(%s) → %d results (%.0fms)", tool_name, tool_args, len(records), tool_ms)
-                turn_records.extend(records)
-                sources.extend(records)
 
-                # Track if this turn ONLY used read tools (no search)
                 normalized = tool_name.lower().replace("_", "")
-                if normalized not in ("readfilecode", "readsymbolcode", "getfilecontext"):
-                    only_read_tools = False
+                is_read_tool = normalized in ("readfilecode", "readsymbolcode", "getfilecontext")
 
                 tool_result_text = self._format_tool_results(records)
-                messages.append(
-                    ToolMessage(content=tool_result_text, tool_call_id=tool_id)
-                )
+                tool_msg = ToolMessage(content=tool_result_text, tool_call_id=tool_id)
+
+                return records, is_read_tool, tool_msg
+
+            results = await asyncio.gather(*[_process_tool_call(tc) for tc in ai_response.tool_calls])
+
+            for records, is_read_tool, tool_msg in results:
+                turn_records.extend(records)
+                sources.extend(records)
+                if not is_read_tool:
+                    only_read_tools = False
+                messages.append(tool_msg)
 
             # ⚡ SHORT-CIRCUIT: if the LLM only called read tools,
             # the raw code IS the answer — skip the expensive re-output turn.
@@ -471,7 +476,8 @@ class CodeRetrievalPipeline:
         if ai_response.tool_calls:
             yield json.dumps({"type": "status", "content": f"Running {len(ai_response.tool_calls)} search tool(s)..."}) + "\n"
             
-            for tc in ai_response.tool_calls:
+            import asyncio
+            async def _process_tool_call(tc):
                 tool_name = tc["name"]
                 tool_args = tc["args"]
                 tool_id = tc["id"]
@@ -482,12 +488,16 @@ class CodeRetrievalPipeline:
                     tool_name, tool_args, repo=repo, top_k=top_k,
                     user_id=user_id,
                 )
-                sources.extend(records)
-
                 tool_result_text = self._format_tool_results(records)
-                tool_messages.append(
-                    ToolMessage(content=tool_result_text, tool_call_id=tool_id)
-                )
+                tool_msg = ToolMessage(content=tool_result_text, tool_call_id=tool_id)
+
+                return records, tool_msg
+
+            results = await asyncio.gather(*[_process_tool_call(tc) for tc in ai_response.tool_calls])
+
+            for records, tool_msg in results:
+                sources.extend(records)
+                tool_messages.append(tool_msg)
 
             # Send sources early
             sources_dict = [
@@ -589,14 +599,18 @@ class CodeRetrievalPipeline:
     ) -> List[SourceRecord]:
         if not repo:
             logger.warning("search_symbols called without repo — searching all repos")
-            results = []
-            for r in self.repos:
-                results.extend(await self._search_namespace(
+            import asyncio
+            tasks = [
+                self._search_namespace(
                     namespace=symbols_namespace(self.org_id, r),
                     query=query,
                     domain="symbol",
                     top_k=top_k,
-                ))
+                )
+                for r in self.repos
+            ]
+            all_results = await asyncio.gather(*tasks)
+            results = [item for sublist in all_results for item in sublist]
             return results[:top_k]
 
         return await self._search_namespace(
@@ -612,14 +626,18 @@ class CodeRetrievalPipeline:
         self, query: str, repo: str, top_k: int = 10,
     ) -> List[SourceRecord]:
         if not repo:
-            results = []
-            for r in self.repos:
-                results.extend(await self._search_namespace(
+            import asyncio
+            tasks = [
+                self._search_namespace(
                     namespace=files_namespace(self.org_id, r),
                     query=query,
                     domain="file",
                     top_k=top_k,
-                ))
+                )
+                for r in self.repos
+            ]
+            all_results = await asyncio.gather(*tasks)
+            results = [item for sublist in all_results for item in sublist]
             return results[:top_k]
 
         return await self._search_namespace(

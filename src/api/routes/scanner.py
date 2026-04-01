@@ -66,11 +66,12 @@ class ChatRequest(BaseModel):
 def _parse_github_url(url: str) -> tuple:
     """Extract (org, repo) from a GitHub URL."""
     url = url.strip().rstrip("/")
-    m = re.search(r"github\.com[/:]([^/]+)/([^/.]+?)(?:\.git)?$", url)
+    # Anchor to https://github.com/ and use re.match to prevent injection
+    m = re.match(r"^https://github\.com/([^/]+)/([^/]+?)(?:\.git)?$", url)
     if m:
         return m.group(1), m.group(2)
     raise ValueError(
-        f"Invalid GitHub URL. Expected format: https://github.com/org/repo"
+        "Invalid GitHub URL. Expected format: https://github.com/org/repo"
     )
 
 

@@ -1,0 +1,3 @@
+## 2025-04-01 - [Optimization: Concurrent Execution in Retrieval Pipelines]
+**Learning:** Sequential await execution for LLM tool calls and multi-repository searches introduces unnecessary latency bottlenecks. Offloading these independent sub-queries concurrently via `asyncio.gather` significantly reduces wait time and allows for parallel IO operations to scale, though we need to correctly unpack results sequentially back into standard Python lists to preserve state safety.
+**Action:** Always prefer `asyncio.gather` over sequential `for loop` and `await` operations when retrieving results across namespaces, repositories, or multiple LLM tool executions. Wrap the loop bodies in asynchronous internal functions or generator expressions to process tasks safely.

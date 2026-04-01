@@ -82,7 +82,7 @@ from src.schemas.code import (
 )
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -97,10 +97,10 @@ logger = logging.getLogger("xmem.pipelines.ingest")
 # Embedding helper — supports Google GenAI and Amazon Bedrock (Nova)
 # ---------------------------------------------------------------------------
 
-import json as _json
+import json as _json  # noqa: E402
 
-from google import genai
-from google.genai import types
+from google import genai  # noqa: E402
+from google.genai import types  # noqa: E402
 
 _embedding_client: Optional[genai.Client] = None
 _bedrock_embedding_client = None

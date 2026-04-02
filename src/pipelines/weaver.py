@@ -92,9 +92,10 @@ class Weaver:
             batched_executed = await self._execute_batched_vector(judge_result.operations, domain, user_id)
             result.executed.extend(batched_executed)
         else:
-            for op in judge_result.operations:
-                executed = await self._execute_one(op, domain, user_id)
-                result.executed.append(executed)
+            import asyncio
+            coros = [self._execute_one(op, domain, user_id) for op in judge_result.operations]
+            executed_list = await asyncio.gather(*coros)
+            result.executed.extend(executed_list)
 
         self._log_summary(domain, result)
         return result
@@ -119,6 +120,9 @@ class Weaver:
                 for op in operations
             ]
 
+        import asyncio
+        loop = asyncio.get_running_loop()
+
         async def flush_add_batch():
             if not add_batch_ops:
                 return
@@ -129,38 +133,48 @@ class Weaver:
             embeddings = []
             metadatas = []
 
-            for op in add_batch_ops:
+            async def _embed_and_prep(op):
                 if not op.content:
-                    logger.warning("ADD with empty content — skipping.")
-                    executed_ops.append(ExecutedOp(
+                    return op, None, None, ExecutedOp(
                         type=op.type, status=OpStatus.SKIPPED,
                         error="ADD requires content",
-                    ))
-                    continue
-
+                    )
                 try:
-                    emb = self.embed_fn(op.content)
+                    emb = await loop.run_in_executor(None, self.embed_fn, op.content)
                     meta = {"user_id": user_id, "domain": domain.value}
                     meta.update(_extract_structured_metadata(op.content))
+                    return op, emb, meta, None
+                except Exception as exc:
+                    return op, None, None, ExecutedOp(
+                        type=op.type, status=OpStatus.FAILED,
+                        content=op.content, error=str(exc)
+                    )
 
+            prep_results = await asyncio.gather(*[_embed_and_prep(op) for op in add_batch_ops])
+
+            for op, emb, meta, err_op in prep_results:
+                if err_op:
+                    if err_op.status == OpStatus.SKIPPED:
+                        logger.warning("ADD with empty content — skipping.")
+                    else:
+                        logger.error("Embedding generation failed for ADD: %s", err_op.error)
+                    executed_ops.append(err_op)
+                else:
                     valid_ops.append(op)
                     texts.append(op.content)
                     embeddings.append(emb)
                     metadatas.append(meta)
-                except Exception as exc:
-                    logger.error("Embedding generation failed for ADD: %s", exc)
-                    executed_ops.append(ExecutedOp(
-                        type=op.type, status=OpStatus.FAILED,
-                        content=op.content, error=str(exc)
-                    ))
 
             if valid_ops:
                 try:
-                    ids = self.vector_store.add(
+                    from functools import partial
+                    add_fn = partial(
+                        self.vector_store.add,
                         texts=texts,
                         embeddings=embeddings,
                         metadata=metadatas,
                     )
+                    ids = await loop.run_in_executor(None, add_fn)
                     # Map IDs back to ops
                     for op, new_id in zip(valid_ops, ids):
                         executed_ops.append(ExecutedOp(
@@ -198,7 +212,9 @@ class Weaver:
 
             if valid_ops:
                 try:
-                    success = self.vector_store.delete(ids=ids_to_delete)
+                    from functools import partial
+                    delete_fn = partial(self.vector_store.delete, ids=ids_to_delete)
+                    success = await loop.run_in_executor(None, delete_fn)
                     status = OpStatus.SUCCESS if success else OpStatus.FAILED
                     for op in valid_ops:
                         executed_ops.append(ExecutedOp(

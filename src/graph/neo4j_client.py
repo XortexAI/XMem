@@ -27,7 +27,6 @@ from datetime import date, timedelta
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
-import numpy as np
 from neo4j import GraphDatabase
 
 from src.graph.schema import GraphSchema

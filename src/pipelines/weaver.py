@@ -12,6 +12,7 @@ No LLM involved — just structured execution with guard rails.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -92,9 +93,10 @@ class Weaver:
             batched_executed = await self._execute_batched_vector(judge_result.operations, domain, user_id)
             result.executed.extend(batched_executed)
         else:
-            for op in judge_result.operations:
-                executed = await self._execute_one(op, domain, user_id)
-                result.executed.append(executed)
+            executed_ops = await asyncio.gather(
+                *(self._execute_one(op, domain, user_id) for op in judge_result.operations)
+            )
+            result.executed.extend(executed_ops)
 
         self._log_summary(domain, result)
         return result

@@ -375,17 +375,23 @@ class CodeRetrievalPipeline:
             turn_records: List[SourceRecord] = []
             only_read_tools = True
 
-            for tc in ai_response.tool_calls:
-                tool_name = tc["name"]
-                tool_args = tc["args"]
-                tool_id = tc["id"]
-
+            async def _process_tool_call(tc: Dict[str, Any]) -> tuple[str, str, str, List[SourceRecord], float]:
+                t_name = tc["name"]
+                t_args = tc["args"]
+                t_id = tc["id"]
                 t1 = _time.perf_counter()
-                records = await self._execute_tool(
-                    tool_name, tool_args, repo=repo, top_k=top_k,
-                    user_id=user_id,
+                recs = await self._execute_tool(
+                    t_name, t_args, repo=repo, top_k=top_k, user_id=user_id,
                 )
-                tool_ms = (_time.perf_counter() - t1) * 1000
+                t_ms = (_time.perf_counter() - t1) * 1000
+                return t_name, t_args, t_id, recs, t_ms
+
+            import asyncio
+            results = await asyncio.gather(*(
+                _process_tool_call(tc) for tc in ai_response.tool_calls
+            ))
+
+            for tool_name, tool_args, tool_id, records, tool_ms in results:
                 logger.info("  Tool: %s(%s) → %d results (%.0fms)", tool_name, tool_args, len(records), tool_ms)
                 turn_records.extend(records)
                 sources.extend(records)
@@ -471,17 +477,22 @@ class CodeRetrievalPipeline:
         if ai_response.tool_calls:
             yield json.dumps({"type": "status", "content": f"Running {len(ai_response.tool_calls)} search tool(s)..."}) + "\n"
             
-            for tc in ai_response.tool_calls:
-                tool_name = tc["name"]
-                tool_args = tc["args"]
-                tool_id = tc["id"]
-
-                logger.info("  Tool: %s(%s)", tool_name, tool_args)
-
-                records = await self._execute_tool(
-                    tool_name, tool_args, repo=repo, top_k=top_k,
-                    user_id=user_id,
+            async def _process_stream_tool_call(tc: Dict[str, Any]) -> tuple[str, str, str, List[SourceRecord]]:
+                t_name = tc["name"]
+                t_args = tc["args"]
+                t_id = tc["id"]
+                logger.info("  Tool: %s(%s)", t_name, t_args)
+                recs = await self._execute_tool(
+                    t_name, t_args, repo=repo, top_k=top_k, user_id=user_id,
                 )
+                return t_name, t_args, t_id, recs
+
+            import asyncio
+            results = await asyncio.gather(*(
+                _process_stream_tool_call(tc) for tc in ai_response.tool_calls
+            ))
+
+            for tool_name, tool_args, tool_id, records in results:
                 sources.extend(records)
 
                 tool_result_text = self._format_tool_results(records)
@@ -589,14 +600,16 @@ class CodeRetrievalPipeline:
     ) -> List[SourceRecord]:
         if not repo:
             logger.warning("search_symbols called without repo — searching all repos")
-            results = []
-            for r in self.repos:
-                results.extend(await self._search_namespace(
+            import asyncio
+            repo_results = await asyncio.gather(*(
+                self._search_namespace(
                     namespace=symbols_namespace(self.org_id, r),
                     query=query,
                     domain="symbol",
                     top_k=top_k,
-                ))
+                ) for r in self.repos
+            ))
+            results = [item for sublist in repo_results for item in sublist]
             return results[:top_k]
 
         return await self._search_namespace(
@@ -612,14 +625,16 @@ class CodeRetrievalPipeline:
         self, query: str, repo: str, top_k: int = 10,
     ) -> List[SourceRecord]:
         if not repo:
-            results = []
-            for r in self.repos:
-                results.extend(await self._search_namespace(
+            import asyncio
+            repo_results = await asyncio.gather(*(
+                self._search_namespace(
                     namespace=files_namespace(self.org_id, r),
                     query=query,
                     domain="file",
                     top_k=top_k,
-                ))
+                ) for r in self.repos
+            ))
+            results = [item for sublist in repo_results for item in sublist]
             return results[:top_k]
 
         return await self._search_namespace(

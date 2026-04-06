@@ -177,16 +177,24 @@ class RetrievalPipeline:
 
         if ai_response.tool_calls:
             called_tools = set()
-            for tc in ai_response.tool_calls:
-                tool_name = tc["name"]
-                tool_args = tc["args"]
-                tool_id = tc["id"]
 
-                logger.info("  Tool call: %s(%s)", tool_name, tool_args)
+            # Helper to execute tool calls concurrently
+            async def _process_tool_call(tc: Dict[str, Any]) -> tuple[str, str, str, List[SourceRecord]]:
+                t_name = tc["name"]
+                t_args = tc["args"]
+                t_id = tc["id"]
+                logger.info("  Tool call: %s(%s)", t_name, t_args)
+                recs = await self._execute_tool(t_name, t_args, user_id, top_k)
+                return t_name, t_args, t_id, recs
 
-                records = await self._execute_tool(
-                    tool_name, tool_args, user_id, top_k,
-                )
+            import asyncio
+            # Execute all tool calls concurrently
+            results = await asyncio.gather(*(
+                _process_tool_call(tc) for tc in ai_response.tool_calls
+            ))
+
+            # Process results sequentially to safely extend shared state
+            for tool_name, tool_args, tool_id, records in results:
                 sources.extend(records)
 
                 # Build ToolMessage for the LLM

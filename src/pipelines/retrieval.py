@@ -20,8 +20,8 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
 from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -177,16 +177,24 @@ class RetrievalPipeline:
 
         if ai_response.tool_calls:
             called_tools = set()
-            for tc in ai_response.tool_calls:
+
+            async def _process_tool_call(tc: dict) -> tuple[dict, list[SourceRecord]]:
                 tool_name = tc["name"]
                 tool_args = tc["args"]
-                tool_id = tc["id"]
-
                 logger.info("  Tool call: %s(%s)", tool_name, tool_args)
-
-                records = await self._execute_tool(
+                recs = await self._execute_tool(
                     tool_name, tool_args, user_id, top_k,
                 )
+                return tc, recs
+
+            tool_results = await asyncio.gather(*(
+                _process_tool_call(tc) for tc in ai_response.tool_calls
+            ))
+
+            for tc, records in tool_results:
+                tool_name = tc["name"]
+                tool_id = tc["id"]
+
                 sources.extend(records)
 
                 # Build ToolMessage for the LLM

@@ -21,8 +21,8 @@ Usage:
 from __future__ import annotations
 
 import logging
-import os
-from typing import Any, Callable, Dict, List, Optional
+import asyncio
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from langchain_core.language_models import BaseChatModel
@@ -176,25 +176,26 @@ class RetrievalPipeline:
         tool_messages: List[ToolMessage] = []
 
         if ai_response.tool_calls:
-            called_tools = set()
-            for tc in ai_response.tool_calls:
+
+            async def _process_tool_call(tc: Dict[str, Any]) -> Tuple[str, str, List[SourceRecord]]:
                 tool_name = tc["name"]
                 tool_args = tc["args"]
                 tool_id = tc["id"]
-
                 logger.info("  Tool call: %s(%s)", tool_name, tool_args)
+                records = await self._execute_tool(tool_name, tool_args, user_id, top_k)
+                return tool_name, tool_id, records
 
-                records = await self._execute_tool(
-                    tool_name, tool_args, user_id, top_k,
-                )
+            called_tools = set()
+            results = await asyncio.gather(
+                *(_process_tool_call(tc) for tc in ai_response.tool_calls)
+            )
+
+            for tool_name, tool_id, records in results:
                 sources.extend(records)
-
-                # Build ToolMessage for the LLM
                 tool_result_text = self._format_tool_results(records)
                 tool_messages.append(
                     ToolMessage(content=tool_result_text, tool_call_id=tool_id)
                 )
-
                 called_tools.add(tool_name.lower().replace("_", ""))
 
             # Auto-add summary context when only profile or temporal was requested
@@ -351,7 +352,6 @@ class RetrievalPipeline:
         top_k: int = 3,
     ) -> List[SourceRecord]:
         """Semantic search over temporal events in Neo4j."""
-        import asyncio
         from functools import partial
 
         loop = asyncio.get_running_loop()

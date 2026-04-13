@@ -132,7 +132,23 @@ class Settings(BaseSettings):
         default="us-east-1",
         description="Pinecone region for embeddings"
     )
-    
+
+    ssl_ca_bundle: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to PEM CA bundle for TLS (SSL_CA_BUNDLE). Required behind corporate "
+            "SSL inspection; Pinecone SDK ignores SSL_CERT_FILE unless this is set."
+        ),
+    )
+
+    pinecone_ssl_verify: bool = Field(
+        default=True,
+        description=(
+            "Verify TLS for Pinecone API (PINECONE_SSL_VERIFY). Set false only to debug "
+            "proxy or cert issues — never in production."
+        ),
+    )
+
     embedding_model: str = Field(
         default="gemini-embedding-001",
         description="Embedding model name (e.g. gemini-embedding-001, amazon.nova-2-multimodal-embeddings-v1:0)"
@@ -159,6 +175,10 @@ class Settings(BaseSettings):
         ...,
         description="Neo4j password (required)"
     )
+    neo4j_connection_timeout: float = Field(
+        default=60.0,
+        description="Neo4j driver TCP+handshake timeout in seconds (NEO4J_CONNECTION_TIMEOUT)",
+    )
 
     api_host: str = Field(
         default="0.0.0.0",
@@ -175,6 +195,36 @@ class Settings(BaseSettings):
     rate_limit: int = Field(
         default=60,
         description="Rate limit (requests per minute)"
+    )
+
+    # Scanner dashboard — heuristic pre-scan estimates (tunable)
+    scanner_estimate_phase1_base_seconds: float = Field(
+        default=45.0,
+        description="Base seconds added to Phase 1 time estimate",
+    )
+    scanner_estimate_phase1_seconds_per_mb: float = Field(
+        default=8.0,
+        description="Additional Phase 1 seconds per MB of GitHub repo size",
+    )
+    scanner_estimate_embedding_calls_per_mb: float = Field(
+        default=15.0,
+        description="Rough embedding API calls per MB for Phase 1",
+    )
+    scanner_estimate_avg_tokens_per_embedding: int = Field(
+        default=256,
+        description="Assumed average tokens billed per embedding request",
+    )
+    scanner_estimate_llm_tokens_per_mb: float = Field(
+        default=12000.0,
+        description="Rough upper-bound LLM tokens for Phase 2 per MB of repo",
+    )
+    scanner_estimate_embedding_cost_per_1m_tokens: Optional[float] = Field(
+        default=None,
+        description="USD per 1M embedding tokens (optional; enables cost estimate)",
+    )
+    scanner_estimate_llm_cost_per_1m_tokens: Optional[float] = Field(
+        default=None,
+        description="USD per 1M LLM tokens for Phase 2 (optional)",
     )
     max_request_body_bytes: int = Field(
         default=10 * 1024 * 1024,

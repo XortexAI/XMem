@@ -5,6 +5,8 @@ Collections:
   raw_symbols  — raw source code for each function/class (keyed by content hash)
   raw_files    — raw content for each file
   scan_runs    — tracks nightly scan state (last SHA, timestamps, stats)
+  scanner_jobs — dashboard scan job state (persists across API restarts)
+  scanner_user_repos — per-user repo rows for listing (shared index; key by user + org + repo)
 
 The raw code is stored here so the retrieval pipeline can fetch exact
 function bodies via ``get_symbol_code()`` without hitting the LLM or
@@ -51,6 +53,8 @@ class CodeStore:
         self.symbols = self._db["raw_symbols"]
         self.files = self._db["raw_files"]
         self.scan_runs = self._db["scan_runs"]
+        self.scanner_jobs = self._db["scanner_jobs"]
+        self.scanner_user_repos = self._db["scanner_user_repos"]
 
         self._ensure_indexes()
 
@@ -70,6 +74,109 @@ class CodeStore:
             [("org_id", 1), ("repo", 1)],
             unique=True,
         )
+
+        self.scanner_jobs.create_index([("job_id", 1)], unique=True)
+        self.scanner_jobs.create_index([("username", 1), ("updated_at", -1)])
+
+        self.scanner_user_repos.create_index(
+            [("username", 1), ("github_org", 1), ("repo", 1)],
+            unique=True,
+        )
+        self.scanner_user_repos.create_index([("username", 1)])
+
+    # ======================================================================
+    # SCANNER DASHBOARD — job + per-user repo listing
+    # ======================================================================
+
+    def upsert_scanner_job(
+        self,
+        job_id: str,
+        username: str,
+        org: str,
+        repo: str,
+        branch: str,
+        url: str,
+        phase1_status: str,
+        phase2_status: str,
+        started_at: float,
+        error: Optional[str] = None,
+        phase1_result: Optional[Dict[str, Any]] = None,
+        phase2_result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist or update scanner dashboard job state."""
+        doc: Dict[str, Any] = {
+            "job_id": job_id,
+            "username": username,
+            "org": org,
+            "repo": repo,
+            "branch": branch,
+            "url": url,
+            "phase1_status": phase1_status,
+            "phase2_status": phase2_status,
+            "started_at": started_at,
+            "updated_at": datetime.now(timezone.utc),
+            "error": error,
+        }
+        if phase1_result is not None:
+            doc["phase1_result"] = phase1_result
+        if phase2_result is not None:
+            doc["phase2_result"] = phase2_result
+
+        self.scanner_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": doc},
+            upsert=True,
+        )
+
+    def get_scanner_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        return self.scanner_jobs.find_one({"job_id": job_id})
+
+    def list_scanner_jobs_for_user(self, username: str) -> List[Dict[str, Any]]:
+        cursor = self.scanner_jobs.find({"username": username}).sort(
+            "updated_at", -1,
+        )
+        return list(cursor)
+
+    def upsert_user_repo_entry(
+        self,
+        username: str,
+        github_org: str,
+        repo: str,
+        branch: str,
+        last_seen_commit: Optional[str] = None,
+    ) -> None:
+        """Record that this user has this repo in their list (shared index)."""
+        set_doc: Dict[str, Any] = {
+            "username": username,
+            "github_org": github_org,
+            "repo": repo,
+            "branch": branch,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if last_seen_commit:
+            set_doc["last_seen_commit"] = last_seen_commit
+
+        self.scanner_user_repos.update_one(
+            {
+                "username": username,
+                "github_org": github_org,
+                "repo": repo,
+            },
+            {
+                "$set": set_doc,
+                "$setOnInsert": {
+                    "created_at": datetime.now(timezone.utc),
+                },
+            },
+            upsert=True,
+        )
+
+    def list_user_repos_for_user(self, username: str) -> List[Dict[str, Any]]:
+        """All repo rows bookmarked for this user (for listing merge)."""
+        cursor = self.scanner_user_repos.find({"username": username}).sort(
+            "updated_at", -1,
+        )
+        return list(cursor)
 
     # ======================================================================
     # SYMBOL CRUD

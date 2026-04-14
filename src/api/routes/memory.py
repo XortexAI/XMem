@@ -29,11 +29,19 @@ from src.api.schemas import (
     RetrieveResponse,
     SearchRequest,
     SearchResponse,
+    ScrapeRequest,
+    ScrapeResponse,
+    MessagePair,
     SourceRecord,
     StatusEnum,
     WeaverSummary,
 )
 from src.pipelines.retrieval import RetrievalPipeline
+
+import httpx
+from bs4 import BeautifulSoup
+import json
+import re
 
 logger = logging.getLogger("xmem.api.routes.memory")
 
@@ -259,3 +267,117 @@ async def _search_summary(pipeline: RetrievalPipeline, query: str, user_id: str,
     except Exception as exc:
         logger.warning("Summary search error: %s", exc)
         return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# POST /v1/memory/scrape
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/scrape",
+    response_model=APIResponse,
+    summary="Scrape a shared AI chat link into message pairs",
+)
+async def scrape_chat_link(req: ScrapeRequest, request: Request):
+    start = time.perf_counter()
+    url = req.url
+    
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+            }
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            html = resp.text
+
+        soup = BeautifulSoup(html, "html.parser")
+        pairs = []
+        
+        # 1. ChatGPT Parsing
+        if "chatgpt.com" in url or "openai.com" in url:
+            # Try remix context
+            script_remix = soup.find("script", text=re.compile(r"__remixContext\s*="))
+            if script_remix and script_remix.string:
+                try:
+                    match = re.search(r"__remixContext\s*=\s*(\{.*?\});", script_remix.string, re.DOTALL)
+                    if match:
+                        data = json.loads(match.group(1))
+                        # Deep search for messages
+                        messages_dict = {}
+                        def find_messages(obj):
+                            if isinstance(obj, dict):
+                                if "message" in obj and isinstance(obj["message"], dict) and "author" in obj["message"]:
+                                    messages_dict[obj["message"].get("id", "")] = obj["message"]
+                                for v in obj.values():
+                                    find_messages(v)
+                            elif isinstance(obj, list):
+                                for item in obj:
+                                    find_messages(item)
+                        find_messages(data)
+                        
+                        sorted_msgs = sorted(messages_dict.values(), key=lambda x: x.get("create_time", 0))
+                        
+                        current_user = ""
+                        for msg in sorted_msgs:
+                            role = msg.get("author", {}).get("role", "")
+                            parts = msg.get("content", {}).get("parts", [])
+                            text = "".join([p for p in parts if isinstance(p, str)])
+                            
+                            if role == "user":
+                                current_user = text
+                            elif role == "assistant" and text:
+                                pairs.append(MessagePair(user_query=current_user or "User", agent_response=text))
+                                current_user = ""
+                except Exception as e:
+                    logger.warning(f"Failed to parse ChatGPT remix context: {e}")
+            
+            # Fallback: HTML based parsing
+            if not pairs:
+                user_msgs = soup.find_all("div", {"data-message-author-role": "user"})
+                asst_msgs = soup.find_all("div", {"data-message-author-role": "assistant"})
+                for u, a in zip(user_msgs, asst_msgs):
+                    pairs.append(MessagePair(user_query=u.get_text(separator="\n").strip(), agent_response=a.get_text(separator="\n").strip()))
+        
+        # 2. Claude Parsing
+        elif "claude.ai" in url:
+            script_state = soup.find("script", text=re.compile(r"__PRELOADED_STATE__"))
+            if script_state and script_state.string:
+                try:
+                    match = re.search(r"__PRELOADED_STATE__\s*=\s*(\{.*?\});", script_state.string, re.DOTALL)
+                    if match:
+                        data = json.loads(match.group(1))
+                        messages = data.get("chat", {}).get("messages", [])
+                        current_user = ""
+                        for msg in messages:
+                            if msg.get("sender") == "human":
+                                current_user = msg.get("text", "")
+                            elif msg.get("sender") == "assistant":
+                                pairs.append(MessagePair(user_query=current_user, agent_response=msg.get("text", "")))
+                                current_user = ""
+                except Exception as e:
+                    logger.warning(f"Failed to parse Claude preloaded state: {e}")
+
+        # 3. Generic fallback
+        if not pairs:
+            # Just extract all paragraphs if everything else fails
+            paragraphs = [p.get_text(strip=True) for p in soup.find_all("p") if p.get_text(strip=True)]
+            if paragraphs:
+                text = "\n".join(paragraphs)
+                pairs.append(MessagePair(user_query="Extracted text from link", agent_response=text[:10000]))
+
+        if not pairs:
+            return _error(request, "Failed to extract messages from the provided link.", 400)
+
+        data = ScrapeResponse(pairs=pairs)
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _wrap(request, data, elapsed)
+
+    except httpx.HTTPStatusError as exc:
+        logger.error(f"HTTP error scraping {url}: {exc}")
+        return _error(request, f"Failed to fetch URL: HTTP {exc.response.status_code}", 400)
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Scrape failed for url=%s", url)
+        return _error(request, str(exc), 500, elapsed)
+

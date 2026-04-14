@@ -166,6 +166,24 @@ class SearchResponse(BaseModel):
     total: int = 0
 
 
+# ── Scrape (extract from shared chat links) ────────────────────────────────
+
+class ScrapeRequest(BaseModel):
+    """Request to scrape a shared AI chat link."""
+    url: str = Field(
+        ..., min_length=1, max_length=2000,
+        description="Public share link (ChatGPT, Claude, Gemini)"
+    )
+
+class MessagePair(BaseModel):
+    user_query: str
+    agent_response: str
+
+class ScrapeResponse(BaseModel):
+    pairs: List[MessagePair] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
 # ── Code retrieval (IDE mode) ─────────────────────────────────────────────
 
 class CodeQueryRequest(BaseModel):

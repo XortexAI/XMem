@@ -233,9 +233,25 @@ def _can_reuse_index(
 
 
 def _run_phase1(org: str, repo: str, url: str, branch: str, pat: str) -> dict:
-    from src.scanner.indexer import Indexer
+    from src.scanner_v1.indexer import IndexerV1
+    from src.scanner_v1.store import CodeStoreV1
+    from src.scanner_v1.embedder import Embedder
+    from src.pipelines.ingest import embed_text
+    
+    store = CodeStoreV1(
+        uri=settings.neo4j_uri,
+        username=settings.neo4j_username,
+        password=settings.neo4j_password,
+        database=None,
+        embedding_dimension=settings.pinecone_dimension,
+    )
+    store.connect()
 
-    indexer = Indexer(org_id=org)
+    def _embed(text: str):
+        return list(embed_text(text))
+
+    embedder = Embedder(summary_embed_fn=_embed)
+    indexer = IndexerV1(org_id=org, store=store, embedder=embedder)
     try:
         return indexer.scan_repo(
             repo_name=repo,
@@ -249,9 +265,37 @@ def _run_phase1(org: str, repo: str, url: str, branch: str, pat: str) -> dict:
 
 
 def _run_phase2(org: str, repo: str) -> dict:
-    from src.scanner.enricher import Enricher
+    from src.scanner_v1.enricher import EnricherV1
+    from src.scanner_v1.store import CodeStoreV1
+    from src.scanner_v1.embedder import Embedder
+    from src.pipelines.ingest import embed_text
+    from src.models import get_model
 
-    enricher = Enricher(org_id=org)
+    store = CodeStoreV1(
+        uri=settings.neo4j_uri,
+        username=settings.neo4j_username,
+        password=settings.neo4j_password,
+        database=None,
+        embedding_dimension=settings.pinecone_dimension,
+    )
+    store.connect()
+
+    def _embed(text: str):
+        return list(embed_text(text))
+
+    embedder = Embedder(summary_embed_fn=_embed)
+    
+    model = get_model()
+    def _llm_call(prompt: str) -> str:
+        response = model.invoke(prompt)
+        return getattr(response, "content", None) or str(response)
+
+    enricher = EnricherV1(
+        org_id=org, 
+        store=store, 
+        embedder=embedder, 
+        llm_call=_llm_call
+    )
     try:
         return enricher.enrich_repo(repo)
     finally:
@@ -566,6 +610,10 @@ async def scan_status(
     pr = job.get("phase1_result")
     if isinstance(pr, dict) and pr.get("stats"):
         resp["stats"] = pr["stats"]
+        
+    p2 = job.get("phase2_result")
+    if isinstance(p2, dict):
+        resp["phase2_stats"] = p2
 
     return JSONResponse(resp)
 

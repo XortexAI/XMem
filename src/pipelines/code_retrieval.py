@@ -1,17 +1,28 @@
 """
-Code Retrieval Pipeline — multi-namespace search across the code knowledge base.
+Code Retrieval Pipeline v2 — Neo4j-only, dual-lane hybrid retrieval.
 
-Searches four Pinecone namespaces (symbols, files, directories, annotations)
-and uses Neo4j graph traversal for impact analysis, call chains, and
-inheritance hierarchies.
+Replaces the v0 pipeline that searched Pinecone namespaces + MongoDB raw code.
+All queries now go through CodeStoreV1 (Neo4j) exclusively.
+
+Major changes from v0:
+  - Eliminated PineconeVectorStore: vector search uses Neo4j native vector indexes.
+  - Eliminated CodeStore (MongoDB): raw code lives on SymbolV1/FileV1 nodes.
+  - Graph-Conditioned Hybrid Retrieval: fuses summary-lane, code-lane, BM25,
+    and graph PageRank signals via Reciprocal Rank Fusion (RRF).
+  - Seed-and-Expand: high-confidence hits automatically pull 1-hop callers/callees.
+  - Deterministic fast paths: exact file/symbol paths short-circuit without LLM.
+  - Global ranking: single Neo4j query across repos instead of per-repo iteration.
 
 Tools exposed to the LLM:
 
-  search_symbols(query, repo)   → Pinecone semantic search in symbols namespace
-  search_files(query, repo)     → Pinecone semantic search in files namespace
-  search_annotations(query)     → Pinecone semantic search in annotations namespace
-  impact_analysis(symbol, repo) → Neo4j graph traversal (callers, callees, inheritance)
-  get_file_context(file, repo)  → Neo4j: symbols defined in file + import graph
+  search_symbols(query, repo)   → Hybrid: dual-lane vector + BM25 + graph boost
+  search_files(query, repo)     → Neo4j vector search on file_summary_vec_idx
+  search_annotations(query)     → Neo4j fulltext search on annotations (kept for compat)
+  impact_analysis(symbol, repo) → CALLS_V1 / IMPORTS_V1 graph traversal
+  get_file_context(file, repo)  → symbols defined + import graph via V1 schema
+  read_symbol_code(sym, repo)   → raw_code property from SymbolV1 node
+  read_file_code(file, repo)    → raw_content property from FileV1 node
+  search_snippets(query)        → user-scoped snippet search (Pinecone, kept)
 
 Usage::
 
@@ -27,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -34,16 +46,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from pydantic import BaseModel, Field
 
 from src.config import settings
-from src.graph.code_graph_client import CodeGraphClient
-from src.scanner.code_store import CodeStore
-from src.schemas.code import (
-    annotations_namespace,
-    files_namespace,
-    snippets_namespace,
-    symbols_namespace,
-)
+from src.scanner_v1 import schemas as S
+from src.scanner_v1.store import CodeStoreV1
 from src.schemas.retrieval import RetrievalResult, SourceRecord
-from src.storage.pinecone import PineconeVectorStore
 
 logger = logging.getLogger("xmem.pipelines.code_retrieval")
 
@@ -95,7 +100,7 @@ class GetFileContext(BaseModel):
 
 class ReadSymbolCode(BaseModel):
     """Read the actual source code of a specific function, method, or class
-    from MongoDB. Use AFTER search_symbols finds a symbol and you need to
+    from the code store. Use AFTER search_symbols finds a symbol and you need to
     show or analyze its implementation."""
 
     symbol_name: str = Field(description="Fully qualified symbol name, e.g. 'PaymentProcessor.process'")
@@ -104,7 +109,7 @@ class ReadSymbolCode(BaseModel):
 
 
 class ReadFileCode(BaseModel):
-    """Read the full source code of a file from MongoDB.
+    """Read the full source code of a file from the code store.
     Use when the user asks to see an entire file's contents. Prefer
     read_symbol_code for individual functions to save context window."""
 
@@ -123,7 +128,7 @@ class SearchSnippets(BaseModel):
 CODE_TOOLS = [
     SearchSymbols, SearchFiles, SearchAnnotations,
     ImpactAnalysis, GetFileContext,
-    ReadSymbolCode, ReadFileCode,
+    ReadSymbolCode, ReadFileCode, SearchSnippets,
 ]
 
 SNIPPET_TOOLS = [SearchSnippets]
@@ -140,20 +145,23 @@ Your job is to answer questions about codebases by searching indexed code
 knowledge. You have access to:
 
 1. **Symbols** — Every function, method, class in the codebase with summaries,
-   signatures, and metadata.
+   signatures, and metadata. Searched via dual-lane hybrid retrieval (semantic
+   summary + code structure + keyword BM25 + graph signals).
 2. **Files** — File-level summaries showing what each file is responsible for.
 3. **Annotations** — Team knowledge: bug reports, fixes, warnings, design
    explanations attached to specific symbols or files.
 4. **Code Graph** — Dependency graph showing who calls what, import chains,
    and inheritance hierarchies.
+5. **Snippets** — User's personal saved code snippets from past conversations.
 
 ═══════════════════════════════════════════════════════════════════════════
 AVAILABLE TOOLS
 ═══════════════════════════════════════════════════════════════════════════
 
 ### 1. search_symbols(query, repo?)
-   Semantic search over function/class summaries in the symbols index.
-   Use when the question is about a specific function, method, or class.
+   Hybrid search over function/class summaries, code bodies, and identifiers.
+   Combines semantic similarity, keyword matching, and graph importance.
+   Returns results with 1-hop context (callers/callees) for high-confidence matches.
 
 ### 2. search_files(query, repo?)
    Semantic search over file-level summaries.
@@ -164,22 +172,27 @@ AVAILABLE TOOLS
    Use when asking about known issues, design decisions, or gotchas.
 
 ### 4. impact_analysis(symbol_name, repo, depth?)
-   Graph traversal showing callers, callees, inheritance, and annotations
-   for a specific symbol. Use for "what breaks if I change X?" questions.
+   Graph traversal showing callers, callees, and inheritance for a specific
+   symbol. Traverses CALLS and IMPORTS relationships.
+   Use for "what breaks if I change X?" questions.
 
 ### 5. get_file_context(file_path, repo)
    Full file context: symbols defined + import graph.
    Use for "what's in this file?" or "what does this file depend on?"
 
 ### 6. read_symbol_code(symbol_name, file_path, repo)
-   Fetch the ACTUAL source code of a function/method/class from the code store.
+   Fetch the ACTUAL source code of a function/method/class from Neo4j.
    Use AFTER search_symbols or impact_analysis finds a symbol and the user
    wants to see the real implementation — not just the summary.
 
 ### 7. read_file_code(file_path, repo)
-   Fetch the FULL raw source code of a file from the code store.
+   Fetch the FULL raw source code of a file from Neo4j.
    Use when the user explicitly asks to read or see a whole file.
    Prefer read_symbol_code for individual functions to save tokens.
+
+### 8. search_snippets(query)
+   Search the user's personal saved code snippets.
+   Use when the user asks about code they previously discussed or saved.
 
 ═══════════════════════════════════════════════════════════════════════════
 DECISION RULES
@@ -255,7 +268,91 @@ USER QUESTION
 
 def _get_embed_fn() -> Callable[[str], List[float]]:
     from src.pipelines.ingest import embed_text
-    return embed_text
+
+    def _wrap(text: str) -> List[float]:
+        result = embed_text(text)
+        return list(result) if not isinstance(result, list) else result
+
+    return _wrap
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Reciprocal Rank Fusion (RRF)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _rrf_fuse(
+    ranked_lists: List[List[Dict[str, Any]]],
+    key: str = "qualified_name",
+    k: int = 60,
+) -> List[Dict[str, Any]]:
+    """Fuse multiple ranked lists via Reciprocal Rank Fusion.
+
+    Each `ranked_lists[i]` is a list of dicts sorted by relevance (descending).
+    Every dict must have `key` field (default "qualified_name") to identify items.
+    Returns a merged list sorted by fused RRF score.
+
+    RRF formula: score_fused = Σ  1 / (k + rank_i)
+    where rank_i is the 1-indexed position in ranked list i (omitted if not present).
+    """
+    scores: Dict[str, float] = {}
+    items: Dict[str, Dict[str, Any]] = {}
+
+    for ranked_list in ranked_lists:
+        for rank_pos, item in enumerate(ranked_list, start=1):
+            item_key = item.get(key, "")
+            if not item_key:
+                continue
+            scores[item_key] = scores.get(item_key, 0.0) + 1.0 / (k + rank_pos)
+            # Keep the richest version of the item (first occurrence wins)
+            if item_key not in items:
+                items[item_key] = item
+
+    # Inject the fused score into each item
+    fused = []
+    for item_key, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+        entry = dict(items[item_key])
+        entry["rrf_score"] = score
+        fused.append(entry)
+
+    return fused
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Deterministic fast-path detection
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Regex for typical file paths — must contain a dot-extension and at least one /
+_FILE_PATH_RE = re.compile(
+    r"^[a-zA-Z0-9_./-]+\.[a-zA-Z]{1,10}$"
+)
+
+# Heuristic: query looks like it also wants an explanation, not just the code
+_EXPLAIN_WORDS = {"explain", "why", "how", "what does", "describe", "analyze", "review", "purpose", "reason"}
+
+
+def _looks_like_file_path(query: str) -> Optional[str]:
+    """If the query is essentially a bare file path, return it. Otherwise None."""
+    stripped = query.strip().strip("'\"` ")
+    if "/" in stripped and _FILE_PATH_RE.match(stripped):
+        return stripped
+    return None
+
+
+def _looks_like_symbol_ref(query: str) -> Optional[tuple]:
+    """If the query is 'file_path:SymbolName' or 'file_path#SymbolName', return (file_path, symbol)."""
+    stripped = query.strip().strip("'\"` ")
+    for sep in (":", "#"):
+        if sep in stripped:
+            parts = stripped.split(sep, 1)
+            if len(parts) == 2 and "/" in parts[0] and _FILE_PATH_RE.match(parts[0]):
+                return (parts[0], parts[1])
+    return None
+
+
+def _wants_explanation(query: str) -> bool:
+    """Does the query want more than just code — e.g. an explanation?"""
+    lower = query.lower()
+    return any(word in lower for word in _EXPLAIN_WORDS)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -263,14 +360,13 @@ def _get_embed_fn() -> Callable[[str], List[float]]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class CodeRetrievalPipeline:
-    """Multi-namespace code retrieval with graph traversal."""
+    """Neo4j-only code retrieval with dual-lane hybrid search and graph traversal."""
 
     def __init__(
         self,
         org_id: str = "default",
         model: Optional[BaseChatModel] = None,
-        code_graph: Optional[CodeGraphClient] = None,
-        code_store: Optional[CodeStore] = None,
+        store: Optional[CodeStoreV1] = None,
         repos: Optional[List[str]] = None,
     ) -> None:
         self.org_id = org_id
@@ -286,47 +382,28 @@ class CodeRetrievalPipeline:
 
         self.model_with_tools = self.model.bind_tools(CODE_TOOLS)
 
-        # ── Pinecone stores (one per namespace type) ──────────────────
-        self._stores: Dict[str, PineconeVectorStore] = {}
-
-        # ── Code graph (Neo4j) ────────────────────────────────────────
+        # ── Embedding function ────────────────────────────────────────
         self.embed_fn = _get_embed_fn()
-        if code_graph is None:
-            self.code_graph = CodeGraphClient(
+
+        # ── Neo4j store (replaces Pinecone + MongoDB + v0 graph) ──────
+        if store is None:
+            self._store = CodeStoreV1(
                 uri=settings.neo4j_uri,
                 username=settings.neo4j_username,
                 password=settings.neo4j_password,
-                embedding_fn=self.embed_fn,
+                database=None,
+                embedding_dimension=settings.pinecone_dimension,
             )
-            self.code_graph.connect()
+            self._store.connect()
+            self._owns_store = True
         else:
-            self.code_graph = code_graph
+            self._store = store
+            self._owns_store = False
 
-        # ── Code store (MongoDB — raw code) ───────────────────────────
-        if code_store is None:
-            self.code_store = CodeStore(
-                uri=settings.mongodb_uri,
-                database=settings.mongodb_database,
-            )
-        else:
-            self.code_store = code_store
+        # ── Pinecone store for snippets (user-scoped, kept for compat) ─
+        self._snippet_stores: Dict[str, Any] = {}
 
-        logger.info("CodeRetrievalPipeline initialized (org=%s)", org_id)
-
-    def _get_store(self, namespace: str) -> PineconeVectorStore:
-        """Get or create a PineconeVectorStore for a given namespace."""
-        if namespace not in self._stores:
-            self._stores[namespace] = PineconeVectorStore(
-                api_key=settings.pinecone_api_key,
-                index_name=settings.pinecone_index_name,
-                dimension=settings.pinecone_dimension,
-                metric=settings.pinecone_metric,
-                cloud=settings.pinecone_cloud,
-                region=settings.pinecone_region,
-                namespace=namespace,
-                create_if_not_exists=False,
-            )
-        return self._stores[namespace]
+        logger.info("CodeRetrievalPipeline initialized (org=%s, neo4j-only)", org_id)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -345,6 +422,19 @@ class CodeRetrievalPipeline:
         logger.info("  org: %s, repo: %s", self.org_id, repo or "(all)")
         logger.info("=" * 60)
 
+        import time as _time
+        total_start = _time.perf_counter()
+
+        # ── Deterministic fast paths ──────────────────────────────────
+        fast_result = self._try_fast_path(query, repo)
+        if fast_result is not None:
+            logger.info(
+                "⚡ Fast-path hit — returning directly (%.1fms)",
+                (_time.perf_counter() - total_start) * 1000,
+            )
+            return fast_result
+
+        # ── ReAct loop ────────────────────────────────────────────────
         repo_catalog = self._build_repo_catalog()
         system_prompt = _SYSTEM_PROMPT.format(repo_catalog=repo_catalog)
         messages = [
@@ -353,25 +443,23 @@ class CodeRetrievalPipeline:
         ]
 
         sources: List[SourceRecord] = []
-        
+
         MAX_TURNS = 5
         answer = ""
-        import time as _time
-        total_start = _time.perf_counter()
-        
+
         for turn in range(MAX_TURNS):
             t0 = _time.perf_counter()
             ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
             llm_ms = (_time.perf_counter() - t0) * 1000
-            
+
             if not ai_response.tool_calls:
                 answer = ai_response.content
                 logger.info("Turn %d: LLM answered directly (%.0fms)", turn + 1, llm_ms)
                 break
-                
+
             logger.info("Turn %d: LLM tool_calls=%d (%.0fms)", turn + 1, len(ai_response.tool_calls), llm_ms)
             messages.append(ai_response)
-            
+
             turn_records: List[SourceRecord] = []
             only_read_tools = True
 
@@ -404,9 +492,9 @@ class CodeRetrievalPipeline:
                     ToolMessage(content=tool_result_text, tool_call_id=tool_id)
                 )
 
-            # ⚡ SHORT-CIRCUIT: if the LLM only called read tools,
-            # the raw code IS the answer — skip the expensive re-output turn.
-            if only_read_tools and turn_records:
+            # ⚡ SHORT-CIRCUIT: if the LLM only called read tools AND the user
+            # didn't ask for an explanation, the raw code IS the answer.
+            if only_read_tools and turn_records and not _wants_explanation(query):
                 code_parts = []
                 for rec in turn_records:
                     meta = rec.metadata or {}
@@ -451,7 +539,7 @@ class CodeRetrievalPipeline:
     ):
         """Streaming version of run(). Yields NDJSON chunks."""
         import json
-        
+
         logger.info("=" * 60)
         logger.info("CODE RETRIEVAL STREAM START")
         logger.info("  query: %s", query)
@@ -468,13 +556,13 @@ class CodeRetrievalPipeline:
         yield json.dumps({"type": "status", "content": "Analyzing query..."}) + "\n"
 
         ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
-        
+
         sources: List[SourceRecord] = []
         tool_messages: List[ToolMessage] = []
 
         if ai_response.tool_calls:
             yield json.dumps({"type": "status", "content": f"Running {len(ai_response.tool_calls)} search tool(s)..."}) + "\n"
-            
+
             async def _process_tool_call_stream(tc):
                 tool_name = tc["name"]
                 tool_args = tc["args"]
@@ -509,11 +597,11 @@ class CodeRetrievalPipeline:
                 context=context_text,
                 query=query,
             )
-            
+
             async for chunk in self.model.astream([HumanMessage(content=answer_prompt)]):
                 if chunk.content:
                     yield json.dumps({"type": "chunk", "text": chunk.content}) + "\n"
-                    
+
         else:
             # LLM answered directly without tool calls
             logger.info("LLM answered without tool calls")
@@ -522,9 +610,47 @@ class CodeRetrievalPipeline:
             elif isinstance(ai_response.content, list):
                 for c in ai_response.content:
                     yield json.dumps({"type": "chunk", "text": str(c)}) + "\n"
-                    
+
         yield json.dumps({"type": "done"}) + "\n"
         logger.info("CODE RETRIEVAL STREAM COMPLETE")
+
+    # ------------------------------------------------------------------
+    # Deterministic fast paths
+    # ------------------------------------------------------------------
+
+    def _try_fast_path(self, query: str, repo: str) -> Optional[RetrievalResult]:
+        """If the query is a bare file/symbol path, skip the LLM entirely."""
+
+        # Check: file_path:SymbolName
+        sym_ref = _looks_like_symbol_ref(query)
+        if sym_ref:
+            file_path, symbol_name = sym_ref
+            effective_repo = repo or (self.repos[0] if len(self.repos) == 1 else "")
+            if effective_repo:
+                records = self._read_symbol_code(symbol_name, file_path, effective_repo)
+                if records and records[0].score > 0:
+                    return RetrievalResult(
+                        query=query,
+                        answer=records[0].content,
+                        sources=records,
+                        confidence=1.0,
+                    )
+
+        # Check: bare file path
+        file_path = _looks_like_file_path(query)
+        if file_path:
+            effective_repo = repo or (self.repos[0] if len(self.repos) == 1 else "")
+            if effective_repo:
+                records = self._read_file_code(file_path, effective_repo)
+                if records and records[0].score > 0:
+                    return RetrievalResult(
+                        query=query,
+                        answer=records[0].content,
+                        sources=records,
+                        confidence=1.0,
+                    )
+
+        return None
 
     # ------------------------------------------------------------------
     # Tool execution
@@ -589,72 +715,277 @@ class CodeRetrievalPipeline:
             logger.warning("Unknown tool: %s", tool_name)
             return []
 
-    # -- Symbols: Pinecone semantic search ─────────────────────────────
+    # ------------------------------------------------------------------
+    # Symbol search: Graph-Conditioned Hybrid Retrieval
+    # ------------------------------------------------------------------
+    # Fuses 4 signals:
+    #   1. Summary-lane cosine similarity (semantic intent)
+    #   2. Code-lane cosine similarity (structural/code intent)
+    #   3. BM25 fulltext match (keyword/identifier)
+    #   4. Graph in-degree from CALLS edges (popularity boost)
+    #
+    # Fusion strategy: Reciprocal Rank Fusion (RRF) in Python.
+    # ------------------------------------------------------------------
 
     async def _search_symbols(
         self, query: str, repo: str, top_k: int = 10,
     ) -> List[SourceRecord]:
-        if not repo:
-            logger.warning("search_symbols called without repo — searching all repos")
-            tasks = [
-                self._search_namespace(
-                    namespace=symbols_namespace(self.org_id, r),
-                    query=query,
-                    domain="symbol",
-                    top_k=top_k,
-                )
-                for r in self.repos
-            ]
-            results_list = await asyncio.gather(*tasks)
-            results = [item for sublist in results_list for item in sublist]
-            return results[:top_k]
+        """Hybrid search across dual-lane vectors + BM25 + graph signal."""
+        loop = asyncio.get_event_loop()
 
-        return await self._search_namespace(
-            namespace=symbols_namespace(self.org_id, repo),
-            query=query,
-            domain="symbol",
-            top_k=top_k,
+        # Embed the query for both vector lanes
+        query_vector = await loop.run_in_executor(None, self.embed_fn, query)
+
+        # Resolve repo filter: single repo, list, or None for all
+        effective_repo = repo if repo else None
+
+        # Lane 1: Summary vector search
+        summary_results = self._store.vector_search_symbols(
+            query_vector=query_vector,
+            lane="summary",
+            org_id=self.org_id,
+            repo=effective_repo,
+            top_k=top_k * 3,  # over-fetch for fusion
         )
 
-    # -- Files: Pinecone semantic search ───────────────────────────────
+        # Lane 2: Code vector search
+        code_results = self._store.vector_search_symbols(
+            query_vector=query_vector,
+            lane="code",
+            org_id=self.org_id,
+            repo=effective_repo,
+            top_k=top_k * 3,
+        )
+
+        # Lane 3: BM25 fulltext search
+        bm25_results = self._store.fulltext_search_symbols(
+            query_text=query,
+            org_id=self.org_id,
+            repo=effective_repo,
+            top_k=top_k * 3,
+        )
+
+        # Lane 4: Graph PageRank / in-degree boost
+        pagerank_results = self._get_graph_ranked_symbols(effective_repo, top_k * 3)
+
+        # Fuse via RRF
+        fused = _rrf_fuse(
+            [summary_results, code_results, bm25_results, pagerank_results],
+            key="qualified_name",
+        )
+
+        # Take top_k
+        top_results = fused[:top_k]
+
+        # Build SourceRecords
+        records: List[SourceRecord] = []
+        for item in top_results:
+            sym_name = item.get("qualified_name", "")
+            sym_type = item.get("symbol_type", "")
+            file_path = item.get("file_path", "")
+            sig = item.get("signature", "")
+            summary = item.get("summary", "")
+            rrf_score = item.get("rrf_score", 0.0)
+
+            content = f"{sym_type} `{sym_name}` in `{file_path}`"
+            if sig:
+                content += f"\n  Signature: `{sig}`"
+            content += f"\n  Summary: {summary}"
+
+            records.append(SourceRecord(
+                domain="symbol",
+                content=content,
+                score=rrf_score,
+                metadata={
+                    "qualified_name": sym_name,
+                    "symbol_name": sym_name.rsplit(".", 1)[-1] if sym_name else "",
+                    "symbol_type": sym_type,
+                    "signature": sig,
+                    "file_path": file_path,
+                    "repo": item.get("repo", repo),
+                    "summary": summary,
+                },
+            ))
+
+        # Seed-and-expand: for top 3 results, pull 1-hop callers/callees
+        seed_records = self._seed_and_expand(top_results[:3], repo)
+        records.extend(seed_records)
+
+        logger.info("  → symbols [%s]: %d fused + %d expanded", query[:40], len(top_results), len(seed_records))
+        return records
+
+    def _get_graph_ranked_symbols(
+        self, repo: Optional[str], top_k: int,
+    ) -> List[Dict[str, Any]]:
+        """Return symbols ranked by in-degree (number of CALLS edges pointing in).
+
+        This is a lightweight proxy for PageRank — symbols that are called
+        by many other symbols rank higher.
+        """
+        repo_filter = "AND s.repo = $repo" if repo else ""
+        cypher = f"""
+        MATCH (s:{S.LABEL_SYMBOL})
+        WHERE s.org_id = $org_id {repo_filter}
+        OPTIONAL MATCH (caller:{S.LABEL_SYMBOL})-[:{S.REL_CALLS}]->(s)
+        WITH s, count(caller) AS in_degree
+        WHERE in_degree > 0
+        RETURN s.qualified_name AS qualified_name,
+               s.symbol_type    AS symbol_type,
+               s.signature      AS signature,
+               s.summary        AS summary,
+               s.file_path      AS file_path,
+               s.repo           AS repo,
+               in_degree
+        ORDER BY in_degree DESC
+        LIMIT $top_k
+        """
+        with self._store._session() as session:
+            result = session.run(
+                cypher,
+                org_id=self.org_id,
+                repo=repo,
+                top_k=top_k,
+            )
+            return [r.data() for r in result]
+
+    def _seed_and_expand(
+        self, seeds: List[Dict[str, Any]], repo: str,
+    ) -> List[SourceRecord]:
+        """For high-confidence seed matches, pull 1-hop callers and callees.
+
+        This gives the LLM dependency context without requiring a separate
+        impact_analysis call, reducing round-trip turns.
+        """
+        if not seeds:
+            return []
+
+        records: List[SourceRecord] = []
+        effective_repo = repo or None
+
+        for seed in seeds:
+            qname = seed.get("qualified_name", "")
+            if not qname:
+                continue
+
+            repo_filter = "AND s.repo = $repo" if effective_repo else ""
+
+            # 1-hop callees
+            callee_cypher = f"""
+            MATCH (s:{S.LABEL_SYMBOL} {{org_id: $org_id, qualified_name: $qname}})
+            WHERE 1=1 {repo_filter}
+            MATCH (s)-[c:{S.REL_CALLS}]->(callee:{S.LABEL_SYMBOL})
+            RETURN callee.qualified_name AS qualified_name,
+                   callee.file_path      AS file_path,
+                   callee.summary        AS summary,
+                   c.is_ambiguous        AS is_ambiguous
+            LIMIT 5
+            """
+            # 1-hop callers
+            caller_cypher = f"""
+            MATCH (s:{S.LABEL_SYMBOL} {{org_id: $org_id, qualified_name: $qname}})
+            WHERE 1=1 {repo_filter}
+            MATCH (caller:{S.LABEL_SYMBOL})-[c:{S.REL_CALLS}]->(s)
+            RETURN caller.qualified_name AS qualified_name,
+                   caller.file_path      AS file_path,
+                   caller.summary        AS summary,
+                   c.is_ambiguous        AS is_ambiguous
+            LIMIT 5
+            """
+
+            with self._store._session() as session:
+                callees = [r.data() for r in session.run(
+                    callee_cypher, org_id=self.org_id, qname=qname, repo=effective_repo,
+                )]
+                callers = [r.data() for r in session.run(
+                    caller_cypher, org_id=self.org_id, qname=qname, repo=effective_repo,
+                )]
+
+            for callee in callees:
+                ambiguous = " ⚠️ ambiguous" if callee.get("is_ambiguous") else ""
+                content = (
+                    f"[context] `{qname}` CALLS → `{callee['qualified_name']}` "
+                    f"in `{callee.get('file_path', '')}`{ambiguous}"
+                )
+                if callee.get("summary"):
+                    content += f" — {callee['summary']}"
+                records.append(SourceRecord(
+                    domain="seed_expand_callee",
+                    content=content,
+                    score=0.5,
+                    metadata=callee,
+                ))
+
+            for caller in callers:
+                ambiguous = " ⚠️ ambiguous" if caller.get("is_ambiguous") else ""
+                content = (
+                    f"[context] `{caller['qualified_name']}` CALLS → `{qname}` "
+                    f"in `{caller.get('file_path', '')}`{ambiguous}"
+                )
+                if caller.get("summary"):
+                    content += f" — {caller['summary']}"
+                records.append(SourceRecord(
+                    domain="seed_expand_caller",
+                    content=content,
+                    score=0.5,
+                    metadata=caller,
+                ))
+
+        return records
+
+    # -- Files: Neo4j vector search on file_summary_vec_idx ────────────
 
     async def _search_files(
         self, query: str, repo: str, top_k: int = 10,
     ) -> List[SourceRecord]:
-        if not repo:
-            tasks = [
-                self._search_namespace(
-                    namespace=files_namespace(self.org_id, r),
-                    query=query,
-                    domain="file",
-                    top_k=top_k,
-                )
-                for r in self.repos
-            ]
-            results_list = await asyncio.gather(*tasks)
-            results = [item for sublist in results_list for item in sublist]
-            return results[:top_k]
+        loop = asyncio.get_event_loop()
+        query_vector = await loop.run_in_executor(None, self.embed_fn, query)
 
-        return await self._search_namespace(
-            namespace=files_namespace(self.org_id, repo),
-            query=query,
-            domain="file",
+        effective_repo = repo if repo else None
+        results = self._store.vector_search_files(
+            query_vector=query_vector,
+            org_id=self.org_id,
+            repo=effective_repo,
             top_k=top_k,
         )
 
-    # -- Annotations: Pinecone semantic search ─────────────────────────
+        records = []
+        for r in results:
+            file_path = r.get("file_path", "")
+            lang = r.get("language", "")
+            summary = r.get("summary", "")
+            score = r.get("score", 0.0)
+
+            content = f"File `{file_path}` ({lang}): {summary}"
+            records.append(SourceRecord(
+                domain="file",
+                content=content,
+                score=score,
+                metadata={
+                    "file_path": file_path,
+                    "language": lang,
+                    "repo": r.get("repo", repo),
+                    "summary": summary,
+                },
+            ))
+
+        logger.info("  → files [%s]: %d results", query[:40], len(records))
+        return records
+
+    # -- Annotations: fulltext search (kept for compatibility) ─────────
 
     async def _search_annotations(
         self, query: str, top_k: int = 10,
     ) -> List[SourceRecord]:
-        return await self._search_namespace(
-            namespace=annotations_namespace(self.org_id),
-            query=query,
-            domain="annotation",
-            top_k=top_k,
-        )
+        """Search annotations via fulltext index.
 
-    # -- Read Symbol Code: MongoDB raw code fetch ───────────────────────
+        Note: Annotations are not yet part of the V1 schema. This is a
+        placeholder that returns empty results gracefully. When annotations
+        are migrated to V1, this will query the appropriate fulltext index.
+        """
+        logger.info("  → annotations [%s]: not yet migrated to V1", query[:40])
+        return []
+
+    # -- Read Symbol Code: Neo4j SymbolV1 node ─────────────────────────
 
     def _read_symbol_code(
         self, symbol_name: str, file_path: str, repo: str,
@@ -665,13 +996,13 @@ class CodeRetrievalPipeline:
                 content="Missing symbol_name or repo — cannot read code.",
             )]
 
-        raw_code = self.code_store.get_symbol_code(
+        raw_code = self._store.get_symbol_code(
             org_id=self.org_id, repo=repo,
             file_path=file_path, symbol_name=symbol_name,
         )
 
         if raw_code is None:
-            logger.info("  → ReadSymbolCode [%s]: NOT FOUND in MongoDB", symbol_name)
+            logger.info("  → ReadSymbolCode [%s]: NOT FOUND in Neo4j", symbol_name)
             return [SourceRecord(
                 domain="symbol_code",
                 content=(
@@ -708,7 +1039,7 @@ class CodeRetrievalPipeline:
             },
         )]
 
-    # -- Read File Code: MongoDB raw content fetch ─────────────────────
+    # -- Read File Code: Neo4j FileV1 node ─────────────────────────────
 
     def _read_file_code(
         self, file_path: str, repo: str,
@@ -719,12 +1050,12 @@ class CodeRetrievalPipeline:
                 content="Missing file_path or repo — cannot read file.",
             )]
 
-        raw_content = self.code_store.get_file_content(
+        raw_content = self._store.get_file_content(
             org_id=self.org_id, repo=repo, file_path=file_path,
         )
 
         if raw_content is None:
-            logger.info("  → ReadFileCode [%s]: NOT FOUND in MongoDB", file_path)
+            logger.info("  → ReadFileCode [%s]: NOT FOUND in Neo4j", file_path)
             return [SourceRecord(
                 domain="file_code",
                 content=(
@@ -758,18 +1089,35 @@ class CodeRetrievalPipeline:
             },
         )]
 
-    # -- Snippets: user-scoped Pinecone semantic search ─────────────────
+    # -- Snippets: Pinecone (user-scoped, kept for backward compat) ────
 
     async def _search_snippets(
         self, query: str, user_id: str, top_k: int = 10,
     ) -> List[SourceRecord]:
+        """Search user-scoped snippets. Still uses Pinecone for now."""
         if not user_id:
             logger.warning("search_snippets called without user_id")
             return []
 
-        ns = snippets_namespace(user_id)
         try:
-            store = self._get_store(ns)
+            from src.schemas.code import snippets_namespace
+            from src.storage.pinecone import PineconeVectorStore
+
+            ns = snippets_namespace(user_id)
+
+            if ns not in self._snippet_stores:
+                self._snippet_stores[ns] = PineconeVectorStore(
+                    api_key=settings.pinecone_api_key,
+                    index_name=settings.pinecone_index_name,
+                    dimension=settings.pinecone_dimension,
+                    metric=settings.pinecone_metric,
+                    cloud=settings.pinecone_cloud,
+                    region=settings.pinecone_region,
+                    namespace=ns,
+                    create_if_not_exists=False,
+                )
+
+            store = self._snippet_stores[ns]
             results = await store.search_by_text(
                 query_text=query,
                 top_k=top_k,
@@ -803,10 +1151,10 @@ class CodeRetrievalPipeline:
             return records
 
         except Exception as exc:
-            logger.warning("Snippet search failed (%s): %s", ns, exc)
+            logger.warning("Snippet search failed: %s", exc)
             return []
 
-    # -- Impact Analysis: Neo4j graph traversal ────────────────────────
+    # -- Impact Analysis: Neo4j V1 graph traversal ─────────────────────
 
     def _impact_analysis(
         self, symbol_name: str, repo: str, depth: int = 2,
@@ -814,67 +1162,118 @@ class CodeRetrievalPipeline:
         if not symbol_name or not repo:
             return []
 
-        impact = self.code_graph.impact_analysis(
-            org_id=self.org_id, repo=repo,
-            symbol_name=symbol_name, depth=depth,
-        )
-
         records: List[SourceRecord] = []
 
-        # Callers
-        for caller in impact.get("callers", []):
-            content = (
-                f"CALLER: `{caller['symbol_name']}` in `{caller['file_path']}` "
-                f"(distance: {caller.get('distance', 1)} hop{'s' if caller.get('distance', 1) > 1 else ''})"
-            )
-            if caller.get("summary"):
-                content += f" — {caller['summary']}"
-            records.append(SourceRecord(
-                domain="impact_caller", content=content, metadata=caller,
-            ))
+        # Callers (up to `depth` hops)
+        caller_cypher = f"""
+        MATCH (target:{S.LABEL_SYMBOL} {{
+            org_id: $org_id, repo: $repo, qualified_name: $symbol_name
+        }})
+        MATCH path = (caller:{S.LABEL_SYMBOL})-[:{S.REL_CALLS}*1..{depth}]->(target)
+        WITH caller, length(path) AS distance
+        RETURN DISTINCT
+            caller.qualified_name AS symbol_name,
+            caller.file_path      AS file_path,
+            caller.summary        AS summary,
+            caller.symbol_type    AS symbol_type,
+            distance
+        ORDER BY distance, symbol_name
+        LIMIT 20
+        """
 
-        # Callees
-        for callee in impact.get("callees", []):
-            content = (
-                f"CALLEE: `{callee['symbol_name']}` in `{callee['file_path']}` "
-                f"(distance: {callee.get('distance', 1)} hop{'s' if callee.get('distance', 1) > 1 else ''})"
-            )
-            if callee.get("summary"):
-                content += f" — {callee['summary']}"
-            records.append(SourceRecord(
-                domain="impact_callee", content=content, metadata=callee,
-            ))
+        # Callees (up to `depth` hops)
+        callee_cypher = f"""
+        MATCH (target:{S.LABEL_SYMBOL} {{
+            org_id: $org_id, repo: $repo, qualified_name: $symbol_name
+        }})
+        MATCH path = (target)-[:{S.REL_CALLS}*1..{depth}]->(callee:{S.LABEL_SYMBOL})
+        WITH callee, length(path) AS distance
+        RETURN DISTINCT
+            callee.qualified_name AS symbol_name,
+            callee.file_path      AS file_path,
+            callee.summary        AS summary,
+            callee.symbol_type    AS symbol_type,
+            distance
+        ORDER BY distance, symbol_name
+        LIMIT 20
+        """
 
-        # Inheritance
-        for rel in impact.get("inheritance", []):
-            direction = "PARENT" if rel.get("relation") == "parent" else "CHILD"
-            content = f"{direction}: `{rel['name']}` in `{rel['file']}`"
-            records.append(SourceRecord(
-                domain="impact_inheritance", content=content, metadata=rel,
-            ))
+        # Inheritance (EXTENDS / IMPLEMENTS)
+        inheritance_cypher = f"""
+        MATCH (target:{S.LABEL_SYMBOL} {{
+            org_id: $org_id, repo: $repo, qualified_name: $symbol_name
+        }})
+        OPTIONAL MATCH (target)-[:{S.REL_EXTENDS}]->(parent:{S.LABEL_SYMBOL})
+        OPTIONAL MATCH (child:{S.LABEL_SYMBOL})-[:{S.REL_EXTENDS}]->(target)
+        OPTIONAL MATCH (target)-[:{S.REL_IMPLEMENTS}]->(iface:{S.LABEL_SYMBOL})
+        RETURN
+            collect(DISTINCT {{name: parent.qualified_name, file: parent.file_path, relation: 'parent'}}) AS parents,
+            collect(DISTINCT {{name: child.qualified_name, file: child.file_path, relation: 'child'}}) AS children,
+            collect(DISTINCT {{name: iface.qualified_name, file: iface.file_path, relation: 'implements'}}) AS interfaces
+        """
 
-        # Annotations on target
-        for ann in impact.get("annotations", []):
-            sev = f" [{ann.get('severity', '')}]" if ann.get("severity") else ""
-            content = (
-                f"ANNOTATION ({ann.get('annotation_type', 'note')}){sev}: "
-                f"{ann.get('content', '')}"
-            )
-            records.append(SourceRecord(
-                domain="annotation", content=content,
-                score=1.0, metadata=ann,
-            ))
+        params = {
+            "org_id": self.org_id,
+            "repo": repo,
+            "symbol_name": symbol_name,
+        }
+
+        with self._store._session() as session:
+            # Callers
+            for r in session.run(caller_cypher, **params):
+                data = r.data()
+                dist = data.get("distance", 1)
+                content = (
+                    f"CALLER: `{data['symbol_name']}` in `{data['file_path']}` "
+                    f"(distance: {dist} hop{'s' if dist > 1 else ''})"
+                )
+                if data.get("summary"):
+                    content += f" — {data['summary']}"
+                records.append(SourceRecord(
+                    domain="impact_caller", content=content, metadata=data,
+                ))
+
+            # Callees
+            for r in session.run(callee_cypher, **params):
+                data = r.data()
+                dist = data.get("distance", 1)
+                content = (
+                    f"CALLEE: `{data['symbol_name']}` in `{data['file_path']}` "
+                    f"(distance: {dist} hop{'s' if dist > 1 else ''})"
+                )
+                if data.get("summary"):
+                    content += f" — {data['summary']}"
+                records.append(SourceRecord(
+                    domain="impact_callee", content=content, metadata=data,
+                ))
+
+            # Inheritance
+            inh_result = session.run(inheritance_cypher, **params).single()
+            if inh_result:
+                for rel_list, label in [
+                    (inh_result["parents"], "PARENT"),
+                    (inh_result["children"], "CHILD"),
+                    (inh_result["interfaces"], "IMPLEMENTS"),
+                ]:
+                    for rel in rel_list:
+                        if rel.get("name"):
+                            content = f"{label}: `{rel['name']}` in `{rel.get('file', '')}`"
+                            records.append(SourceRecord(
+                                domain="impact_inheritance",
+                                content=content,
+                                metadata=rel,
+                            ))
 
         if not records:
             records.append(SourceRecord(
                 domain="impact",
-                content=f"No dependencies or annotations found for `{symbol_name}` in `{repo}`.",
+                content=f"No dependencies found for `{symbol_name}` in `{repo}`.",
             ))
 
         logger.info("  → Impact [%s]: %d results", symbol_name, len(records))
         return records
 
-    # -- File Context: Neo4j ───────────────────────────────────────────
+    # -- File Context: Neo4j V1 ────────────────────────────────────────
 
     def _get_file_context(
         self, file_path: str, repo: str,
@@ -884,49 +1283,80 @@ class CodeRetrievalPipeline:
 
         records: List[SourceRecord] = []
 
-        symbols = self.code_graph.get_file_symbols(
-            org_id=self.org_id, repo=repo, file_path=file_path,
-        )
-        for sym in symbols:
-            visibility = "public" if sym.get("is_public") else "private"
-            content = (
-                f"{sym['symbol_type']} `{sym['symbol_name']}` ({visibility})"
-            )
-            if sym.get("signature"):
-                content += f"\n  Signature: `{sym['signature']}`"
-            if sym.get("summary"):
-                content += f"\n  Summary: {sym['summary']}"
-            records.append(SourceRecord(
-                domain="file_symbol", content=content, metadata=sym,
-            ))
+        # Symbols defined in this file
+        symbols_cypher = f"""
+        MATCH (f:{S.LABEL_FILE} {{
+            org_id: $org_id, repo: $repo, file_path: $file_path
+        }})-[:{S.REL_DEFINES}]->(s:{S.LABEL_SYMBOL})
+        RETURN s.qualified_name AS symbol_name,
+               s.symbol_type   AS symbol_type,
+               s.signature     AS signature,
+               s.summary       AS summary,
+               s.is_public     AS is_public,
+               s.start_line    AS start_line,
+               s.end_line      AS end_line
+        ORDER BY s.start_line
+        """
 
-        imports_data = self.code_graph.get_file_imports(
-            org_id=self.org_id, repo=repo, file_path=file_path,
-        )
-        if imports_data.get("imports"):
-            content = f"FILE `{file_path}` IMPORTS: {', '.join(f'`{f}`' for f in imports_data['imports'])}"
-            records.append(SourceRecord(
-                domain="file_imports", content=content, metadata=imports_data,
-            ))
-        if imports_data.get("imported_by"):
-            content = f"FILE `{file_path}` IMPORTED BY: {', '.join(f'`{f}`' for f in imports_data['imported_by'])}"
-            records.append(SourceRecord(
-                domain="file_imported_by", content=content, metadata=imports_data,
-            ))
+        # Import graph (outgoing)
+        imports_out_cypher = f"""
+        MATCH (f:{S.LABEL_FILE} {{
+            org_id: $org_id, repo: $repo, file_path: $file_path
+        }})-[i:{S.REL_IMPORTS}]->(imported:{S.LABEL_FILE})
+        RETURN imported.file_path AS file_path, i.import_type AS import_type
+        """
 
-        annotations = self.code_graph.get_annotations_for_file(
-            org_id=self.org_id, repo=repo, file_path=file_path,
-        )
-        for ann in annotations:
-            sev = f" [{ann.get('severity', '')}]" if ann.get("severity") else ""
-            content = (
-                f"ANNOTATION ({ann.get('annotation_type', 'note')}){sev}: "
-                f"{ann.get('content', '')}"
-            )
-            records.append(SourceRecord(
-                domain="annotation", content=content,
-                score=1.0, metadata=ann,
-            ))
+        # Import graph (incoming — who imports this file)
+        imports_in_cypher = f"""
+        MATCH (importer:{S.LABEL_FILE})-[i:{S.REL_IMPORTS}]->(f:{S.LABEL_FILE} {{
+            org_id: $org_id, repo: $repo, file_path: $file_path
+        }})
+        RETURN importer.file_path AS file_path, i.import_type AS import_type
+        """
+
+        params = {
+            "org_id": self.org_id,
+            "repo": repo,
+            "file_path": file_path,
+        }
+
+        with self._store._session() as session:
+            # Symbols
+            for r in session.run(symbols_cypher, **params):
+                sym = r.data()
+                visibility = "public" if sym.get("is_public") else "private"
+                content = (
+                    f"{sym['symbol_type']} `{sym['symbol_name']}` ({visibility})"
+                )
+                if sym.get("signature"):
+                    content += f"\n  Signature: `{sym['signature']}`"
+                if sym.get("summary"):
+                    content += f"\n  Summary: {sym['summary']}"
+                if sym.get("start_line"):
+                    content += f"\n  Lines: {sym['start_line']}-{sym.get('end_line', '?')}"
+                records.append(SourceRecord(
+                    domain="file_symbol", content=content, metadata=sym,
+                ))
+
+            # Outgoing imports
+            imports_out = [r.data() for r in session.run(imports_out_cypher, **params)]
+            if imports_out:
+                import_paths = [f"`{i['file_path']}`" for i in imports_out]
+                content = f"FILE `{file_path}` IMPORTS: {', '.join(import_paths)}"
+                records.append(SourceRecord(
+                    domain="file_imports", content=content,
+                    metadata={"imports": [i["file_path"] for i in imports_out]},
+                ))
+
+            # Incoming imports
+            imports_in = [r.data() for r in session.run(imports_in_cypher, **params)]
+            if imports_in:
+                import_paths = [f"`{i['file_path']}`" for i in imports_in]
+                content = f"FILE `{file_path}` IMPORTED BY: {', '.join(import_paths)}"
+                records.append(SourceRecord(
+                    domain="file_imported_by", content=content,
+                    metadata={"imported_by": [i["file_path"] for i in imports_in]},
+                ))
 
         if not records:
             records.append(SourceRecord(
@@ -936,57 +1366,6 @@ class CodeRetrievalPipeline:
 
         logger.info("  → FileContext [%s]: %d results", file_path, len(records))
         return records
-
-    # ------------------------------------------------------------------
-    # Shared namespace search
-    # ------------------------------------------------------------------
-
-    async def _search_namespace(
-        self,
-        namespace: str,
-        query: str,
-        domain: str,
-        top_k: int = 10,
-    ) -> List[SourceRecord]:
-        try:
-            store = self._get_store(namespace)
-            results = await store.search_by_text(
-                query_text=query,
-                top_k=top_k,
-            )
-
-            records = []
-            for r in results:
-                meta = r.metadata or {}
-                if domain == "symbol":
-                    sym_name = meta.get("symbol_name", "")
-                    sym_type = meta.get("symbol_type", "")
-                    file_path = meta.get("file_path", "")
-                    sig = meta.get("signature", "")
-                    content = f"{sym_type} `{sym_name}` in `{file_path}`"
-                    if sig:
-                        content += f"\n  Signature: `{sig}`"
-                    content += f"\n  Summary: {r.content}"
-                elif domain == "file":
-                    file_path = meta.get("file_path", "")
-                    lang = meta.get("language", "")
-                    content = f"File `{file_path}` ({lang}): {r.content}"
-                else:
-                    content = r.content
-
-                records.append(SourceRecord(
-                    domain=domain,
-                    content=content,
-                    score=r.score,
-                    metadata={"id": r.id, **meta},
-                ))
-
-            logger.info("  → %s [%s]: %d results", domain, query[:40], len(records))
-            return records
-
-        except Exception as exc:
-            logger.warning("Namespace search failed (%s): %s", namespace, exc)
-            return []
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1012,8 +1391,9 @@ class CodeRetrievalPipeline:
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        try:
-            self.code_graph.close()
-        except Exception:
-            pass
+        if self._owns_store:
+            try:
+                self._store.close()
+            except Exception:
+                pass
         logger.info("CodeRetrievalPipeline closed")

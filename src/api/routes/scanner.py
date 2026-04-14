@@ -273,7 +273,7 @@ def _run_phase1(job_id: str, username: str, started_at: float, org: str, repo: s
         indexer.close()
 
 
-def _run_phase2(org: str, repo: str) -> dict:
+def _run_phase2(job_id: str, username: str, started_at: float, org: str, repo: str, url: str, branch: str, phase1_result: Optional[dict]) -> dict:
     from src.scanner_v1.enricher import EnricherV1
     from src.scanner_v1.store import CodeStoreV1
     from src.scanner_v1.embedder import Embedder
@@ -305,8 +305,17 @@ def _run_phase2(org: str, repo: str) -> dict:
         embedder=embedder, 
         llm_call=_llm_call
     )
+    def _progress(stats: dict):
+        _persist_job(
+            job_id, username, org, repo, branch, url, started_at,
+            phase1_status="complete",
+            phase2_status="running",
+            phase1_result=phase1_result,
+            phase2_result=stats
+        )
+
     try:
-        return enricher.enrich_repo(repo)
+        return enricher.enrich_repo(repo, progress_cb=_progress)
     finally:
         enricher.close()
 
@@ -380,7 +389,7 @@ async def _run_scan_pipeline(
 
     try:
         enrich_result = await loop.run_in_executor(
-            None, lambda: _run_phase2(org, repo),
+            None, lambda: _run_phase2(job_id, username, started_at, org, repo, url, branch, result),
         )
         _persist_job(
             job_id, username, org, repo, branch, url, started_at,
@@ -416,7 +425,7 @@ async def _run_phase2_pipeline_only(
 
     try:
         enrich_result = await loop.run_in_executor(
-            None, lambda: _run_phase2(org, repo),
+            None, lambda: _run_phase2(job_id, username, started_at, org, repo, url, branch, started.get("phase1_result") if started else None),
         )
         _persist_job(
             job_id, username, org, repo, branch, url, started_at,

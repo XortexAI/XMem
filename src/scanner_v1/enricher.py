@@ -147,23 +147,37 @@ class EnricherV1:
         repo: str,
         symbols: bool = True,
         files: bool = True,
-    ) -> Dict[str, int]:
+        progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
         """Run enrichment for a whole repo.
         Returns a stats dict."""
-        stats: Dict[str, int] = {}
+        self._stats: Dict[str, Any] = {"symbols_enriched": 0, "files_enriched": 0, "total_symbols_to_enrich": 0, "total_files_to_enrich": 0}
+        self._progress_cb = progress_cb
+        self._last_cb_time = time.time()
         t0 = time.time()
 
         if symbols:
-            stats["symbols_enriched"] = self._enrich_symbols(repo)
+            self._stats["symbols_enriched"] = self._enrich_symbols(repo)
         if files:
-            stats["files_enriched"] = self._enrich_files(repo)
+            self._stats["files_enriched"] = self._enrich_files(repo)
 
-        stats["duration_seconds"] = round(time.time() - t0, 1)
+        self._stats["duration_seconds"] = round(time.time() - t0, 1)
         logger.info(
             "Enrichment complete for %s/%s: %s",
-            self.org_id, repo, stats,
+            self.org_id, repo, self._stats,
         )
-        return stats
+        if self._progress_cb:
+            self._progress_cb(dict(self._stats))
+            
+        return dict(self._stats)
+
+    def _stat(self, key: str, n: int = 1) -> None:
+        self._stats[key] += n
+        if getattr(self, "_progress_cb", None):
+            now = time.time()
+            if now - self._last_cb_time > 1.0:
+                self._progress_cb(dict(self._stats))
+                self._last_cb_time = now
 
     # =================================================================
     # SYMBOLS
@@ -180,6 +194,10 @@ class EnricherV1:
         total = len(rows)
         cap = self.max_symbols if self.max_symbols > 0 else total
         rows = rows[:cap]
+        self._stats["total_symbols_to_enrich"] = len(rows)
+        if self._progress_cb:
+            self._progress_cb(dict(self._stats))
+            
         logger.info(
             "Enriching %d / %d symbols for %s/%s",
             len(rows), total, self.org_id, repo,
@@ -193,6 +211,7 @@ class EnricherV1:
                 new_summary = self._llm_with_backoff(prompt)
                 self._update_symbol(row, new_summary)
                 updated += 1
+                self._stat("symbols_enriched", 1)  # trigger callback
                 if i % 25 == 0:
                     logger.info(
                         "  [symbols] %d / %d enriched", i, len(rows),
@@ -286,6 +305,10 @@ class EnricherV1:
         total = len(rows)
         cap = self.max_files if self.max_files > 0 else total
         rows = rows[:cap]
+        self._stats["total_files_to_enrich"] = len(rows)
+        if self._progress_cb:
+            self._progress_cb(dict(self._stats))
+            
         logger.info(
             "Enriching %d / %d files for %s/%s",
             len(rows), total, self.org_id, repo,
@@ -299,6 +322,7 @@ class EnricherV1:
                 new_summary = self._llm_with_backoff(prompt)
                 self._update_file(row, new_summary)
                 updated += 1
+                self._stat("files_enriched", 1)  # trigger callback
                 if i % 10 == 0:
                     logger.info(
                         "  [files] %d / %d enriched", i, len(rows),

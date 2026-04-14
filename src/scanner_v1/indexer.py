@@ -113,12 +113,15 @@ class IndexerV1:
         branch: str = "main",
         token: Optional[str] = None,
         force_full: bool = False,
+        progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """Run a full or incremental scan."""
         start_time = time.time()
         self._stats = defaultdict(int)
         self._file_rows.clear()
         self._symbol_rows.clear()
+        self._progress_cb = progress_cb
+        self._last_cb_time = time.time()
 
         logger.info("=" * 70)
         logger.info("SCAN START: %s/%s (branch=%s)", self.org_id, repo_name, branch)
@@ -158,6 +161,10 @@ class IndexerV1:
                 "Files to process: %d, Files to delete: %d",
                 len(files_to_process), len(files_to_delete),
             )
+            self._stats["total_files_to_process"] = len(files_to_process)
+            
+            if self._progress_cb:
+                self._progress_cb(dict(self._stats))
 
             # 4. Process changed/new files.
             parsed_files: List[ParsedFile] = []
@@ -609,6 +616,11 @@ class IndexerV1:
 
     def _stat(self, key: str, n: int = 1) -> None:
         self._stats[key] += n
+        if getattr(self, "_progress_cb", None):
+            now = time.time()
+            if now - self._last_cb_time > 1.0:
+                self._progress_cb(dict(self._stats))
+                self._last_cb_time = now
 
     def close(self) -> None:
         """Release store handles."""

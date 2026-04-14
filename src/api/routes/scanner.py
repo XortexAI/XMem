@@ -232,7 +232,7 @@ def _can_reuse_index(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _run_phase1(org: str, repo: str, url: str, branch: str, pat: str) -> dict:
+def _run_phase1(job_id: str, username: str, started_at: float, org: str, repo: str, url: str, branch: str, pat: str) -> dict:
     from src.scanner_v1.indexer import IndexerV1
     from src.scanner_v1.store import CodeStoreV1
     from src.scanner_v1.embedder import Embedder
@@ -252,6 +252,14 @@ def _run_phase1(org: str, repo: str, url: str, branch: str, pat: str) -> dict:
 
     embedder = Embedder(summary_embed_fn=_embed)
     indexer = IndexerV1(org_id=org, store=store, embedder=embedder)
+    def _progress(stats: dict):
+        _persist_job(
+            job_id, username, org, repo, branch, url, started_at,
+            phase1_status="running",
+            phase2_status="pending",
+            phase1_result={"stats": stats}
+        )
+
     try:
         return indexer.scan_repo(
             repo_name=repo,
@@ -259,6 +267,7 @@ def _run_phase1(org: str, repo: str, url: str, branch: str, pat: str) -> dict:
             branch=branch,
             token=pat or None,
             force_full=True,
+            progress_cb=_progress,
         )
     finally:
         indexer.close()
@@ -350,7 +359,7 @@ async def _run_scan_pipeline(
 
     try:
         result = await loop.run_in_executor(
-            None, lambda: _run_phase1(org, repo, url, branch, pat),
+            None, lambda: _run_phase1(job_id, username, started_at, org, repo, url, branch, pat),
         )
         _persist_job(
             job_id, username, org, repo, branch, url, started_at,

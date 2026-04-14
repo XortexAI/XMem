@@ -1,0 +1,58 @@
+# Deploy XMem to an existing AWS EC2 instance when changes land on main.
+#
+# A merged PR produces a push to main — that is what triggers this workflow.
+# The domain / DNS record does not move: it still points at the same instance;
+# this job only updates the app on that machine (git pull + Docker restart, etc.).
+#
+# Required GitHub repository secrets:
+#   EC2_HOST          Public DNS, Elastic IP, or hostname (same host you use with
+#                     `ssh -i your-key.pem ...` today).
+#   EC2_USER          SSH user (e.g. ubuntu, ec2-user, admin).
+#   EC2_SSH_KEY       The SAME private key as your AWS `.pem` file: open the PEM in a
+#                     text editor and paste the entire contents into this secret —
+#                     including the `-----BEGIN ... PRIVATE KEY-----` and `-----END...`
+#                     lines. This is equivalent to `ssh -i key.pem` from your laptop.
+#                     If the key has a passphrase, also add optional secret
+#                     EC2_SSH_KEY_PASSPHRASE (see `passphrase` below).
+#
+# Required repository Variable (Settings → Secrets and variables → Actions → Variables):
+#   EC2_DEPLOY_PATH   Absolute path on the server where this repo is cloned
+#                     (e.g. /home/ubuntu/xmem).
+#
+# The instance must be able to `git pull` from GitHub (deploy key or cached credentials)
+# if the repo is private.
+
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ec2-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          passphrase: ${{ secrets.EC2_SSH_KEY_PASSPHRASE }}
+          script_stop: true
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            cd "${{ vars.EC2_DEPLOY_PATH }}"
+            git fetch origin main
+            git checkout main
+            git pull origin main
+            sudo systemctl restart xmem

@@ -553,15 +553,19 @@ class CodeRetrievalPipeline:
             HumanMessage(content=query),
         ]
 
-        yield json.dumps({"type": "status", "content": "Analyzing query..."}) + "\n"
-
-        ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
+        try:
+            ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
+        except Exception as e:
+            logger.error("LLM tool call failed: %s", e)
+            yield json.dumps({"type": "error", "error": f"LLM Error (Tool Call): {str(e)}"}) + "\n"
+            return
 
         sources: List[SourceRecord] = []
         tool_messages: List[ToolMessage] = []
 
         if ai_response.tool_calls:
-            yield json.dumps({"type": "status", "content": f"Running {len(ai_response.tool_calls)} search tool(s)..."}) + "\n"
+            tools_payload = [{"name": tc["name"], "args": tc["args"]} for tc in ai_response.tool_calls]
+            yield json.dumps({"type": "tool_calls", "tools": tools_payload}) + "\n"
 
             async def _process_tool_call_stream(tc):
                 tool_name = tc["name"]
@@ -574,7 +578,12 @@ class CodeRetrievalPipeline:
                 )
                 return tool_name, tool_args, tool_id, records
 
-            tool_results = await asyncio.gather(*[_process_tool_call_stream(tc) for tc in ai_response.tool_calls])
+            try:
+                tool_results = await asyncio.gather(*[_process_tool_call_stream(tc) for tc in ai_response.tool_calls])
+            except Exception as e:
+                logger.error("Tool execution failed: %s", e)
+                yield json.dumps({"type": "error", "error": f"\n\n**Neo4j Tool Execution Failed:** {str(e)}"}) + "\n"
+                return
 
             for tool_name, tool_args, tool_id, records in tool_results:
                 sources.extend(records)
@@ -590,7 +599,6 @@ class CodeRetrievalPipeline:
                 for s in sources
             ]
             yield json.dumps({"type": "sources", "sources": sources_dict}) + "\n"
-            yield json.dumps({"type": "status", "content": "Generating answer..."}) + "\n"
 
             context_text = "\n".join(tm.content for tm in tool_messages)
             answer_prompt = _ANSWER_PROMPT.format(
@@ -598,9 +606,13 @@ class CodeRetrievalPipeline:
                 query=query,
             )
 
-            async for chunk in self.model.astream([HumanMessage(content=answer_prompt)]):
-                if chunk.content:
-                    yield json.dumps({"type": "chunk", "text": chunk.content}) + "\n"
+            try:
+                async for chunk in self.model.astream([HumanMessage(content=answer_prompt)]):
+                    if chunk.content:
+                        yield json.dumps({"type": "chunk", "text": chunk.content}) + "\n"
+            except Exception as e:
+                logger.error("LLM streaming failed: %s", e)
+                yield json.dumps({"type": "error", "error": f"\n\n**LLM Streaming Failed:** {str(e)}"}) + "\n"
 
         else:
             # LLM answered directly without tool calls

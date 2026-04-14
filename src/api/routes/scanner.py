@@ -24,6 +24,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Query
@@ -246,6 +247,9 @@ def _run_phase1(job_id: str, username: str, started_at: float, org: str, repo: s
         embedding_dimension=settings.pinecone_dimension,
     )
     store.connect()
+    # Ensure vector and fulltext indexes are explicitly created
+    # so search indices exist even if Neo4j was freshly wiped.
+    store.setup_schema()
 
     def _embed(text: str):
         return list(embed_text(text))
@@ -492,8 +496,12 @@ async def start_scan(req: ScanRequest):
 
     existing = store.get_scanner_job(job_id)
     if existing and existing.get("phase1_status") == "running":
-        return JSONResponse({
-            "status": "ok",
+        # Ensure it's not a zombie job from a previous server crash
+        last_updated = existing.get("updated_at")
+        since_last_update = (datetime.now(timezone.utc) - last_updated).total_seconds() if last_updated else 0
+        if last_updated and since_last_update < 30:
+            return JSONResponse({
+                "status": "ok",
             "job_id": job_id,
             "org": org,
             "repo": repo,

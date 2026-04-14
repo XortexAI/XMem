@@ -106,7 +106,10 @@ class CodeStoreV1:
         if self.driver is not None:
             return
         self.driver = GraphDatabase.driver(
-            self.uri, auth=(self.username, self.password),
+            self.uri, 
+            auth=(self.username, self.password),
+            max_connection_lifetime=200, # Kill connections before Aura load balancers drop them
+            keep_alive=True,             # Enable TCP keep-alive
         )
 
     def close(self) -> None:
@@ -923,7 +926,14 @@ class CodeStoreV1:
         repo: Optional[str] = None,
         top_k: int = 10,
     ) -> List[Dict[str, Any]]:
+        import re
         """BM25 lane over (qualified_name, signature, raw_code, summary)."""
+        # Sanitize Lucene special characters to prevent parse errors
+        query_text = re.sub(r'[+\-&|!(){}\[\]^"~*?:\\/]', ' ', query_text)
+        query_text = re.sub(r'\s+', ' ', query_text).strip()
+        if not query_text:
+            return []
+
         cypher = """
         CALL db.index.fulltext.queryNodes($index_name, $query_text)
         YIELD node, score

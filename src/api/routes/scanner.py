@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Query
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -717,11 +718,11 @@ async def community_catalog(
         offset=offset,
     )
     return JSONResponse(
-        {
+        jsonable_encoder({
             "status": "ok",
             "total": total,
             "items": items,
-        },
+        })
     )
 
 

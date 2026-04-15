@@ -380,7 +380,7 @@ class CodeStore:
         self, org_id: str, repo: str, limit: int = 30,
     ) -> List[Dict[str, Any]]:
         return list(
-            self.scanner_jobs.find({"org": org, "repo": repo})
+            self.scanner_jobs.find({"org": org_id, "repo": repo})
             .sort("updated_at", -1)
             .limit(limit),
         )

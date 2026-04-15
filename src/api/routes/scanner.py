@@ -229,12 +229,12 @@ def _compute_scan_estimates(size_kb: int, branch_label: str) -> Dict[str, Any]:
 
 def _scanner_chat_allowed(store, username: str, org_id: str, repo: str) -> Optional[str]:
     """Return None if allowed, else an error message."""
-    last = store.get_last_scan(org_id, repo)
-    if not last or last.get("status") != "completed":
+    snap = store.get_catalog_repo_snapshot(username, org_id, repo)
+    if snap.get("phase1_status") != "complete":
         return "Index is not ready yet. Wait for scanning to finish."
-    if store.get_scanner_index_visibility(org_id, repo):
+    if snap.get("share_index_publicly"):
         return None
-    if store.user_has_completed_scanner_job(username, org_id, repo):
+    if snap.get("source") == "user_job" and snap.get("phase1_status") == "complete":
         return None
     return (
         "This index is private. Sign in with a username that scanned this repo, "

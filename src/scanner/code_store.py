@@ -461,22 +461,58 @@ class CodeStore:
         offset: int = 0,
         max_scan_pool: int = 5000,
     ) -> Tuple[List[Dict[str, Any]], int]:
-        """Completed scans that are community-visible, with star counts."""
+        """Completed scans that are community-visible, with star counts.
+        
+        Includes both scan_runs (global) and scanner_jobs (dashboard) 
+        that have been marked public.
+        """
+        # 1. Get pairs from scan_runs (legacy/global repository)
         rows = self.list_completed_scan_pairs(max_docs=max_scan_pool)
         seen: set[Tuple[str, str]] = set()
         unique_pairs: List[Tuple[str, str]] = []
         completed_at: Dict[Tuple[str, str], Any] = {}
         for r in rows:
-            o = r.get("org_id")
-            rp = r.get("repo")
-            if not o or not rp:
-                continue
-            key = (o, rp)
-            if key in seen:
-                continue
-            seen.add(key)
-            unique_pairs.append(key)
-            completed_at[key] = r.get("completed_at")
+            o, rp = r.get("org_id"), r.get("repo")
+            if o and rp:
+                key = (o, rp)
+                if key not in seen:
+                    seen.add(key)
+                    unique_pairs.append(key)
+                    completed_at[key] = r.get("completed_at")
+
+        # 2. Add repos explicitly marked public in dashboard scans
+        # even if they don't have a record in scan_runs.
+        public_docs = list(self.scanner_index_visibility.find(
+            {"share_index_publicly": True},
+            {"org_id": 1, "repo": 1, "updated_at": 1}
+        ).sort("updated_at", -1).limit(max_scan_pool))
+        
+        dashboard_pairs = []
+        updated_times = {}
+        for d in public_docs:
+            o, rp = d.get("org_id"), d.get("repo")
+            if o and rp:
+                key = (o, rp)
+                if key not in seen:
+                    dashboard_pairs.append(key)
+                    updated_times[key] = d.get("updated_at")
+        
+        if dashboard_pairs:
+            # Check which of these have at least one completed job
+            # We batch this to avoid massive queries
+            for i in range(0, len(dashboard_pairs), 100):
+                batch = dashboard_pairs[i:i+100]
+                or_query = [{"org": o, "repo": r, "phase1_status": "complete"} for o, r in batch]
+                completed_jobs = self.scanner_jobs.find(
+                    {"$or": or_query},
+                    {"org": 1, "repo": 1}
+                )
+                for j in completed_jobs:
+                    key = (j["org"], j["repo"])
+                    if key not in seen:
+                        seen.add(key)
+                        unique_pairs.append(key)
+                        completed_at[key] = updated_times.get(key)
 
         vis = self.get_scanner_index_visibility_batch(unique_pairs)
         public_pairs = [p for p in unique_pairs if vis.get(p, True)]

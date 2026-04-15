@@ -36,6 +36,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: EC2_HOST
     permissions:
       contents: read
 
@@ -47,11 +48,10 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           passphrase: ${{ secrets.EC2_SSH_KEY_PASSPHRASE }}
-          script_stop: true
           command_timeout: 20m
           script: |
             set -euo pipefail
-            cd "${{ vars.EC2_DEPLOY_PATH }}"
+            cd "${{ secrets.EC2_DEPLOY_PATH }}"
             git fetch origin main
             git checkout main
             git pull origin main

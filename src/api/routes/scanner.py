@@ -6,8 +6,12 @@ Provides endpoints for:
   - Pre-scan time/token/cost estimates (heuristic)
   - Starting Phase 1 (AST scan) + Phase 2 (LLM enrichment) pipelines
   - Polling scan status (persisted in MongoDB)
-  - Listing user repos
-  - Chat with indexed codebases (streaming NDJSON)
+  - Listing user repos (includes community index sharing flag)
+  - Setting per-repo ``share_index_publicly`` (community catalog vs scanner-only)
+  - Listing org/repos marked as community-shared
+  - Community catalog (browsable public indexes + stars)
+  - Catalog status (works for repos you opened from the community without a personal job row)
+  - Chat with indexed codebases (streaming NDJSON; respects sharing rules)
 
 These routes have NO API-key authentication — they are designed
 for the public scanner dashboard. Rate limiting is handled by the
@@ -79,6 +83,25 @@ class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1)
     username: str = Field(default="")
     top_k: int = Field(default=10, ge=1, le=50)
+
+
+class ShareIndexRequest(BaseModel):
+    """Mark whether anyone may query the shared catalog for this org/repo."""
+
+    username: str = Field(..., min_length=1)
+    org_id: str = Field(..., min_length=1)
+    repo: str = Field(..., min_length=1)
+    share_index_publicly: bool = Field(
+        ...,
+        description="If true, any scanner user may chat; if false, only users who indexed this repo.",
+    )
+
+
+class CommunityStarRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+    org_id: str = Field(..., min_length=1)
+    repo: str = Field(..., min_length=1)
+    starred: bool = Field(..., description="True to star, false to remove star")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -202,6 +225,21 @@ def _compute_scan_estimates(size_kb: int, branch_label: str) -> Dict[str, Any]:
         "estimated_phase2_llm_tokens": llm_tokens,
         "estimated_cost_usd": round(cost, 4) if cost is not None else None,
     }
+
+
+def _scanner_chat_allowed(store, username: str, org_id: str, repo: str) -> Optional[str]:
+    """Return None if allowed, else an error message."""
+    last = store.get_last_scan(org_id, repo)
+    if not last or last.get("status") != "completed":
+        return "Index is not ready yet. Wait for scanning to finish."
+    if store.get_scanner_index_visibility(org_id, repo):
+        return None
+    if store.user_has_completed_scanner_job(username, org_id, repo):
+        return None
+    return (
+        "This index is private. Sign in with a username that scanned this repo, "
+        "or ask the owner to enable community sharing for this index."
+    )
 
 
 def _can_reuse_index(
@@ -641,7 +679,87 @@ async def scan_status(
     if isinstance(p2, dict):
         resp["phase2_stats"] = p2
 
+    resp["share_index_publicly"] = store.get_scanner_index_visibility(org_id, repo)
+
     return JSONResponse(resp)
+
+
+@router.get(
+    "/catalog-status",
+    summary="Scan status for a repo (your job if any, else shared catalog state)",
+)
+async def catalog_status(
+    username: str = Query(...),
+    org_id: str = Query(...),
+    repo: str = Query(...),
+):
+    store = _get_code_store()
+    snap = store.get_catalog_repo_snapshot(username, org_id, repo)
+    return JSONResponse(snap)
+
+
+@router.get("/community", summary="Browsable public indexes with star counts")
+async def community_catalog(
+    username: str = Query(default=""),
+    q: str = Query(default="", description="Filter by org or repo name"),
+    sort: str = Query(default="stars"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0, le=100_000),
+):
+    if sort not in ("stars", "recent"):
+        sort = "stars"
+    store = _get_code_store()
+    items, total = store.list_community_catalog_page(
+        username=username.strip(),
+        q=q,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+    return JSONResponse(
+        {
+            "status": "ok",
+            "total": total,
+            "items": items,
+        },
+    )
+
+
+@router.post("/community/star", summary="Star or unstar a public catalog repo")
+async def community_star(req: CommunityStarRequest):
+    store = _get_code_store()
+    if not store.get_scanner_index_visibility(req.org_id, req.repo):
+        return JSONResponse(
+            {
+                "status": "error",
+                "error": "This repository is not in the public catalog.",
+            },
+            status_code=403,
+        )
+    last = store.get_last_scan(req.org_id, req.repo)
+    if not last or last.get("status") != "completed":
+        return JSONResponse(
+            {
+                "status": "error",
+                "error": "This repository does not have a completed index yet.",
+            },
+            status_code=400,
+        )
+    count = store.set_community_star(
+        req.username.strip(),
+        req.org_id,
+        req.repo,
+        req.starred,
+    )
+    return JSONResponse(
+        {
+            "status": "ok",
+            "org": req.org_id,
+            "repo": req.repo,
+            "star_count": count,
+            "starred": req.starred,
+        },
+    )
 
 
 @router.get("/repos", summary="List scanned repositories for a user")
@@ -674,12 +792,63 @@ async def list_repos(username: str = Query(...)):
             "phase1_status": "not_started",
             "phase2_status": "not_started",
         })
+    pairs = [(r["org"], r["repo"]) for r in repos]
+    vis_map = store.get_scanner_index_visibility_batch(pairs)
+    for r in repos:
+        r["share_index_publicly"] = vis_map.get((r["org"], r["repo"]), True)
     return JSONResponse({"status": "ok", "repos": repos})
+
+
+@router.get("/public-indexes", summary="List org/repo pairs shared with the community")
+async def public_indexes(limit: int = Query(default=100, ge=1, le=500)):
+    store = _get_code_store()
+    rows = store.list_public_scanner_indexes(limit=limit)
+    items = [
+        {"org": row["org_id"], "repo": row["repo"]}
+        for row in rows
+        if row.get("org_id") and row.get("repo")
+    ]
+    return JSONResponse({"status": "ok", "indexes": items})
+
+
+@router.post("/index-visibility", summary="Set whether this index is shared with all scanner users")
+async def set_index_visibility(req: ShareIndexRequest):
+    store = _get_code_store()
+    if not store.user_has_completed_scanner_job(req.username, req.org_id, req.repo):
+        return JSONResponse(
+            {
+                "status": "error",
+                "error": "You can only change sharing after Phase 1 has completed for this repository.",
+            },
+            status_code=403,
+        )
+    store.set_scanner_index_visibility(
+        req.org_id,
+        req.repo,
+        req.share_index_publicly,
+        req.username,
+    )
+    return JSONResponse(
+        {
+            "status": "ok",
+            "org": req.org_id,
+            "repo": req.repo,
+            "share_index_publicly": req.share_index_publicly,
+        },
+    )
 
 
 @router.post("/chat", summary="Chat with an indexed codebase (streaming)")
 async def chat_with_repo(req: ChatRequest):
     from src.api.dependencies import get_code_pipeline
+
+    store = _get_code_store()
+    denied = _scanner_chat_allowed(store, req.username, req.org_id, req.repo)
+    if denied:
+        return JSONResponse(
+            {"status": "error", "error": denied},
+            status_code=403,
+        )
 
     pipeline = get_code_pipeline(org_id=req.org_id, repo=req.repo)
 

@@ -7,6 +7,8 @@ Collections:
   scan_runs    — tracks nightly scan state (last SHA, timestamps, stats)
   scanner_jobs — dashboard scan job state (persists across API restarts)
   scanner_user_repos — per-user repo rows for listing (shared index; key by user + org + repo)
+  scanner_index_visibility — per org/repo: whether the shared catalog index may be queried by any scanner user
+  scanner_community_stars — per-user stars on public catalog repos (reach / discovery)
 
 The raw code is stored here so the retrieval pipeline can fetch exact
 function bodies via ``get_symbol_code()`` without hitting the LLM or
@@ -17,8 +19,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import BulkWriteError
@@ -26,6 +29,37 @@ from pymongo.errors import BulkWriteError
 logger = logging.getLogger("xmem.scanner.code_store")
 
 BATCH_SIZE = 500
+
+
+def _phase_rank(status: str) -> int:
+    s = (status or "not_started").lower()
+    order = (
+        "not_started",
+        "pending",
+        "running",
+        "failed",
+        "complete",
+    )
+    try:
+        return order.index(s)
+    except ValueError:
+        return 0
+
+
+def _pick_best_scanner_job(
+    jobs: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Prefer jobs closest to fully indexed (Phase 2 complete)."""
+    if not jobs:
+        return None
+    return max(
+        jobs,
+        key=lambda j: (
+            _phase_rank(j.get("phase1_status")),
+            _phase_rank(j.get("phase2_status")),
+            j.get("updated_at") or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+    )
 
 
 def _symbol_id(org_id: str, repo: str, file_path: str, symbol_name: str) -> str:
@@ -55,6 +89,8 @@ class CodeStore:
         self.scan_runs = self._db["scan_runs"]
         self.scanner_jobs = self._db["scanner_jobs"]
         self.scanner_user_repos = self._db["scanner_user_repos"]
+        self.scanner_index_visibility = self._db["scanner_index_visibility"]
+        self.scanner_community_stars = self._db["scanner_community_stars"]
 
         self._ensure_indexes()
 
@@ -83,6 +119,17 @@ class CodeStore:
             unique=True,
         )
         self.scanner_user_repos.create_index([("username", 1)])
+
+        self.scanner_index_visibility.create_index(
+            [("org_id", 1), ("repo", 1)],
+            unique=True,
+        )
+
+        self.scanner_community_stars.create_index(
+            [("username", 1), ("org_id", 1), ("repo", 1)],
+            unique=True,
+        )
+        self.scanner_community_stars.create_index([("org_id", 1), ("repo", 1)])
 
     # ======================================================================
     # SCANNER DASHBOARD — job + per-user repo listing
@@ -177,6 +224,300 @@ class CodeStore:
             "updated_at", -1,
         )
         return list(cursor)
+
+    def get_scanner_index_visibility(self, org_id: str, repo: str) -> bool:
+        """If unset, treat as public (legacy behavior)."""
+        doc = self.scanner_index_visibility.find_one(
+            {"org_id": org_id, "repo": repo},
+            {"share_index_publicly": 1},
+        )
+        if not doc:
+            return True
+        return bool(doc.get("share_index_publicly", True))
+
+    def get_scanner_index_visibility_batch(
+        self, pairs: List[Tuple[str, str]],
+    ) -> Dict[Tuple[str, str], bool]:
+        """Return share_index_publicly per (org, repo); default True when unset."""
+        if not pairs:
+            return {}
+        or_clauses: List[Dict[str, str]] = [
+            {"org_id": o, "repo": r} for o, r in pairs
+        ]
+        cursor = self.scanner_index_visibility.find(
+            {"$or": or_clauses},
+            {"org_id": 1, "repo": 1, "share_index_publicly": 1},
+        )
+        found = {
+            (d["org_id"], d["repo"]): bool(d.get("share_index_publicly", True))
+            for d in cursor
+        }
+        return {pair: found.get(pair, True) for pair in pairs}
+
+    def set_scanner_index_visibility(
+        self,
+        org_id: str,
+        repo: str,
+        share_index_publicly: bool,
+        set_by_username: str,
+    ) -> None:
+        self.scanner_index_visibility.update_one(
+            {"org_id": org_id, "repo": repo},
+            {
+                "$set": {
+                    "org_id": org_id,
+                    "repo": repo,
+                    "share_index_publicly": share_index_publicly,
+                    "updated_at": datetime.now(timezone.utc),
+                    "updated_by_username": set_by_username,
+                },
+            },
+            upsert=True,
+        )
+
+    def list_public_scanner_indexes(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Repos explicitly marked community-shared (for discovery)."""
+        cursor = (
+            self.scanner_index_visibility.find(
+                {"share_index_publicly": True},
+                {"org_id": 1, "repo": 1, "updated_at": 1},
+            )
+            .sort("updated_at", -1)
+            .limit(limit)
+        )
+        return list(cursor)
+
+    def user_has_completed_scanner_job(
+        self, username: str, org_id: str, repo: str,
+    ) -> bool:
+        """True if this username has a dashboard job with Phase 1 complete."""
+        if not (username and username.strip()):
+            return False
+        job_id = f"{username}:{org_id}:{repo}"
+        job = self.get_scanner_job(job_id)
+        return bool(job and job.get("phase1_status") == "complete")
+
+    # ======================================================================
+    # COMMUNITY — stars + browsable public catalog
+    # ======================================================================
+
+    def set_community_star(
+        self, username: str, org_id: str, repo: str, starred: bool,
+    ) -> int:
+        """Star or unstar. Returns total star count for this org/repo."""
+        if not (username and username.strip()):
+            return self.get_community_star_count(org_id, repo)
+        filt = {"username": username, "org_id": org_id, "repo": repo}
+        if starred:
+            self.scanner_community_stars.update_one(
+                filt,
+                {
+                    "$set": {
+                        **filt,
+                        "created_at": datetime.now(timezone.utc),
+                    },
+                },
+                upsert=True,
+            )
+        else:
+            self.scanner_community_stars.delete_one(filt)
+        return self.get_community_star_count(org_id, repo)
+
+    def get_community_star_count(self, org_id: str, repo: str) -> int:
+        return self.scanner_community_stars.count_documents(
+            {"org_id": org_id, "repo": repo},
+        )
+
+    def get_community_star_counts_batch(
+        self, pairs: List[Tuple[str, str]],
+    ) -> Dict[Tuple[str, str], int]:
+        if not pairs:
+            return {}
+        or_clauses = [{"org_id": o, "repo": r} for o, r in pairs]
+        pipeline = [
+            {"$match": {"$or": or_clauses}},
+            {
+                "$group": {
+                    "_id": {"o": "$org_id", "r": "$repo"},
+                    "n": {"$sum": 1},
+                }
+            },
+        ]
+        out: Dict[Tuple[str, str], int] = {}
+        for row in self.scanner_community_stars.aggregate(pipeline):
+            _id = row["_id"]
+            out[(_id["o"], _id["r"])] = int(row["n"])
+        return {pair: out.get(pair, 0) for pair in pairs}
+
+    def user_starred_community_repos_batch(
+        self, username: str, pairs: List[Tuple[str, str]],
+    ) -> set:
+        """Which (org, repo) pairs this user has starred."""
+        if not pairs or not (username and username.strip()):
+            return set()
+        or_clauses = [
+            {"org_id": o, "repo": r} for o, r in pairs
+        ]
+        cursor = self.scanner_community_stars.find(
+            {"username": username, "$or": or_clauses},
+            {"org_id": 1, "repo": 1},
+        )
+        return {(d["org_id"], d["repo"]) for d in cursor}
+
+    def list_completed_scan_pairs(self, max_docs: int = 8000) -> List[Dict[str, Any]]:
+        """scan_runs rows with a completed index (Phase 1 catalog)."""
+        cursor = (
+            self.scan_runs.find(
+                {"status": "completed"},
+                {"org_id": 1, "repo": 1, "completed_at": 1},
+            )
+            .sort("completed_at", -1)
+            .limit(max_docs)
+        )
+        return list(cursor)
+
+    def list_scanner_jobs_for_org_repo(
+        self, org_id: str, repo: str, limit: int = 30,
+    ) -> List[Dict[str, Any]]:
+        return list(
+            self.scanner_jobs.find({"org": org, "repo": repo})
+            .sort("updated_at", -1)
+            .limit(limit),
+        )
+
+    def get_catalog_repo_snapshot(
+        self, username: str, org_id: str, repo: str,
+    ) -> Dict[str, Any]:
+        """Status for UI: prefer this user's job, else best global job for org/repo."""
+        share = self.get_scanner_index_visibility(org_id, repo)
+        job_id = f"{username}:{org_id}:{repo}"
+        user_job = self.get_scanner_job(job_id)
+        if user_job:
+            elapsed = time.time() - float(user_job.get("started_at", time.time()))
+            pr = user_job.get("phase1_result")
+            p2 = user_job.get("phase2_result")
+            out: Dict[str, Any] = {
+                "status": "ok",
+                "source": "user_job",
+                "phase1_status": user_job.get("phase1_status", "not_started"),
+                "phase2_status": user_job.get("phase2_status", "not_started"),
+                "elapsed_seconds": round(elapsed, 1),
+                "error": user_job.get("error"),
+                "share_index_publicly": share,
+            }
+            if isinstance(pr, dict) and pr.get("stats"):
+                out["stats"] = pr["stats"]
+            if isinstance(p2, dict):
+                out["phase2_stats"] = p2
+            return out
+
+        jobs = self.list_scanner_jobs_for_org_repo(org_id, repo)
+        best = _pick_best_scanner_job(jobs)
+        if best:
+            pr = best.get("phase1_result")
+            p2 = best.get("phase2_result")
+            out = {
+                "status": "ok",
+                "source": "catalog",
+                "phase1_status": best.get("phase1_status", "not_started"),
+                "phase2_status": best.get("phase2_status", "not_started"),
+                "error": best.get("error"),
+                "share_index_publicly": share,
+            }
+            if isinstance(pr, dict) and pr.get("stats"):
+                out["stats"] = pr["stats"]
+            if isinstance(p2, dict):
+                out["phase2_stats"] = p2
+            return out
+
+        scan = self.get_last_scan(org_id, repo)
+        if scan and scan.get("status") == "completed":
+            st = scan.get("stats") if isinstance(scan.get("stats"), dict) else None
+            out = {
+                "status": "ok",
+                "source": "scan_runs",
+                "phase1_status": "complete",
+                "phase2_status": "complete",
+                "share_index_publicly": share,
+            }
+            if st:
+                out["stats"] = st
+            return out
+
+        return {
+            "status": "ok",
+            "source": "none",
+            "phase1_status": "not_started",
+            "phase2_status": "not_started",
+            "share_index_publicly": share,
+        }
+
+    def list_community_catalog_page(
+        self,
+        username: str,
+        q: str = "",
+        sort: str = "stars",
+        limit: int = 50,
+        offset: int = 0,
+        max_scan_pool: int = 5000,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Completed scans that are community-visible, with star counts."""
+        rows = self.list_completed_scan_pairs(max_docs=max_scan_pool)
+        seen: set[Tuple[str, str]] = set()
+        unique_pairs: List[Tuple[str, str]] = []
+        completed_at: Dict[Tuple[str, str], Any] = {}
+        for r in rows:
+            o = r.get("org_id")
+            rp = r.get("repo")
+            if not o or not rp:
+                continue
+            key = (o, rp)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_pairs.append(key)
+            completed_at[key] = r.get("completed_at")
+
+        vis = self.get_scanner_index_visibility_batch(unique_pairs)
+        public_pairs = [p for p in unique_pairs if vis.get(p, True)]
+
+        qn = (q or "").strip().lower()
+        if qn:
+            public_pairs = [
+                p for p in public_pairs if qn in f"{p[0]}/{p[1]}".lower()
+            ]
+
+        star_counts = self.get_community_star_counts_batch(public_pairs)
+        starred = self.user_starred_community_repos_batch(username, public_pairs)
+
+        items: List[Dict[str, Any]] = []
+        for p in public_pairs:
+            o, rp = p
+            items.append(
+                {
+                    "org": o,
+                    "repo": rp,
+                    "star_count": star_counts.get(p, 0),
+                    "starred_by_me": p in starred,
+                    "completed_at": completed_at.get(p),
+                },
+            )
+
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        if sort == "recent":
+            items.sort(
+                key=lambda x: x.get("completed_at") or epoch,
+                reverse=True,
+            )
+        else:
+            items.sort(
+                key=lambda x: (x["star_count"], f"{x['org']}/{x['repo']}"),
+                reverse=True,
+            )
+
+        total = len(items)
+        page = items[offset : offset + limit]
+        return page, total
 
     # ======================================================================
     # SYMBOL CRUD
@@ -545,6 +886,8 @@ class CodeStore:
         s = self.symbols.delete_many({"org_id": org_id, "repo": repo}).deleted_count
         f = self.files.delete_many({"org_id": org_id, "repo": repo}).deleted_count
         self.scan_runs.delete_one({"org_id": org_id, "repo": repo})
+        self.scanner_index_visibility.delete_one({"org_id": org_id, "repo": repo})
+        self.scanner_community_stars.delete_many({"org_id": org_id, "repo": repo})
         return {"symbols_deleted": s, "files_deleted": f}
 
     def close(self) -> None:

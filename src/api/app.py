@@ -93,8 +93,8 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        # allow_credentials=True,
+        allow_origins=["https://xmem-eight.vercel.app", "https://xmem.in"],
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["X-Request-ID", "X-Response-Time-Ms", "X-RateLimit-Remaining"],

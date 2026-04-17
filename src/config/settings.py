@@ -248,6 +248,38 @@ class Settings(BaseSettings):
         description="Opik project name"
     )
 
+    # =============================================================================
+    # Authentication Configuration (Google OAuth + JWT)
+    # =============================================================================
+    google_client_id: Optional[str] = Field(
+        default=None,
+        description="Google OAuth client ID from Google Cloud Console"
+    )
+    google_client_secret: Optional[str] = Field(
+        default=None,
+        description="Google OAuth client secret from Google Cloud Console"
+    )
+    google_redirect_uri: str = Field(
+        default="http://localhost:8000/auth/callback",
+        description="Google OAuth redirect URI"
+    )
+    jwt_secret_key: str = Field(
+        default="your-secret-key-change-in-production",
+        description="Secret key for JWT token signing (change in production!)"
+    )
+    jwt_algorithm: str = Field(
+        default="HS256",
+        description="JWT signing algorithm"
+    )
+    jwt_expiration_days: int = Field(
+        default=7,
+        description="JWT token expiration time in days"
+    )
+    frontend_url: str = Field(
+        default="http://localhost:5173",
+        description="Frontend URL for redirects after auth"
+    )
+
     @field_validator("fallback_order")
     @classmethod
     def validate_fallback_order(cls, v: List[str]) -> List[str]:

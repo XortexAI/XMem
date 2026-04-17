@@ -16,12 +16,19 @@ from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 
 from src.config import settings
+from src.database.api_key_store import APIKeyStore
+from src.database.user_store import UserStore
 from src.pipelines.ingest import IngestPipeline
 from src.pipelines.retrieval import RetrievalPipeline
 
 logger = logging.getLogger("xmem.api.deps")
+
+# Initialize stores
+_user_store = UserStore()
+_api_key_store = APIKeyStore()
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Pipeline singletons (initialised at app startup via lifespan)
@@ -130,14 +137,16 @@ async def require_api_key(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ) -> str:
-    """Validate Bearer token against the configured API key list.
+    """Validate Bearer token against configured and database API keys.
+
+    Checks:
+    1. Static API keys from settings (for backward compatibility)
+    2. User-generated API keys from MongoDB
 
     If no keys are configured (dev mode) authentication is skipped.
     Returns the (hashed) key identity for rate-limit bucketing.
     """
     configured_keys = settings.api_keys
-    if not configured_keys:
-        return "anonymous"
 
     if credentials is None:
         logger.warning("Missing Authorization header from %s", request.client.host)
@@ -148,15 +157,98 @@ async def require_api_key(
         )
 
     token = credentials.credentials
+
+    # Check static keys first (backward compatibility)
     for key in configured_keys:
         if _constant_time_compare(token, key):
             return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+    # Check MongoDB for user-generated API keys
+    key_doc = _api_key_store.validate_api_key(token)
+    if key_doc:
+        user_id = key_doc.get("user_id")
+        if user_id:
+            return f"user_{user_id}"
+
+    # If no keys configured at all, allow anonymous (dev mode)
+    if not configured_keys:
+        return "anonymous"
 
     logger.warning("Invalid API key attempt from %s", request.client.host)
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Invalid API key.",
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# JWT Authentication (for user sessions)
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+) -> Optional[dict]:
+    """Extract and validate JWT token from Authorization header.
+
+    Returns the user dictionary if token is valid, None otherwise.
+    This is used as a dependency for routes that require authentication.
+    """
+    if credentials is None:
+        return None
+
+    token = credentials.credentials
+
+    # Check if it's a JWT token (starts with 'ey' for standard JWT)
+    # or our user-generated API key (starts with 'xmem_')
+    if token.startswith("xmem_"):
+        # This is an API key, not a JWT - skip JWT validation
+        return None
+
+    try:
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret_key,
+            algorithms=[settings.jwt_algorithm]
+        )
+
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            return None
+
+        # Verify token type is 'access'
+        token_type = payload.get("type")
+        if token_type != "access":
+            return None
+
+        # Get fresh user data from database
+        user = _user_store.get_user_by_id(user_id)
+        if not user:
+            return None
+
+        # Convert ObjectId to string for JSON serialization
+        user["id"] = str(user.pop("_id"))
+
+        return user
+
+    except JWTError:
+        return None
+    except Exception as e:
+        logger.error(f"Error validating JWT: {e}")
+        return None
+
+
+async def require_user(current_user: Optional[dict] = Depends(get_current_user)) -> dict:
+    """Dependency that requires a valid JWT token.
+
+    Raises HTTPException if user is not authenticated.
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return current_user
 
 
 # ═══════════════════════════════════════════════════════════════════════════

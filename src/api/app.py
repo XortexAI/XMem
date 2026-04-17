@@ -25,6 +25,8 @@ from src.api.middleware import (
     RequestContextMiddleware,
     SecurityHeadersMiddleware,
 )
+from src.api.routes.api_keys import router as api_keys_router
+from src.api.routes.auth import router as auth_router
 from src.api.routes.code import router as code_router
 from src.api.routes.health import router as health_router
 from src.api.routes.memory import router as memory_router
@@ -94,7 +96,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        # allow_credentials=True,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["X-Request-ID", "X-Response-Time-Ms", "X-RateLimit-Remaining"],
@@ -107,6 +109,8 @@ def create_app() -> FastAPI:
     app.include_router(memory_router)
     app.include_router(code_router)
     app.include_router(scanner_router)
+    app.include_router(auth_router)
+    app.include_router(api_keys_router)
 
     @app.exception_handler(Exception)
     async def _unhandled_exception(request: Request, exc: Exception):

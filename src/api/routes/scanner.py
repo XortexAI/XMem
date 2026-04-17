@@ -737,8 +737,9 @@ async def community_star(req: CommunityStarRequest):
             },
             status_code=403,
         )
-    last = store.get_last_scan(req.org_id, req.repo)
-    if not last or last.get("status") != "completed":
+    # Check 2: Must have a completed index (either global scan or dashboard job)
+    snap = store.get_catalog_repo_snapshot(req.username.strip(), req.org_id, req.repo)
+    if snap.get("phase1_status") != "complete":
         return JSONResponse(
             {
                 "status": "error",

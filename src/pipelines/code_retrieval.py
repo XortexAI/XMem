@@ -625,23 +625,30 @@ class CodeRetrievalPipeline:
 
         for round_num in range(MAX_TOOL_ROUNDS):
             try:
-                ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
+                ai_response = None
+                async for chunk in self.model_with_tools.astream(messages):
+                    if ai_response is None:
+                        ai_response = chunk
+                    else:
+                        ai_response = ai_response + chunk
+                        
+                    if chunk.content:
+                        if isinstance(chunk.content, str):
+                            yield json.dumps({"type": "chunk", "text": chunk.content}) + "\n"
+                        elif isinstance(chunk.content, list):
+                            for c in chunk.content:
+                                if isinstance(c, dict) and "text" in c:
+                                    yield json.dumps({"type": "chunk", "text": c["text"]}) + "\n"
+                                else:
+                                    yield json.dumps({"type": "chunk", "text": str(c)}) + "\n"
             except Exception as e:
                 logger.error("LLM tool call failed (round %d): %s", round_num + 1, e)
                 yield json.dumps({"type": "error", "error": f"LLM Error (Tool Call): {str(e)}"}) + "\n"
                 return
 
             if not ai_response.tool_calls:
-                # Model decided to answer directly — stream it
+                # Model decided to answer directly without tools (or stopped using tools)
                 logger.info("LLM answered directly (round %d, no tool calls)", round_num + 1)
-                if isinstance(ai_response.content, str) and ai_response.content.strip():
-                    yield json.dumps({"type": "chunk", "text": ai_response.content}) + "\n"
-                elif isinstance(ai_response.content, list):
-                    for c in ai_response.content:
-                        if isinstance(c, dict) and "text" in c:
-                            yield json.dumps({"type": "chunk", "text": c["text"]}) + "\n"
-                        else:
-                            yield json.dumps({"type": "chunk", "text": str(c)}) + "\n"
 
                 # If we have sources from prior rounds but the model gave a direct text answer,
                 # fall through to done

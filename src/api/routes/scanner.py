@@ -337,10 +337,20 @@ def _run_phase2(job_id: str, username: str, started_at: float, org: str, repo: s
 
     embedder = Embedder(summary_embed_fn=_embed)
     
-    model = get_model()
+    model = get_model(provider="gemini", model_name="gemini-2.5-flash-lite")
     def _llm_call(prompt: str) -> str:
         response = model.invoke(prompt)
-        return getattr(response, "content", None) or str(response)
+        content = getattr(response, "content", None)
+        # Gemini models return content as a list of dicts: [{"type": "text", "text": "..."}]
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict) and "text" in part:
+                    parts.append(part["text"])
+                elif isinstance(part, str):
+                    parts.append(part)
+            return "\n".join(parts) if parts else str(response)
+        return content or str(response)
 
     enricher = EnricherV1(
         org_id=org, 

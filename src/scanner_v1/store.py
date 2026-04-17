@@ -524,20 +524,53 @@ class CodeStoreV1:
         summary_source: str,
         summary_embedding: List[float],
     ) -> None:
-        """Enricher hook — rewrites file summary + file-lane embedding."""
+        """Overwrite the file summary lane with LLM output."""
         cypher = f"""
-        MATCH (f:{S.LABEL_FILE} {{org_id: $org_id, repo: $repo, file_path: $file_path}})
+        MATCH (f:{S.LABEL_FILE} {{
+            org_id: $org_id, repo: $repo, file_path: $file_path
+        }})
         SET f.summary = $summary,
             f.summary_source = $summary_source,
-            f.summary_embedding = $summary_embedding,
             f.indexed_at = datetime()
+        """
+        vector_cypher = f"""
+        MATCH (f:{S.LABEL_FILE} {{
+            org_id: $org_id, repo: $repo, file_path: $file_path
+        }})
+        CALL db.create.setNodeVectorProperty(f, 'summary_embedding', $summary_embedding)
         """
         with self._session() as session:
             session.run(
                 cypher,
                 org_id=org_id, repo=repo, file_path=file_path,
                 summary=summary, summary_source=summary_source,
+            )
+            session.run(
+                vector_cypher,
+                org_id=org_id, repo=repo, file_path=file_path,
                 summary_embedding=summary_embedding,
+            )
+
+    def update_directory_summary(
+        self,
+        org_id: str,
+        repo: str,
+        dir_path: str,
+        summary: str,
+        summary_source: str,
+    ) -> None:
+        """Overwrite the directory summary with LLM output."""
+        cypher = f"""
+        MATCH (d:{S.LABEL_DIRECTORY} {{
+            org_id: $org_id, repo: $repo, dir_path: $dir_path
+        }})
+        SET d.summary = $summary,
+            d.summary_source = $summary_source
+        """
+        with self._session() as session:
+            session.run(
+                cypher, org_id=org_id, repo=repo, dir_path=dir_path,
+                summary=summary, summary_source=summary_source,
             )
 
     # =================================================================
@@ -957,6 +990,22 @@ class CodeStoreV1:
                 query_text=query_text,
                 org_id=org_id, repo=repo, top_k=top_k,
             )
+            return [r.data() for r in result]
+
+    def get_repo_directories(
+        self,
+        org_id: str,
+        repo: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return a list of all directories in the repo, primarily for overview/structure queries."""
+        cypher = f"""
+        MATCH (d:{S.LABEL_DIRECTORY} {{org_id: $org_id}})
+        WHERE ($repo IS NULL OR d.repo = $repo)
+        RETURN d.dir_path AS dir_path, d.summary AS summary, d.file_count AS file_count
+        ORDER BY d.dir_path
+        """
+        with self._session() as session:
+            result = session.run(cypher, org_id=org_id, repo=repo)
             return [r.data() for r in result]
 
 

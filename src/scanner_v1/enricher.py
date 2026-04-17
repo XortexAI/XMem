@@ -106,6 +106,24 @@ Symbols ({symbol_count}): {symbol_list}
 Summary:"""
 
 
+_DIRECTORY_PROMPT = """\
+You are a code documentation expert. Given the summaries of the files contained
+within a directory, write a highly descriptive 1-2 paragraph summary interpreting 
+the overarching purpose, architectural role, and domain responsibility of this directory.
+
+Rules:
+  - Do not just list the files, synthesize their collective purpose.
+  - Explain what this directory is for.
+  - Keep the summary clear and under 200 words.
+
+---
+Directory: {dir_path}
+File Summaries:
+{file_summaries}
+
+Summary:"""
+
+
 # ---------------------------------------------------------------------------
 # EnricherV1
 # ---------------------------------------------------------------------------
@@ -147,11 +165,12 @@ class EnricherV1:
         repo: str,
         symbols: bool = True,
         files: bool = True,
+        directories: bool = True,
         progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """Run enrichment for a whole repo.
         Returns a stats dict."""
-        self._stats: Dict[str, Any] = {"symbols_enriched": 0, "files_enriched": 0, "total_symbols_to_enrich": 0, "total_files_to_enrich": 0}
+        self._stats: Dict[str, Any] = {"symbols_enriched": 0, "files_enriched": 0, "directories_enriched": 0, "total_symbols_to_enrich": 0, "total_files_to_enrich": 0, "total_directories_to_enrich": 0}
         self._progress_cb = progress_cb
         self._last_cb_time = time.time()
         t0 = time.time()
@@ -160,6 +179,8 @@ class EnricherV1:
             self._stats["symbols_enriched"] = self._enrich_symbols(repo)
         if files:
             self._stats["files_enriched"] = self._enrich_files(repo)
+        if directories:
+            self._stats["directories_enriched"] = self._enrich_directories(repo)
 
         self._stats["duration_seconds"] = round(time.time() - t0, 1)
         logger.info(
@@ -385,6 +406,86 @@ class EnricherV1:
             summary=new_summary,
             summary_source=S.SUMMARY_SOURCE_LLM,
             summary_embedding=new_vector,
+        )
+
+    # =================================================================
+    # DIRECTORIES
+    # =================================================================
+
+    def _enrich_directories(self, repo: str) -> int:
+        """Loop over un-enriched directories, enrich one at a time."""
+        rows = self._fetch_unenriched_directories(repo)
+        if not rows:
+            logger.info("No un-enriched directories for %s/%s", self.org_id, repo)
+            return 0
+
+        total = len(rows)
+        self._stats["total_directories_to_enrich"] = total
+        if self._progress_cb:
+            self._progress_cb(dict(self._stats))
+
+        logger.info(
+            "Enriching %d / %d directories for %s/%s",
+            len(rows), total, self.org_id, repo,
+        )
+
+        updated = 0
+        for i, row in enumerate(rows, 1):
+            dir_path = row.get("dir_path", "?")
+            try:
+                # If there are no files or summaries, skip
+                if not row.get("file_summaries"):
+                    continue
+                prompt = self._build_directory_prompt(row)
+                new_summary = self._llm_with_backoff(prompt)
+                self._update_directory(row, new_summary)
+                updated += 1
+                self._stat("directories_enriched", 1)
+                if i % 10 == 0:
+                    logger.info("  [directories] %d / %d enriched", i, len(rows))
+            except Exception as e:
+                logger.warning("  Skipping directory %s: %s", dir_path, e)
+            self._sleep_rate_limit()
+
+        logger.info("Enriched %d directories for %s/%s", updated, self.org_id, repo)
+        return updated
+
+    def _fetch_unenriched_directories(self, repo: str) -> List[Dict[str, Any]]:
+        """Query for Directory nodes where summary_source != 'llm' 
+        and pull up to a 200 character summary of the top files inside it."""
+        cypher = f"""
+        MATCH (d:{S.LABEL_DIRECTORY} {{org_id: $org_id, repo: $repo}})
+        WHERE (d.summary_source <> '{S.SUMMARY_SOURCE_LLM}' OR d.summary_source IS NULL)
+        OPTIONAL MATCH (f:{S.LABEL_FILE} {{org_id: $org_id, repo: $repo}})
+        WHERE f.file_path STARTS WITH d.dir_path OR (d.dir_path = '/' AND true)
+        WITH d, f
+        ORDER BY f.symbol_count DESC
+        WITH d, collect(f.file_path + ': ' + coalesce(substring(f.summary, 0, 200), ''))[..30] AS file_summaries
+        RETURN d.org_id AS org_id,
+               d.repo AS repo,
+               d.dir_path AS dir_path,
+               file_summaries
+        """
+        with self.store._session() as session:
+            result = session.run(cypher, org_id=self.org_id, repo=repo)
+            return [r.data() for r in result]
+
+    def _build_directory_prompt(self, row: Dict[str, Any]) -> str:
+        """Fill _DIRECTORY_PROMPT from a Directory row."""
+        file_summaries = row.get("file_summaries", [])
+        summaries = "\n".join(file_summaries)
+        return _DIRECTORY_PROMPT.format(
+            dir_path=row.get("dir_path", ""),
+            file_summaries=summaries or "(No files)",
+        )
+
+    def _update_directory(self, row: Dict[str, Any], new_summary: str) -> None:
+        self.store.update_directory_summary(
+            org_id=row["org_id"],
+            repo=row["repo"],
+            dir_path=row["dir_path"],
+            summary=new_summary,
+            summary_source=S.SUMMARY_SOURCE_LLM,
         )
 
     # =================================================================

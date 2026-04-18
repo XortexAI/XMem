@@ -1,4 +1,4 @@
-﻿"""
+"""
 /v1/memory/* routes â€” production endpoints for XMem memory operations.
 
 All routes require a valid Bearer API key and respect the per-key rate limit.
@@ -110,9 +110,12 @@ def _error(request: Request, detail: str, code: int, elapsed_ms: float = 0) -> J
     response_model=APIResponse,
     summary="Ingest a conversation turn into long-term memory",
 )
-async def ingest_memory(req: IngestRequest, request: Request):
+async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depends(require_api_key)):
     start = time.perf_counter()
     pipeline = get_ingest_pipeline()
+
+    # Get username from authenticated user
+    user_id = user.get("username") or user.get("name") or user["id"]
 
     try:
         result = await pipeline.run(

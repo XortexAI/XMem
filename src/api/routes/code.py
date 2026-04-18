@@ -168,11 +168,19 @@ async def directory_tree(
 
     try:
         pipeline = get_code_pipeline(org_id=org_id, repo=repo)
-        cursor = pipeline.code_store.files.find(
-            {"org_id": org_id, "repo": repo},
-            {"file_path": 1, "_id": 0},
+        store = pipeline._store  # CodeStoreV1 (Neo4j)
+
+        # Query Neo4j for all file paths in this org/repo
+        query = """
+        MATCH (f:FileV1 {org_id: $org_id, repo: $repo})
+        RETURN f.file_path AS file_path
+        ORDER BY f.file_path
+        """
+        records, _, _ = store.driver.execute_query(
+            query, org_id=org_id, repo=repo,
+            database_=store.database,
         )
-        file_paths = [doc["file_path"] for doc in cursor]
+        file_paths = [r["file_path"] for r in records if r["file_path"]]
 
         tree = _build_tree(file_paths, repo)
         data = DirectoryTreeResponse(repo=repo, tree=tree)
@@ -202,8 +210,21 @@ async def list_repos(
 
     try:
         pipeline = get_code_pipeline(org_id=org_id)
-        repos = pipeline.code_store.files.distinct("repo", {"org_id": org_id})
-        data = RepoListResponse(repos=sorted(repos))
+        store = pipeline._store  # CodeStoreV1 (Neo4j)
+
+        # Query Neo4j for distinct repos in this org
+        query = """
+        MATCH (f:FileV1 {org_id: $org_id})
+        RETURN DISTINCT f.repo AS repo
+        ORDER BY repo
+        """
+        records, _, _ = store.driver.execute_query(
+            query, org_id=org_id,
+            database_=store.database,
+        )
+        repos = [r["repo"] for r in records if r["repo"]]
+
+        data = RepoListResponse(repos=repos)
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         return _wrap(request, data, elapsed)
 

@@ -232,3 +232,40 @@ async def list_repos(
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         logger.exception("List repos failed for org=%s", org_id)
         return _error(request, str(exc), 500, elapsed)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GET /v1/code/file-content
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/file-content",
+    response_model=APIResponse,
+    summary="Get raw file content for a specific file in an indexed repository",
+)
+async def file_content(
+    request: Request,
+    org_id: str = Query(..., min_length=1),
+    repo: str = Query(..., min_length=1),
+    file_path: str = Query(..., min_length=1),
+):
+    start = time.perf_counter()
+
+    try:
+        pipeline = get_code_pipeline(org_id=org_id, repo=repo)
+        store = pipeline._store  # CodeStoreV1 (Neo4j)
+
+        content = store.get_file_content(org_id=org_id, repo=repo, file_path=file_path)
+
+        if content is None:
+            elapsed = round((time.perf_counter() - start) * 1000, 2)
+            return _error(request, f"File not found: {file_path}", 404, elapsed)
+
+        data = {"file_path": file_path, "content": content}
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _wrap(request, data, elapsed)
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("File content failed for org=%s repo=%s path=%s", org_id, repo, file_path)
+        return _error(request, str(exc), 500, elapsed)

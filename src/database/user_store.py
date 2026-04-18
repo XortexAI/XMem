@@ -62,6 +62,8 @@ class UserStore:
             self.users.create_index([("google_id", ASCENDING)], unique=True)
             # Unique index on email
             self.users.create_index([("email", ASCENDING)], unique=True)
+            # Unique index on username (sparse allows null/duplicate values)
+            self.users.create_index([("username", ASCENDING)], unique=True, sparse=True)
             # Index on created_at for sorting
             self.users.create_index([("created_at", ASCENDING)])
         except Exception as e:
@@ -178,6 +180,99 @@ class UserStore:
         except Exception as e:
             logger.error(f"Failed to update user {user_id}: {e}")
             return False
+
+    def set_username(self, user_id: str, username: str) -> bool:
+        """Set a unique username for a user.
+
+        Args:
+            user_id: MongoDB ObjectId as string
+            username: Desired username (must be unique)
+
+        Returns:
+            True if username was set successfully
+        """
+        # Validate username format (alphanumeric, underscore, hyphen, 3-30 chars)
+        import re
+        if not re.match(r'^[a-zA-Z0-9_-]{3,30}$', username):
+            logger.warning(f"Invalid username format: {username}")
+            return False
+
+        if self._in_memory:
+            # Check if username is taken
+            for user in _in_memory_users.values():
+                if user.get("username") == username and str(user.get("_id")) != user_id:
+                    return False
+            # Set username
+            for user in _in_memory_users.values():
+                if str(user.get("_id")) == user_id:
+                    user["username"] = username
+                    return True
+            return False
+
+        try:
+            from bson import ObjectId
+            from pymongo.errors import DuplicateKeyError
+
+            result = self.users.update_one(
+                {"_id": ObjectId(user_id)},
+                {"$set": {"username": username}}
+            )
+            if result.modified_count > 0:
+                logger.info(f"Username set for user {user_id}: {username}")
+                return True
+            return False
+        except DuplicateKeyError:
+            logger.warning(f"Username already taken: {username}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to set username for user {user_id}: {e}")
+            return False
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        """Get user by username.
+
+        Args:
+            username: Unique username
+
+        Returns:
+            User document or None if not found
+        """
+        if self._in_memory:
+            for user in _in_memory_users.values():
+                if user.get("username") == username:
+                    return user
+            return None
+
+        try:
+            return self.users.find_one({"username": username})
+        except Exception:
+            return None
+
+    def is_username_available(self, username: str) -> bool:
+        """Check if a username is available.
+
+        Args:
+            username: Desired username
+
+        Returns:
+            True if username is available
+        """
+        # Validate username format
+        import re
+        if not re.match(r'^[a-zA-Z0-9_-]{3,30}$', username):
+            return False
+
+        if self._in_memory:
+            for user in _in_memory_users.values():
+                if user.get("username") == username:
+                    return False
+            return True
+
+        try:
+            existing = self.users.find_one({"username": username})
+            return existing is None
+        except Exception:
+            return True  # Assume available if DB error
 
     def close(self) -> None:
         """Close the MongoDB connection."""

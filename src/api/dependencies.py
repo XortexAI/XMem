@@ -136,18 +136,16 @@ def _constant_time_compare(a: str, b: str) -> bool:
 async def require_api_key(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
-) -> str:
-    """Validate Bearer token against configured and database API keys.
+) -> dict:
+    """Validate Bearer token against configured API keys, MongoDB API keys, or JWT.
 
     Checks:
     1. Static API keys from settings (for backward compatibility)
     2. User-generated API keys from MongoDB
+    3. JWT access tokens
 
-    If no keys are configured (dev mode) authentication is skipped.
-    Returns the (hashed) key identity for rate-limit bucketing.
+    Returns the user dictionary.
     """
-    configured_keys = settings.api_keys
-
     if credentials is None:
         logger.warning("Missing Authorization header from %s", request.client.host)
         raise HTTPException(
@@ -157,27 +155,39 @@ async def require_api_key(
         )
 
     token = credentials.credentials
+    user = None
 
-    # Check static keys first (backward compatibility)
-    for key in configured_keys:
-        if _constant_time_compare(token, key):
-            return hashlib.sha256(token.encode()).hexdigest()[:16]
+    # 1. Check if it's a JWT access token
+    if not token.startswith("xmem_"):
+        user = await get_current_user(credentials)
+        if user:
+            request.state.user = user
+            return user
 
-    # Check MongoDB for user-generated API keys
+    # 2. Check MongoDB for user-generated API keys
     key_doc = _api_key_store.validate_api_key(token)
     if key_doc:
         user_id = key_doc.get("user_id")
         if user_id:
-            return f"user_{user_id}"
+            user = _user_store.get_user_by_id(user_id)
+            if user:
+                user["id"] = str(user.pop("_id"))
+                request.state.user = user
+                return user
 
-    # If no keys configured at all, allow anonymous (dev mode)
-    if not configured_keys:
-        return "anonymous"
+    # 3. Check static keys first (backward compatibility)
+    configured_keys = settings.api_keys
+    for key in configured_keys:
+        if _constant_time_compare(token, key):
+            # Return a dummy user for static keys
+            dummy_user = {"id": hashlib.sha256(token.encode()).hexdigest()[:16], "name": "Static Key User", "email": "static@xmem.ai"}
+            request.state.user = dummy_user
+            return dummy_user
 
     logger.warning("Invalid API key attempt from %s", request.client.host)
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="Invalid API key.",
+        detail="Invalid API key or token.",
     )
 
 
@@ -225,10 +235,15 @@ async def get_current_user(
         if not user:
             return None
 
+        # Create a copy to avoid mutating the in-memory cache
+        user_copy = dict(user)
         # Convert ObjectId to string for JSON serialization
-        user["id"] = str(user.pop("_id"))
+        if "_id" in user_copy:
+            user_copy["id"] = str(user_copy.pop("_id"))
+        elif "id" not in user_copy:
+            user_copy["id"] = user_id
 
-        return user
+        return user_copy
 
     except JWTError:
         return None
@@ -289,9 +304,10 @@ _rate_limiter = _SlidingWindowRateLimiter(
 
 async def enforce_rate_limit(
     request: Request,
-    identity: str = Depends(require_api_key),
-) -> str:
+    user: dict = Depends(require_api_key),
+) -> dict:
     """Raise 429 if the caller has exceeded their per-minute quota."""
+    identity = user.get("id", "anonymous")
     allowed, remaining = await _rate_limiter.check(identity)
 
     request.state.rate_limit_remaining = remaining
@@ -312,4 +328,4 @@ async def enforce_rate_limit(
             },
         )
 
-    return identity
+    return user

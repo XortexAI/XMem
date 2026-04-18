@@ -1,5 +1,5 @@
-"""
-/v1/scanner/* routes — Scanner dashboard API for the XMem web UI.
+﻿"""
+/v1/scanner/* routes â€” Scanner dashboard API for the XMem web UI.
 
 Provides endpoints for:
   - Validating GitHub URLs and detecting public/private repos
@@ -13,9 +13,9 @@ Provides endpoints for:
   - Catalog status (works for repos you opened from the community without a personal job row)
   - Chat with indexed codebases (streaming NDJSON; respects sharing rules)
 
-These routes have NO API-key authentication — they are designed
-for the public scanner dashboard. Rate limiting is handled by the
-global middleware.
+These routes now REQUIRE API-key authentication via the
+Authorization: Bearer <token> header. The username is derived from
+the authenticated user, not from request parameters.
 """
 
 from __future__ import annotations
@@ -31,11 +31,12 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Depends
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.api.dependencies import require_api_key
 from src.config import settings
 
 logger = logging.getLogger("xmem.api.routes.scanner")
@@ -57,9 +58,9 @@ def _get_code_store():
     return _code_store_singleton
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Request schemas
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 
 class ValidateUrlRequest(BaseModel):
@@ -105,9 +106,9 @@ class CommunityStarRequest(BaseModel):
     starred: bool = Field(..., description="True to star, false to remove star")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Helpers — GitHub API
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Helpers â€” GitHub API
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 
 def _parse_github_url(url: str) -> tuple:
@@ -267,9 +268,9 @@ def _can_reuse_index(
     return False, True
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Background scan execution
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 
 def _run_phase1(job_id: str, username: str, started_at: float, org: str, repo: str, url: str, branch: str, pat: str) -> dict:
@@ -499,16 +500,16 @@ async def _run_phase2_pipeline_only(
         )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Routes
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 
 @router.post(
     "/validate-url",
     summary="Validate a GitHub URL and check accessibility",
 )
-async def validate_url(req: ValidateUrlRequest):
+async def validate_url(req: ValidateUrlRequest, user: dict = Depends(require_api_key)):
     try:
         org, repo = _parse_github_url(req.github_url)
     except ValueError as e:
@@ -540,7 +541,7 @@ async def start_scan(req: ScanRequest):
             {"status": "error", "error": str(e)}, status_code=400,
         )
 
-    job_id = f"{req.username}:{org}:{repo}"
+    job_id = f"{username}:{org}:{repo}"
     store = _get_code_store()
 
     existing = store.get_scanner_job(job_id)
@@ -575,7 +576,7 @@ async def start_scan(req: ScanRequest):
         now = time.time()
         store.upsert_scanner_job(
             job_id=job_id,
-            username=req.username,
+            username=username,
             org=org,
             repo=repo,
             branch=branch,
@@ -588,7 +589,7 @@ async def start_scan(req: ScanRequest):
             phase2_result=None,
         )
         store.upsert_user_repo_entry(
-            req.username, org, repo, branch,
+            username, org, repo, branch,
             last_seen_commit=remote_sha,
         )
         return JSONResponse({
@@ -609,7 +610,7 @@ async def start_scan(req: ScanRequest):
     started_at = time.time()
     store.upsert_scanner_job(
         job_id=job_id,
-        username=req.username,
+        username=username,
         org=org,
         repo=repo,
         branch=branch,
@@ -619,12 +620,12 @@ async def start_scan(req: ScanRequest):
         started_at=started_at,
         error=None,
     )
-    store.upsert_user_repo_entry(req.username, org, repo, branch)
+    store.upsert_user_repo_entry(username, org, repo, branch)
 
     if phase2_only:
         asyncio.create_task(
             _run_phase2_pipeline_only(
-                job_id, req.username, org, repo, clone_url, branch,
+                job_id, username, org, repo, clone_url, branch,
             ),
         )
         return JSONResponse({
@@ -641,7 +642,7 @@ async def start_scan(req: ScanRequest):
 
     asyncio.create_task(
         _run_scan_pipeline(
-            job_id, req.username, org, repo, clone_url, branch, req.pat,
+            job_id, username, org, repo, clone_url, branch, req.pat,
         ),
     )
 
@@ -658,10 +659,11 @@ async def start_scan(req: ScanRequest):
 
 @router.get("/status", summary="Get scan status for a repository")
 async def scan_status(
-    username: str = Query(...),
     org_id: str = Query(...),
     repo: str = Query(...),
+    user: dict = Depends(require_api_key),
 ):
+    username = user.get("username") or user.get("name") or user["id"]
     job_id = f"{username}:{org_id}:{repo}"
     store = _get_code_store()
     job = store.get_scanner_job(job_id)
@@ -758,7 +760,7 @@ async def community_star(req: CommunityStarRequest):
             status_code=400,
         )
     count = store.set_community_star(
-        req.username.strip(),
+        username.strip(),
         req.org_id,
         req.repo,
         req.starred,
@@ -812,7 +814,7 @@ async def list_repos(username: str = Query(...)):
 
 
 @router.get("/public-indexes", summary="List org/repo pairs shared with the community")
-async def public_indexes(limit: int = Query(default=100, ge=1, le=500)):
+async def public_indexes(limit: int = Query(default=100, ge=1, le=500), user: dict = Depends(require_api_key)):
     store = _get_code_store()
     rows = store.list_public_scanner_indexes(limit=limit)
     items = [
@@ -824,9 +826,10 @@ async def public_indexes(limit: int = Query(default=100, ge=1, le=500)):
 
 
 @router.post("/index-visibility", summary="Set whether this index is shared with all scanner users")
-async def set_index_visibility(req: ShareIndexRequest):
+async def set_index_visibility(req: ShareIndexRequest, user: dict = Depends(require_api_key)):
+    username = user.get("username") or user.get("name") or user["id"]
     store = _get_code_store()
-    if not store.user_has_completed_scanner_job(req.username, req.org_id, req.repo):
+    if not store.user_has_completed_scanner_job(username, req.org_id, req.repo):
         return JSONResponse(
             {
                 "status": "error",
@@ -838,7 +841,7 @@ async def set_index_visibility(req: ShareIndexRequest):
         req.org_id,
         req.repo,
         req.share_index_publicly,
-        req.username,
+        username,
     )
     return JSONResponse(
         {
@@ -851,11 +854,12 @@ async def set_index_visibility(req: ShareIndexRequest):
 
 
 @router.post("/chat", summary="Chat with an indexed codebase (streaming)")
-async def chat_with_repo(req: ChatRequest):
+async def chat_with_repo(req: ChatRequest, user: dict = Depends(require_api_key)):
     from src.api.dependencies import get_code_pipeline
 
+    username = user.get("username") or user.get("name") or user["id"]
     store = _get_code_store()
-    denied = _scanner_chat_allowed(store, req.username, req.org_id, req.repo)
+    denied = _scanner_chat_allowed(store, username, req.org_id, req.repo)
     if denied:
         return JSONResponse(
             {"status": "error", "error": denied},
@@ -867,7 +871,7 @@ async def chat_with_repo(req: ChatRequest):
     return StreamingResponse(
         pipeline.run_stream(
             query=req.query,
-            user_id=req.username,
+            user_id=username,
             repo=req.repo,
             top_k=req.top_k,
         ),

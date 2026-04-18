@@ -10,6 +10,7 @@ from google.oauth2 import id_token
 from jose import JWTError, jwt
 from pydantic import BaseModel
 
+from src.api.dependencies import get_current_user
 from src.config import settings
 from src.database.user_store import UserStore
 
@@ -42,9 +43,18 @@ class UserResponse(BaseModel):
     id: str
     email: str
     name: str
+    username: Optional[str] = None
     picture: Optional[str] = None
     created_at: Optional[datetime] = None
     last_login: Optional[datetime] = None
+
+class SetUsernameRequest(BaseModel):
+    """Request model for setting a username."""
+    username: str
+
+class UsernameCheckResponse(BaseModel):
+    """Response model for username availability check."""
+    available: bool
 
 
 class RefreshRequest(BaseModel):
@@ -84,37 +94,6 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 
-async def get_current_user(token: str = Depends(lambda: None)) -> Optional[dict]:
-    """Validate JWT token and return current user.
-
-    This is used as a FastAPI dependency.
-    """
-    if not token:
-        return None
-
-    try:
-        payload = jwt.decode(
-            token,
-            settings.jwt_secret_key,
-            algorithms=[settings.jwt_algorithm]
-        )
-
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            return None
-
-        # Get fresh user data from database
-        user = user_store.get_user_by_id(user_id)
-        if not user:
-            return None
-
-        # Convert ObjectId to string for JSON serialization
-        user["id"] = str(user.pop("_id"))
-
-        return user
-
-    except JWTError:
-        return None
 
 
 def verify_google_token(credential: str) -> dict:
@@ -187,6 +166,7 @@ async def auth_google(request: GoogleTokenRequest):
         "id": str(user["_id"]),
         "email": user["email"],
         "name": user["name"],
+        "username": user.get("username"),
         "picture": user.get("picture"),
         "created_at": user.get("created_at"),
         "last_login": user.get("last_login"),
@@ -252,6 +232,7 @@ async def refresh_token(request: RefreshRequest):
             "id": str(user["_id"]),
             "email": user["email"],
             "name": user["name"],
+            "username": user.get("username"),
             "picture": user.get("picture"),
             "created_at": user.get("created_at"),
             "last_login": user.get("last_login"),
@@ -269,3 +250,63 @@ async def refresh_token(request: RefreshRequest):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token"
         )
+
+@router.get("/check-username/{username}", response_model=UsernameCheckResponse)
+async def check_username(username: str):
+    """Check if a username is available."""
+    # Basic validation
+    if len(username) < 3 or len(username) > 30:
+        return UsernameCheckResponse(available=False)
+    
+    import re
+    if not re.match(r'^[a-zA-Z0-9_-]+$', username):
+        return UsernameCheckResponse(available=False)
+        
+    is_available = user_store.is_username_available(username)
+    return UsernameCheckResponse(available=is_available)
+
+@router.post("/set-username", response_model=UserResponse)
+async def set_username(req: SetUsernameRequest, current_user: dict = Depends(get_current_user)):
+    """Set username for the currently authenticated user."""
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated"
+        )
+        
+    if current_user.get("username"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already set"
+        )
+        
+    username = req.username
+    if len(username) < 3 or len(username) > 30:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username must be between 3 and 30 characters"
+        )
+        
+    import re
+    if not re.match(r'^[a-zA-Z0-9_-]+$', username):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username can only contain letters, numbers, underscores, and hyphens"
+        )
+        
+    success = user_store.set_username(current_user["id"], username)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username is not available or could not be set"
+        )
+        
+    # Get updated user
+    user = user_store.get_user_by_id(current_user["id"])
+    updated_user = dict(user) if user else current_user
+    if "_id" in updated_user:
+        updated_user["id"] = str(updated_user.pop("_id"))
+    elif "id" not in updated_user:
+        updated_user["id"] = current_user["id"]
+    
+    return UserResponse(**updated_user)

@@ -10,7 +10,7 @@ from google.oauth2 import id_token
 from jose import JWTError, jwt
 from pydantic import BaseModel
 
-from src.api.dependencies import get_current_user
+from src.api.dependencies import get_current_user, require_api_key
 from src.config import settings
 from src.database.user_store import UserStore
 
@@ -310,3 +310,8 @@ async def set_username(req: SetUsernameRequest, current_user: dict = Depends(get
         updated_user["id"] = current_user["id"]
     
     return UserResponse(**updated_user)
+
+@router.get("/verify-key", response_model=UserResponse)
+async def verify_key(user: dict = Depends(require_api_key)):
+    """Verify an API key and return the associated user information."""
+    return UserResponse(**user)

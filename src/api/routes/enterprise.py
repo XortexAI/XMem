@@ -24,6 +24,7 @@ from src.api.dependencies import require_api_key
 from src.config import settings
 from src.database.models import TeamRole
 from src.database.project_store import ProjectStore
+from src.database.user_store import UserStore
 from src.storage.team_annotation_store import TeamAnnotationStore
 
 logger = logging.getLogger("xmem.api.routes.enterprise")
@@ -36,6 +37,7 @@ router = APIRouter(prefix="/v1/enterprise", tags=["enterprise"])
 
 _project_store: Optional[ProjectStore] = None
 _annotation_store: Optional[TeamAnnotationStore] = None
+_user_store: Optional[UserStore] = None
 
 
 def _get_project_store() -> ProjectStore:
@@ -57,6 +59,16 @@ def _get_annotation_store() -> TeamAnnotationStore:
             dimension=settings.pinecone_dimension,
         )
     return _annotation_store
+
+
+def _get_user_store() -> UserStore:
+    global _user_store
+    if _user_store is None:
+        _user_store = UserStore(
+            uri=settings.mongodb_uri,
+            database=settings.mongodb_database,
+        )
+    return _user_store
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +146,82 @@ def _serialize_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
         if key in result and hasattr(result[key], "isoformat"):
             result[key] = result[key].isoformat()
     return result
+
+
+# ---------------------------------------------------------------------------
+# User lookup routes
+# ---------------------------------------------------------------------------
+
+@router.get("/users/lookup", summary="Lookup user by username")
+async def lookup_user(
+    username: str,
+    user: dict = Depends(require_api_key),
+) -> JSONResponse:
+    """Lookup a user by username to validate before adding to team."""
+    store = _get_user_store()
+
+    # Search for user by username
+    found_user = store.get_user_by_username(username)
+
+    if not found_user:
+        # Also try searching by email or partial match
+        # For now, return not found
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found")
+
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "user": {
+                "id": str(found_user.get("_id")),
+                "username": found_user.get("username"),
+                "email": found_user.get("email"),
+                "name": found_user.get("name"),
+                "picture": found_user.get("picture"),
+            },
+        }
+    )
+
+
+@router.get("/users/search", summary="Search users by query")
+async def search_users(
+    q: str,
+    limit: int = 10,
+    user: dict = Depends(require_api_key),
+) -> JSONResponse:
+    """Search users by username or email prefix."""
+    store = _get_user_store()
+
+    # Get all users and filter (in production, you'd want a proper search index)
+    # This is a simple implementation for now
+    users_collection = store.users
+    if users_collection is None:
+        # In-memory fallback
+        return JSONResponse(content={"status": "ok", "users": []})
+
+    try:
+        # Search by username or email (case-insensitive)
+        query_filter = {
+            "$or": [
+                {"username": {"$regex": q, "$options": "i"}},
+                {"email": {"$regex": q, "$options": "i"}},
+                {"name": {"$regex": q, "$options": "i"}},
+            ]
+        }
+        cursor = users_collection.find(query_filter).limit(limit)
+        users = []
+        for doc in cursor:
+            users.append({
+                "id": str(doc.get("_id")),
+                "username": doc.get("username"),
+                "email": doc.get("email"),
+                "name": doc.get("name"),
+                "picture": doc.get("picture"),
+            })
+
+        return JSONResponse(content={"status": "ok", "users": users})
+    except Exception as e:
+        logger.error(f"Error searching users: {e}")
+        return JSONResponse(content={"status": "ok", "users": []})
 
 
 # ---------------------------------------------------------------------------

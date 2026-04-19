@@ -464,18 +464,42 @@ async def update_team_member_role(
     store = _get_project_store()
     user_id = user.get("id") or user.get("google_id")
 
-    # Check permissions
-    if not store.check_user_can_manage_team(project_id, user_id):
-        raise HTTPException(status_code=403, detail="Only managers can update roles")
+    # Check permissions - managers and staff engineers can edit roles
+    if not store.check_user_can_edit_team_member(project_id, user_id, member_user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only managers and staff engineers can update roles, and only of members below their level"
+        )
 
     # Can't change own role
     if member_user_id == user_id:
         raise HTTPException(status_code=400, detail="Cannot change your own role")
 
+    # Validate the new role is valid
     try:
         role = TeamRole(req.role)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid role: {req.role}")
+
+    # Check that the user isn't trying to assign a role higher than their own
+    user_role = store.get_user_role_in_project(project_id, user_id)
+    if user_role is None:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    role_hierarchy = {
+        TeamRole.MANAGER: 4,
+        TeamRole.STAFF_ENGINEER: 3,
+        TeamRole.SDE2: 2,
+        TeamRole.INTERN: 1,
+    }
+    user_level = role_hierarchy.get(user_role, 0)
+    requested_level = role_hierarchy.get(role, 0)
+
+    if requested_level >= user_level:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot assign role equal to or higher than your own"
+        )
 
     member = store.update_team_member_role(project_id, member_user_id, role)
     if member is None:

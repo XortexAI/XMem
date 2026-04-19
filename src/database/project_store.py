@@ -405,6 +405,43 @@ class ProjectStore:
         role = self.get_user_role_in_project(project_id, user_id)
         return role == TeamRole.MANAGER
 
+    def check_user_can_edit_team_member(
+        self, project_id: str, user_id: str, target_user_id: str
+    ) -> bool:
+        """
+        Check if user can edit another team member's role.
+        - Managers can edit anyone
+        - Staff Engineers can edit SDE2 and Intern
+        - SDE2 and Intern cannot edit anyone
+        """
+        # Can't edit yourself
+        if user_id == target_user_id:
+            return False
+
+        user_role = self.get_user_role_in_project(project_id, user_id)
+        target_role = self.get_user_role_in_project(project_id, target_user_id)
+
+        if target_role is None:
+            return False
+
+        # Manager can edit anyone
+        if user_role == TeamRole.MANAGER:
+            return True
+
+        # Staff Engineer can edit SDE2 (2) and Intern (1)
+        if user_role == TeamRole.STAFF_ENGINEER:
+            role_hierarchy = {
+                TeamRole.MANAGER: 4,
+                TeamRole.STAFF_ENGINEER: 3,
+                TeamRole.SDE2: 2,
+                TeamRole.INTERN: 1,
+            }
+            user_level = role_hierarchy.get(user_role, 0)
+            target_level = role_hierarchy.get(target_role, 0)
+            return user_level > target_level
+
+        return False
+
     def check_user_is_project_creator(self, project_id: str, user_id: str) -> bool:
         """Check if user created the project."""
         project = self.get_project(project_id)

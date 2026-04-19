@@ -1123,7 +1123,7 @@ class CodeRetrievalPipeline:
             from src.storage.team_annotation_store import TeamAnnotationStore
 
             store = TeamAnnotationStore()
-            results = store.search_annotations(
+            results = await store.search_annotations(
                 project_id=project_id,
                 query=query,
                 top_k=top_k,

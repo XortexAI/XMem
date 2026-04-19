@@ -157,7 +157,7 @@ class TeamAnnotationStore:
 
         return annotation_id
 
-    def search_annotations(
+    async def search_annotations(
         self,
         project_id: str,
         query: str,
@@ -183,7 +183,7 @@ class TeamAnnotationStore:
         if "status" not in filters:
             filters["status"] = "active"
 
-        return store.search_by_text(
+        return await store.search_by_text(
             query_text=query,
             top_k=top_k,
             filters=filters,
@@ -342,7 +342,7 @@ class TeamAnnotationStore:
         store = self._get_store(project_id)
         return store.count()
 
-    def search_relevant_for_query(
+    async def search_relevant_for_query(
         self,
         project_id: str,
         query: str,
@@ -366,7 +366,7 @@ class TeamAnnotationStore:
             List of annotation dicts with relevance scores
         """
         # First do a semantic search
-        results = self.search_annotations(
+        results = await self.search_annotations(
             project_id=project_id,
             query=query,
             top_k=top_k * 2,  # Get more to filter

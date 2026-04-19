@@ -509,7 +509,7 @@ async def search_annotations(
     if req.symbol_name:
         filters["symbol_name"] = req.symbol_name
 
-    results = ann_store.search_annotations(
+    results = await ann_store.search_annotations(
         project_id=project_id,
         query=req.query,
         top_k=req.top_k,
@@ -753,7 +753,7 @@ async def team_chat(
         raise HTTPException(status_code=404, detail="Project not found")
 
     # Get relevant annotations
-    relevant_annotations = ann_store.search_relevant_for_query(
+    relevant_annotations = await ann_store.search_relevant_for_query(
         project_id=project_id,
         query=req.query,
         file_path=req.file_path,

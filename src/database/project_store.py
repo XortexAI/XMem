@@ -396,9 +396,12 @@ class ProjectStore:
         return None
 
     def check_user_can_annotate(self, project_id: str, user_id: str) -> bool:
-        """Check if user can create annotations (all roles can)."""
+        """Check if user can create annotations (all roles except INTERN)."""
         role = self.get_user_role_in_project(project_id, user_id)
-        return role is not None
+        if role is None:
+            return False
+        # All roles except INTERN can create annotations
+        return role != TeamRole.INTERN
 
     def check_user_can_manage_team(self, project_id: str, user_id: str) -> bool:
         """Check if user can manage team (manager only)."""

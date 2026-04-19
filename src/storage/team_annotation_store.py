@@ -412,6 +412,63 @@ class TeamAnnotationStore:
 
         return annotations
 
+    async def get_manager_instructions(
+        self,
+        project_id: str,
+        target_role: Optional[str] = None,
+        top_k: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Get manager instructions for team members.
+
+        This retrieves annotations created by managers that are marked as
+        instructions or general guidance for the team.
+
+        Args:
+            project_id: The project ID
+            target_role: Optional target role to filter for (e.g., 'intern', 'sde2')
+            top_k: Maximum number of instructions to return
+
+        Returns:
+            List of manager instruction annotation dicts
+        """
+        store = self._get_store(project_id)
+
+        # Build filters for manager annotations
+        filters = {
+            "status": "active",
+            "author_role": "manager",
+        }
+
+        # Search for all manager annotations
+        # We use a broad query to get instructions
+        results = await store.search_by_text(
+            query_text="instruction guidance manager note important",
+            top_k=top_k,
+            filters=filters,
+        )
+
+        instructions = []
+        for r in results:
+            meta = r.metadata or {}
+            # Include annotations that are instructions or general explanations
+            ann_type = meta.get("annotation_type", "explanation")
+            if ann_type in ("instruction", "explanation", "warning", "feature_idea"):
+                instruction = {
+                    "id": r.id,
+                    "content": r.content,
+                    "author_name": meta.get("author_name", "Manager"),
+                    "author_role": meta.get("author_role", "manager"),
+                    "annotation_type": ann_type,
+                    "created_at": meta.get("created_at"),
+                    "file_path": meta.get("file_path"),
+                    "symbol_name": meta.get("symbol_name"),
+                    **meta,
+                }
+                instructions.append(instruction)
+
+        logger.info("Retrieved %d manager instructions for project %s", len(instructions), project_id)
+        return instructions
+
     def clear_project_annotations(
         self,
         project_id: str,

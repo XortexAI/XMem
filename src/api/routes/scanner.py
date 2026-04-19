@@ -1,4 +1,4 @@
-﻿"""
+"""
 /v1/scanner/* routes â€” Scanner dashboard API for the XMem web UI.
 
 Provides endpoints for:
@@ -541,6 +541,7 @@ async def start_scan(req: ScanRequest):
             {"status": "error", "error": str(e)}, status_code=400,
         )
 
+    username = req.username
     job_id = f"{username}:{org}:{repo}"
     store = _get_code_store()
 
@@ -760,7 +761,7 @@ async def community_star(req: CommunityStarRequest):
             status_code=400,
         )
     count = store.set_community_star(
-        username.strip(),
+        req.username.strip(),
         req.org_id,
         req.repo,
         req.starred,

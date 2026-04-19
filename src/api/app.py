@@ -28,6 +28,7 @@ from src.api.middleware import (
 from src.api.routes.api_keys import router as api_keys_router
 from src.api.routes.auth import router as auth_router
 from src.api.routes.code import router as code_router
+from src.api.routes.enterprise import router as enterprise_router
 from src.api.routes.health import router as health_router
 from src.api.routes.memory import router as memory_router
 from src.api.routes.scanner import router as scanner_router
@@ -112,6 +113,7 @@ def create_app() -> FastAPI:
     app.include_router(scanner_router)
     app.include_router(auth_router)
     app.include_router(api_keys_router)
+    app.include_router(enterprise_router)
 
     @app.exception_handler(Exception)
     async def _unhandled_exception(request: Request, exc: Exception):

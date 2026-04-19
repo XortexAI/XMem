@@ -102,15 +102,25 @@ def get_retrieval_pipeline() -> RetrievalPipeline:
     return _retrieval_pipeline
 
 
-def get_code_pipeline(org_id: str, repo: str = "") -> "CodeRetrievalPipeline":
-    """Lazily create and cache a CodeRetrievalPipeline per org+repo."""
+def get_code_pipeline(org_id: str, repo: str = "", project_id: Optional[str] = None) -> "CodeRetrievalPipeline":
+    """Lazily create and cache a CodeRetrievalPipeline per org+repo(+project).
+
+    Args:
+        org_id: The organization ID
+        repo: The repository name
+        project_id: Optional project ID for team annotation retrieval
+    """
     from src.pipelines.code_retrieval import CodeRetrievalPipeline
 
-    cache_key = f"{org_id}:{repo}"
+    cache_key = f"{org_id}:{repo}:{project_id or 'none'}"
     if cache_key not in _code_pipelines:
         repos = [repo] if repo else []
-        _code_pipelines[cache_key] = CodeRetrievalPipeline(org_id=org_id, repos=repos)
-        logger.info("Created CodeRetrievalPipeline for %s", cache_key)
+        _code_pipelines[cache_key] = CodeRetrievalPipeline(
+            org_id=org_id,
+            repos=repos,
+            project_id=project_id,
+        )
+        logger.info("Created CodeRetrievalPipeline for %s (project=%s)", cache_key, project_id)
     return _code_pipelines[cache_key]
 
 

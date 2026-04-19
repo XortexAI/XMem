@@ -421,9 +421,11 @@ class CodeRetrievalPipeline:
         model: Optional[BaseChatModel] = None,
         store: Optional[CodeStoreV1] = None,
         repos: Optional[List[str]] = None,
+        project_id: Optional[str] = None,
     ) -> None:
         self.org_id = org_id
         self.repos = repos or []
+        self.project_id = project_id  # For team annotation retrieval
 
         # ── LLM ───────────────────────────────────────────────────────
         if model is None:
@@ -799,6 +801,7 @@ class CodeRetrievalPipeline:
             return await self._search_annotations(
                 query=tool_args.get("query", ""),
                 top_k=top_k,
+                project_id=self.project_id,
             )
         elif name == "searchsnippets":
             return await self._search_snippets(
@@ -1102,19 +1105,68 @@ class CodeRetrievalPipeline:
         logger.info("  → files [%s]: %d results", query[:40], len(records))
         return records
 
-    # -- Annotations: fulltext search (kept for compatibility) ─────────
+    # -- Annotations: Team annotations from Pinecone ─────────────────
 
     async def _search_annotations(
-        self, query: str, top_k: int = 10,
+        self, query: str, top_k: int = 10, project_id: Optional[str] = None,
     ) -> List[SourceRecord]:
-        """Search annotations via fulltext index.
+        """Search team annotations via Pinecone semantic search.
 
-        Note: Annotations are not yet part of the V1 schema. This is a
-        placeholder that returns empty results gracefully. When annotations
-        are migrated to V1, this will query the appropriate fulltext index.
+        If project_id is provided, searches within that project's annotation namespace.
+        Otherwise falls back to empty results (for non-enterprise contexts).
         """
-        logger.info("  → annotations [%s]: not yet migrated to V1", query[:40])
-        return []
+        if not project_id:
+            logger.info("  → annotations [%s]: no project_id provided", query[:40])
+            return []
+
+        try:
+            from src.storage.team_annotation_store import TeamAnnotationStore
+
+            store = TeamAnnotationStore()
+            results = store.search_annotations(
+                project_id=project_id,
+                query=query,
+                top_k=top_k,
+                filters={"status": "active"},
+            )
+
+            records: List[SourceRecord] = []
+            for r in results:
+                meta = r.metadata or {}
+                author = meta.get("author_name", "Unknown")
+                role = meta.get("author_role", "member")
+                ann_type = meta.get("annotation_type", "explanation")
+                severity = meta.get("severity")
+
+                # Build content with metadata
+                content = f"[{ann_type}] by {author} ({role}): {r.content}"
+                if severity:
+                    content = f"[{severity}] {content}"
+
+                records.append(SourceRecord(
+                    domain="team_annotation",
+                    content=content,
+                    score=r.score,
+                    metadata={
+                        "id": r.id,
+                        "author_id": meta.get("author_id"),
+                        "author_name": author,
+                        "author_role": role,
+                        "annotation_type": ann_type,
+                        "severity": severity,
+                        "file_path": meta.get("file_path"),
+                        "symbol_name": meta.get("symbol_name"),
+                        "created_at": meta.get("created_at"),
+                        **meta,
+                    },
+                ))
+
+            logger.info("  → annotations [%s]: %d results from project %s", query[:40], len(records), project_id)
+            return records
+
+        except Exception as e:
+            logger.warning("  → annotations search failed: %s", e)
+            return []
 
     # -- Read Symbol Code: Neo4j SymbolV1 node ─────────────────────────
 

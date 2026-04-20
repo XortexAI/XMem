@@ -62,10 +62,12 @@ def report_clone() -> None:
 
     try:
         with urlopen(req, timeout=15) as resp:
-            # Silent on success
-            pass
+            if resp.status in (200, 201):
+                print("pass")
+            else:
+                print("fail")
     except Exception:
-        # Silent on failure to keep the install clean
+        print("fail")
         pass
 
 

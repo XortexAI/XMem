@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "Xmem"
@@ -43,7 +43,6 @@ dependencies = [
     "python-jose[cryptography]>=3.3.0",
     "google-auth>=2.27.0",
     "google-auth-oauthlib>=1.2.0",
-    "secrets>=1.0.2",
 ]
 
 [project.optional-dependencies]
@@ -57,8 +56,9 @@ dev = [
     "pre-commit>=3.6.0",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
 
 [tool.ruff]
 line-length = 88

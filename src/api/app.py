@@ -32,6 +32,7 @@ from src.api.routes.enterprise import router as enterprise_router
 from src.api.routes.health import router as health_router
 from src.api.routes.memory import router as memory_router
 from src.api.routes.scanner import router as scanner_router
+from src.api.routes.telemetry import router as telemetry_router
 from src.api.schemas import APIResponse, StatusEnum
 from src.config import settings
 
@@ -114,6 +115,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(api_keys_router)
     app.include_router(enterprise_router)
+    app.include_router(telemetry_router)
 
     @app.exception_handler(Exception)
     async def _unhandled_exception(request: Request, exc: Exception):

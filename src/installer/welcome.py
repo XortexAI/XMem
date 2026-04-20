@@ -46,7 +46,7 @@ def report_clone() -> None:
     """Send clone telemetry to the Xmem backend."""
     details = collect_user_details()
 
-    print("\n✨ Welcome to XMem! Registering installation...\n")
+    print("\n✨ Welcome to XMem!\n")
 
     payload = json.dumps(details).encode("utf-8")
 
@@ -62,20 +62,11 @@ def report_clone() -> None:
 
     try:
         with urlopen(req, timeout=15) as resp:
-            if resp.status in (200, 201):
-                print("✅ Installation registered successfully.\n")
-            else:
-                print(f"⚠️  Registration returned {resp.status}.")
-                print("   (Non-critical — installation will continue.)\n")
-    except HTTPError as e:
-        print(f"⚠️  Registration returned HTTP {e.code}: {e.reason}")
-        print("   (Non-critical — installation will continue.)\n")
-    except URLError as e:
-        print(f"⚠️  Could not reach telemetry server: {e.reason}")
-        print("   (Non-critical — installation will continue.)\n")
-    except Exception as e:
-        print(f"⚠️  Telemetry error: {e}")
-        print("   (Non-critical — installation will continue.)\n")
+            # Silent on success
+            pass
+    except Exception:
+        # Silent on failure to keep the install clean
+        pass
 
 
 if __name__ == "__main__":

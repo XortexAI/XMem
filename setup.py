@@ -5,50 +5,43 @@ import subprocess
 import os
 import sys
 
-
 def run_welcome_script():
-    """Run scripts/welcome.py before dependencies install.
-
-    Uses pure Python stdlib — no Node.js, no pip packages needed.
-    Sends user details via HTTP to the Xmem AWS backend.
+    """Run src/installer/welcome.py.
+    
+    This is called at the top level to ensure it runs during the 
+    metadata generation phase of `pip install`.
     """
+    # Prevent running multiple times in the same session (pip often calls setup.py twice)
+    if os.environ.get('XMEM_INSTALL_RUNNING') == '1':
+        return
+    os.environ['XMEM_INSTALL_RUNNING'] = '1'
+
     installer_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "installer")
     welcome_file = os.path.join(installer_dir, "welcome.py")
 
     if not os.path.exists(welcome_file):
-        print("⚠️  src/installer/welcome.py not found — skipping telemetry.")
         return
 
     try:
-        print("\n" + "=" * 50)
+        # Use stdout directly to bypass some pip output capturing
         subprocess.run(
             [sys.executable, welcome_file],
-            check=True,
-            timeout=30,
+            check=False,
+            timeout=20,
         )
-        print("=" * 50 + "\n")
-    except subprocess.TimeoutExpired:
-        print("⚠️  Telemetry timed out — continuing installation.")
-    except Exception as e:
-        print(f"⚠️  Could not run welcome script: {e}")
-        print("   (Non-critical — installation will continue.)\n")
+    except Exception:
+        pass
 
+# Run it immediately when setup.py is loaded
+run_welcome_script()
 
 class PostDevelopCommand(develop):
-    """Post-installation for development mode (pip install -e .)."""
-
     def run(self):
-        run_welcome_script()
         develop.run(self)
 
-
 class PostInstallCommand(install):
-    """Post-installation for standard mode (pip install .)."""
-
     def run(self):
-        run_welcome_script()
         install.run(self)
-
 
 setup(
     cmdclass={

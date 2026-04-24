@@ -611,9 +611,10 @@ class IngestPipeline:
         if result.is_empty:
             return {"status": "no_profile_facts"}
 
-        # Judge all facts together for better dedup
+        # Profile facts are already structured; exact metadata lookup avoids
+        # an extra judge LLM call on the hot path.
         items = [f.model_dump() for f in result.facts]
-        judge_result = await self.judge.arun({
+        judge_result = await self.judge.arun_deterministic({
             "domain": "profile",
             "new_items": items,
             "user_id": user_id,
@@ -658,7 +659,7 @@ class IngestPipeline:
                 "date_expression": event.date_expression or "",
             })
 
-        judge_result = await self.judge.arun({
+        judge_result = await self.judge.arun_deterministic({
             "domain": "temporal",
             "new_items": all_items,
             "user_id": user_id,

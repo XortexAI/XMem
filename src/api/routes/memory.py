@@ -6,6 +6,7 @@ All routes require a valid Bearer API key and respect the per-key rate limit.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, Dict, List
@@ -39,11 +40,10 @@ from src.api.schemas import (
 )
 from src.pipelines.retrieval import RetrievalPipeline
 
-import httpx
 from bs4 import BeautifulSoup
 import json
 import re
-from playwright.async_api import async_playwright
+from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger("xmem.api.routes.memory")
 
@@ -51,6 +51,12 @@ router = APIRouter(
     prefix="/v1/memory",
     tags=["memory"],
     dependencies=[Depends(require_ready), Depends(enforce_rate_limit)],
+)
+
+scrape_router = APIRouter(
+    prefix="/v1/memory",
+    tags=["memory"],
+    dependencies=[Depends(enforce_rate_limit)],
 )
 
 
@@ -99,6 +105,185 @@ def _error(request: Request, detail: str, code: int, elapsed_ms: float = 0) -> J
         elapsed_ms=elapsed_ms,
     )
     return JSONResponse(content=body.model_dump(), status_code=code)
+
+
+def _detect_chat_provider(url: str) -> str:
+    lowered = url.lower()
+    if "chatgpt.com" in lowered or "chat.openai.com" in lowered or "openai.com" in lowered:
+        return "chatgpt"
+    if "claude.ai" in lowered:
+        return "claude"
+    if "gemini.google.com" in lowered or "g.co/gemini" in lowered:
+        return "gemini"
+    return "unknown"
+
+
+async def _render_chat_share(url: str) -> tuple[str, str]:
+    return await asyncio.to_thread(_render_chat_share_sync, url)
+
+
+def _render_chat_share_sync(url: str) -> tuple[str, str]:
+    html = ""
+    final_url = url
+
+    with sync_playwright() as p:
+        browser = None
+        launch_errors = []
+        for channel in (None, "msedge", "chrome"):
+            try:
+                kwargs = {"headless": True}
+                if channel:
+                    kwargs["channel"] = channel
+                browser = p.chromium.launch(**kwargs)
+                break
+            except Exception as exc:
+                launch_errors.append(f"{channel or 'bundled chromium'}: {exc}")
+
+        if browser is None:
+            raise RuntimeError(
+                "Could not launch Playwright browser. Tried bundled Chromium, "
+                f"Edge, and Chrome. Errors: {' | '.join(launch_errors)}"
+            )
+
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/123.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800},
+            ignore_https_errors=True,
+        )
+
+        try:
+            page = context.new_page()
+
+            def _block_heavy_assets(route):
+                if route.request.resource_type in {"image", "media", "font"}:
+                    route.abort()
+                    return
+                route.continue_()
+
+            page.route("**/*", _block_heavy_assets)
+
+            try:
+                # Navigate and wait for network to become idle so JS can load messages.
+                page.goto(url, wait_until="networkidle", timeout=20000)
+            except Exception as exc:
+                logger.warning("Timeout or error waiting for networkidle: %s", exc)
+
+            provider = _detect_chat_provider(page.url or url)
+            selector = {
+                "chatgpt": "div[data-message-author-role]",
+                "claude": "script",
+                "gemini": "message-content, div.user-query, div.model-response",
+            }.get(provider)
+            if selector:
+                try:
+                    page.wait_for_selector(selector, timeout=12000)
+                except Exception as exc:
+                    logger.warning("Timed out waiting for %s content: %s", provider, exc)
+
+            page.wait_for_timeout(2000)
+            final_url = page.url
+            html = page.content()
+        finally:
+            context.close()
+            browser.close()
+
+    return html, final_url
+
+
+def _extract_chat_pairs(url: str, html: str) -> tuple[str, str, List[MessagePair]]:
+    provider = _detect_chat_provider(url)
+    soup = BeautifulSoup(html, "html.parser")
+    pairs: List[MessagePair] = []
+    extraction_method = "none"
+
+    if provider == "chatgpt":
+        user_msgs = soup.find_all("div", {"data-message-author-role": "user"})
+        asst_msgs = soup.find_all("div", {"data-message-author-role": "assistant"})
+        for u, a in zip(user_msgs, asst_msgs):
+            pairs.append(MessagePair(
+                user_query=u.get_text(separator="\n").strip(),
+                agent_response=a.get_text(separator="\n").strip(),
+            ))
+        if pairs:
+            extraction_method = "dom"
+
+    elif provider == "claude":
+        script_state = soup.find("script", string=re.compile(r"__PRELOADED_STATE__"))
+        if script_state and script_state.string:
+            try:
+                match = re.search(
+                    r"__PRELOADED_STATE__\s*=\s*(\{.*?\});",
+                    script_state.string,
+                    re.DOTALL,
+                )
+                if match:
+                    data = json.loads(match.group(1))
+                    messages = data.get("chat", {}).get("messages", [])
+                    current_user = ""
+                    for msg in messages:
+                        if msg.get("sender") == "human":
+                            current_user = msg.get("text", "")
+                        elif msg.get("sender") == "assistant":
+                            pairs.append(MessagePair(
+                                user_query=current_user,
+                                agent_response=msg.get("text", ""),
+                            ))
+                            current_user = ""
+                    if pairs:
+                        extraction_method = "structured"
+            except Exception as exc:
+                logger.warning("Failed to parse Claude preloaded state: %s", exc)
+
+    elif provider == "gemini":
+        user_blocks = soup.select("message-content[role='user'], div.user-query")
+        model_blocks = soup.select("message-content[role='model'], div.model-response")
+        for u, m in zip(user_blocks, model_blocks):
+            pairs.append(MessagePair(
+                user_query=u.get_text(separator="\n").strip(),
+                agent_response=m.get_text(separator="\n").strip(),
+            ))
+        if pairs:
+            extraction_method = "dom"
+
+    if not pairs and provider == "unknown":
+        paragraphs = [
+            p.get_text(separator="\n", strip=True)
+            for p in soup.find_all(["p", "div", "span"])
+            if len(p.get_text(strip=True)) > 50
+        ]
+        unique_paras = []
+        for paragraph in paragraphs:
+            if paragraph not in unique_paras:
+                unique_paras.append(paragraph)
+
+        if unique_paras:
+            text = "\n\n".join(unique_paras[:50])
+            pairs.append(MessagePair(
+                user_query="Extracted text from link",
+                agent_response=text[:10000],
+            ))
+            extraction_method = "fallback"
+
+    return provider, extraction_method, pairs
+
+
+async def _scrape_chat_share(url: str) -> Dict[str, Any]:
+    html, final_url = await _render_chat_share(url)
+    provider, extraction_method, pairs = _extract_chat_pairs(final_url or url, html)
+
+    return {
+        "provider": provider,
+        "url": url,
+        "final_url": final_url,
+        "pairs": pairs,
+        "pair_count": len(pairs),
+        "html_length": len(html),
+        "extraction_method": extraction_method,
+    }
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -284,7 +469,7 @@ async def _search_summary(pipeline: RetrievalPipeline, query: str, user_id: str,
 # POST /v1/memory/scrape
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-@router.post(
+@scrape_router.post(
     "/scrape",
     response_model=APIResponse,
     summary="Scrape a shared AI chat link into message pairs",
@@ -294,84 +479,8 @@ async def scrape_chat_link(req: ScrapeRequest, request: Request):
     url = req.url
     
     try:
-        html = ""
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 800}
-            )
-            page = await context.new_page()
-            
-            try:
-                # Navigate and wait for network to become idle so JS can load messages
-                await page.goto(url, wait_until="networkidle", timeout=15000)
-            except Exception as e:
-                logger.warning(f"Timeout or error waiting for networkidle: {e}")
-            
-            # Additional wait to ensure dynamic rendering finishes
-            await page.wait_for_timeout(3000)
-            
-            # Extract HTML after rendering
-            html = await page.content()
-            
-            await browser.close()
-
-        soup = BeautifulSoup(html, "html.parser")
-        pairs = []
-        
-        # 1. ChatGPT Parsing
-        if "chatgpt.com" in url or "openai.com" in url:
-            user_msgs = soup.find_all("div", {"data-message-author-role": "user"})
-            asst_msgs = soup.find_all("div", {"data-message-author-role": "assistant"})
-            for u, a in zip(user_msgs, asst_msgs):
-                pairs.append(MessagePair(
-                    user_query=u.get_text(separator="\n").strip(), 
-                    agent_response=a.get_text(separator="\n").strip()
-                ))
-        
-        # 2. Claude Parsing
-        elif "claude.ai" in url:
-            script_state = soup.find("script", string=re.compile(r"__PRELOADED_STATE__"))
-            if script_state and script_state.string:
-                try:
-                    match = re.search(r"__PRELOADED_STATE__\s*=\s*(\{.*?\});", script_state.string, re.DOTALL)
-                    if match:
-                        data = json.loads(match.group(1))
-                        messages = data.get("chat", {}).get("messages", [])
-                        current_user = ""
-                        for msg in messages:
-                            if msg.get("sender") == "human":
-                                current_user = msg.get("text", "")
-                            elif msg.get("sender") == "assistant":
-                                pairs.append(MessagePair(user_query=current_user, agent_response=msg.get("text", "")))
-                                current_user = ""
-                except Exception as e:
-                    logger.warning(f"Failed to parse Claude preloaded state: {e}")
-
-        # 3. Gemini Parsing
-        elif "gemini.google.com" in url or "g.co/gemini" in url:
-            # Gemini typically structures as user-query and model-response blocks
-            user_blocks = soup.select("message-content[role='user'], div.user-query")
-            model_blocks = soup.select("message-content[role='model'], div.model-response")
-            if user_blocks and model_blocks:
-                for u, m in zip(user_blocks, model_blocks):
-                    pairs.append(MessagePair(
-                        user_query=u.get_text(separator="\n").strip(),
-                        agent_response=m.get_text(separator="\n").strip()
-                    ))
-
-        # 4. Generic fallback
-        if not pairs:
-            paragraphs = [p.get_text(separator="\n", strip=True) for p in soup.find_all(["p", "div", "span"]) if len(p.get_text(strip=True)) > 50]
-            unique_paras = []
-            for p in paragraphs:
-                if p not in unique_paras:
-                    unique_paras.append(p)
-                    
-            if unique_paras:
-                text = "\n\n".join(unique_paras[:50])
-                pairs.append(MessagePair(user_query="Extracted text from link", agent_response=text[:10000]))
+        result = await _scrape_chat_share(url)
+        pairs = result["pairs"]
 
         if not pairs:
             return _error(request, "Failed to extract messages from the provided link.", 400)
@@ -383,5 +492,5 @@ async def scrape_chat_link(req: ScrapeRequest, request: Request):
     except Exception as exc:
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         logger.exception("Scrape failed for url=%s", url)
-        return _error(request, str(exc), 500, elapsed)
+        return _error(request, str(exc) or repr(exc), 500, elapsed)
 

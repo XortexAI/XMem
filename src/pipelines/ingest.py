@@ -225,6 +225,8 @@ class IngestState(TypedDict, total=False):
     code_judge: JudgeResult
     snippet_judge: JudgeResult
 
+    disabled_domains: List[str]
+
     # ── weaver outputs ────────────────────────────────────────────────
     profile_weaver: WeaverResult
     temporal_weaver: WeaverResult
@@ -518,6 +520,7 @@ class IngestPipeline:
         routes: List[Send] = []
         user_id = state.get("user_id", "default")
         user_query = state.get("user_query", "").strip()
+        disabled_domains = set(state.get("disabled_domains") or [])
 
         # Collect queries per domain — merge duplicates so each agent runs once
         profile_queries: List[str] = []
@@ -564,19 +567,19 @@ class IngestPipeline:
                 "user_id": user_id,
             }))
 
-        if code_queries:
+        if code_queries and not {"code", "snippet"}.issubset(disabled_domains):
             # Enterprise users → team annotation extraction (Code Agent)
             # Single users → personal snippet extraction (Snippet Agent)
             # Tier determined by org_id: "default" means single user
             is_enterprise = self.org_id != "default"
 
-            if is_enterprise:
+            if is_enterprise and "code" not in disabled_domains:
                 routes.append(Send("extract_code", {
                     **state,
                     "code_queries": code_queries,
                     "user_id": user_id,
                 }))
-            else:
+            elif not is_enterprise and "snippet" not in disabled_domains:
                 routes.append(Send("extract_snippet", {
                     **state,
                     "code_queries": code_queries,
@@ -611,9 +614,10 @@ class IngestPipeline:
         if result.is_empty:
             return {"status": "no_profile_facts"}
 
-        # Judge all facts together for better dedup
+        # Profile facts are already structured; exact metadata lookup avoids
+        # an extra judge LLM call on the hot path.
         items = [f.model_dump() for f in result.facts]
-        judge_result = await self.judge.arun({
+        judge_result = await self.judge.arun_deterministic({
             "domain": "profile",
             "new_items": items,
             "user_id": user_id,
@@ -658,7 +662,7 @@ class IngestPipeline:
                 "date_expression": event.date_expression or "",
             })
 
-        judge_result = await self.judge.arun({
+        judge_result = await self.judge.arun_deterministic({
             "domain": "temporal",
             "new_items": all_items,
             "user_id": user_id,
@@ -882,6 +886,7 @@ class IngestPipeline:
         session_datetime: str = "",
         image_url: str = "",
         effort_level: EffortLevel | str = EffortLevel.LOW,
+        disabled_domains: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Run the full ingest pipeline.
 
@@ -892,6 +897,9 @@ class IngestPipeline:
             session_datetime: Optional datetime context for temporal events.
             image_url:        URL or base64 data-URI of an attached image.
             effort_level:     ``'low'`` (default) or ``'high'``.
+            disabled_domains: Domains to skip during extraction, used by
+                              enterprise chat to keep project annotations out
+                              of personal memory ingest.
 
                               * **LOW**  — single pipeline call, fast.
                               * **HIGH** — splits ``user_query`` into
@@ -929,6 +937,7 @@ class IngestPipeline:
                 session_datetime=session_datetime,
                 image_url=image_url,
                 cfg=effort_cfg,
+                disabled_domains=disabled_domains,
             )
         else:
             # ── LOW effort (or short input): single pipeline call ─────
@@ -938,6 +947,7 @@ class IngestPipeline:
                 user_id=user_id,
                 session_datetime=session_datetime,
                 image_url=image_url,
+                disabled_domains=disabled_domains,
             )
 
         logger.info("=" * 60)
@@ -958,6 +968,7 @@ class IngestPipeline:
         user_id: str,
         session_datetime: str,
         image_url: str,
+        disabled_domains: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Single, unconditional pipeline call (LOW path)."""
         initial_state: IngestState = {
@@ -966,6 +977,7 @@ class IngestPipeline:
             "user_id": user_id,
             "session_datetime": session_datetime,
             "image_url": image_url,
+            "disabled_domains": disabled_domains or [],
             "errors": [],
             "status": "running",
         }
@@ -979,6 +991,7 @@ class IngestPipeline:
         session_datetime: str,
         image_url: str,
         cfg: EffortConfig,
+        disabled_domains: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """HIGH-effort path: chunk user_query → sequential pipeline calls → merge.
 
@@ -1013,6 +1026,7 @@ class IngestPipeline:
                 user_id=user_id,
                 session_datetime=session_datetime,
                 image_url=image_url if idx == 0 else "",
+                disabled_domains=disabled_domains,
             )
             chunk_results.append(res)
 
@@ -1053,6 +1067,7 @@ class IngestPipeline:
         session_datetime: str = "",
         image_url: str = "",
         effort_level: EffortLevel | str = EffortLevel.LOW,
+        disabled_domains: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Synchronous wrapper for run."""
         return asyncio.run(
@@ -1063,6 +1078,7 @@ class IngestPipeline:
                 session_datetime,
                 image_url,
                 effort_level,
+                disabled_domains,
             )
         )
 

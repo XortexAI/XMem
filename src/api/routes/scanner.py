@@ -338,7 +338,7 @@ def _run_phase2(job_id: str, username: str, started_at: float, org: str, repo: s
 
     embedder = Embedder(summary_embed_fn=_embed)
     
-    model = get_model(provider="gemini", model_name="gemini-2.5-flash-lite")
+    model = get_model()
     def _llm_call(prompt: str) -> str:
         response = model.invoke(prompt)
         content = getattr(response, "content", None)

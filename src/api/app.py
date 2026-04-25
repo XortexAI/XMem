@@ -31,6 +31,7 @@ from src.api.routes.code import router as code_router
 from src.api.routes.enterprise import router as enterprise_router
 from src.api.routes.health import router as health_router
 from src.api.routes.memory import router as memory_router
+from src.api.routes.memory import scrape_router as memory_scrape_router
 from src.api.routes.scanner import router as scanner_router
 from src.api.routes.telemetry import router as telemetry_router
 from src.api.schemas import APIResponse, StatusEnum
@@ -109,6 +110,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
 
     app.include_router(health_router)
+    app.include_router(memory_scrape_router)
     app.include_router(memory_router)
     app.include_router(code_router)
     app.include_router(scanner_router)

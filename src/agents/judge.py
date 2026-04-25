@@ -170,6 +170,39 @@ class JudgeAgent(BaseAgent):
 
         return result
 
+    async def arun_deterministic(self, state: Dict[str, Any]) -> JudgeResult:
+        """Build operations without an LLM for structured domains.
+
+        Profile and temporal extraction already returns normalized structured
+        data. For those domains, exact-key lookups are enough to decide
+        add/update/no-op without paying for a second model call.
+        """
+        domain_str = state.get("domain", "")
+        try:
+            domain = JudgeDomain(domain_str)
+        except ValueError:
+            self.logger.error("Unknown deterministic judge domain: %s", domain_str)
+            return JudgeResult()
+
+        new_items: list = state.get("new_items", [])
+        user_id: str = state.get("user_id", "")
+        if not new_items:
+            return JudgeResult()
+
+        if domain == JudgeDomain.PROFILE:
+            result = await self._deterministic_profile(new_items, user_id)
+        elif domain == JudgeDomain.TEMPORAL:
+            result = await self._deterministic_temporal(new_items, user_id)
+        else:
+            self.logger.warning(
+                "Deterministic judge unsupported for %s; falling back to LLM judge.",
+                domain.value,
+            )
+            return await self.arun(state)
+
+        self._log_result(domain, result)
+        return result
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -355,6 +388,100 @@ class JudgeAgent(BaseAgent):
         )
         return dict(pairs)
 
+    # -- Deterministic operation builders ---------------------------------
+
+    async def _deterministic_profile(
+        self, new_items: list, user_id: str,
+    ) -> JudgeResult:
+        new_items = _dedupe_profile_items(new_items)
+        item_strings = self._items_to_strings(JudgeDomain.PROFILE, new_items)
+        matches_per_item = await self._fetch_similar_profile_metadata(
+            item_strings, new_items, user_id,
+        )
+
+        operations: list[Operation] = []
+        for item_str in item_strings:
+            match = _first_match(matches_per_item.get(item_str, []))
+            if match is None:
+                operations.append(Operation(
+                    type=OperationType.ADD,
+                    content=item_str,
+                    reason="No profile record with the same topic/sub_topic.",
+                ))
+                continue
+
+            incoming_memo = _profile_memo_from_content(item_str)
+            existing_memo = _profile_memo_from_match(match)
+            if _norm_text(incoming_memo) == _norm_text(existing_memo):
+                operations.append(Operation(
+                    type=OperationType.NOOP,
+                    content=item_str,
+                    embedding_id=match.id,
+                    reason="Existing profile fact is unchanged.",
+                ))
+            else:
+                operations.append(Operation(
+                    type=OperationType.UPDATE,
+                    content=item_str,
+                    embedding_id=match.id,
+                    reason="Existing profile fact has new content.",
+                ))
+
+        return JudgeResult(operations=operations, confidence=1.0)
+
+    async def _deterministic_temporal(
+        self, new_items: list, user_id: str,
+    ) -> JudgeResult:
+        new_items = _dedupe_temporal_items(new_items)
+        item_strings = self._items_to_strings(JudgeDomain.TEMPORAL, new_items)
+        matches_per_item = await self._fetch_similar_temporal(
+            item_strings, new_items, user_id,
+        )
+
+        operations: list[Operation] = []
+        for item_str in item_strings:
+            match = _first_match(matches_per_item.get(item_str, []))
+            if match is None:
+                operations.append(Operation(
+                    type=OperationType.ADD,
+                    content=item_str,
+                    reason="No temporal event with the same event_name.",
+                ))
+                continue
+
+            incoming = _temporal_fields_from_content(item_str)
+            existing = _temporal_fields_from_match(match)
+            if _same_temporal_event(incoming, existing):
+                operations.append(Operation(
+                    type=OperationType.NOOP,
+                    content=item_str,
+                    embedding_id=match.id,
+                    reason="Existing temporal event is unchanged.",
+                ))
+            elif _norm_text(incoming.get("date")) != _norm_text(existing.get("date")):
+                operations.extend([
+                    Operation(
+                        type=OperationType.DELETE,
+                        content=match.content,
+                        embedding_id=match.id,
+                        reason="Existing temporal event moved to a different date.",
+                    ),
+                    Operation(
+                        type=OperationType.ADD,
+                        content=item_str,
+                        reason="Re-created temporal event on the updated date.",
+                    ),
+                ])
+            else:
+                operations.append(Operation(
+                    type=OperationType.UPDATE,
+                    content=item_str,
+                    embedding_id=match.id,
+                    reason="Existing temporal event has new content.",
+                ))
+
+        return JudgeResult(operations=operations, confidence=1.0)
+
     # -- Response parsing --------------------------------------------------
 
     def _parse_response(
@@ -438,3 +565,77 @@ def _build_profile_metadata_key(item: dict) -> str:
     if not topic or not sub_topic:
         return ""
     return f"{topic}_{sub_topic}".replace(" ", "_").lower()
+
+
+def _first_match(matches: List[SearchResult]) -> Optional[SearchResult]:
+    return matches[0] if matches else None
+
+
+def _dedupe_profile_items(items: list) -> list:
+    deduped: dict[str, dict] = {}
+    passthrough: list = []
+    for item in items:
+        key = _build_profile_metadata_key(item)
+        if key:
+            deduped[key] = item
+        else:
+            passthrough.append(item)
+    return [*deduped.values(), *passthrough]
+
+
+def _dedupe_temporal_items(items: list) -> list:
+    deduped: dict[str, dict] = {}
+    passthrough: list = []
+    for item in items:
+        if not isinstance(item, dict):
+            passthrough.append(item)
+            continue
+        event_name = _norm_text(item.get("event_name"))
+        if event_name:
+            deduped[event_name] = item
+        else:
+            passthrough.append(item)
+    return [*deduped.values(), *passthrough]
+
+
+def _norm_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _profile_memo_from_content(content: str) -> str:
+    if " = " not in content:
+        return content
+    return content.split(" = ", 1)[1].strip()
+
+
+def _profile_memo_from_match(match: SearchResult) -> str:
+    metadata = match.metadata or {}
+    subcontent = metadata.get("subcontent")
+    if subcontent is not None:
+        return str(subcontent)
+    return _profile_memo_from_content(match.content)
+
+
+def _temporal_fields_from_content(content: str) -> Dict[str, str]:
+    parts = [p.strip() for p in content.split("|")]
+    keys = ["date", "event_name", "desc", "year", "time", "date_expression"]
+    return {key: parts[idx] if idx < len(parts) else "" for idx, key in enumerate(keys)}
+
+
+def _temporal_fields_from_match(match: SearchResult) -> Dict[str, str]:
+    metadata = match.metadata or {}
+    if metadata:
+        return {
+            "date": str(metadata.get("date", "") or ""),
+            "event_name": str(metadata.get("event_name", "") or ""),
+            "desc": str(metadata.get("desc", "") or ""),
+            "year": str(metadata.get("year", "") or ""),
+            "time": str(metadata.get("time", "") or ""),
+            "date_expression": str(metadata.get("date_expression", "") or ""),
+        }
+    return _temporal_fields_from_content(match.content)
+
+
+def _same_temporal_event(incoming: Dict[str, str], existing: Dict[str, str]) -> bool:
+    keys = ["date", "event_name", "desc", "year", "time", "date_expression"]
+    return all(_norm_text(incoming.get(key)) == _norm_text(existing.get(key)) for key in keys)

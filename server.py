@@ -11,7 +11,9 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -23,6 +25,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 # ── Project root setup ────────────────────────────────────────────
 import sys
@@ -77,6 +81,7 @@ ingest_pipeline: IngestPipeline | None = None
 retrieval_pipeline: RetrievalPipeline | None = None
 _pipelines_ready = asyncio.Event()
 _init_error: str | None = None
+SKIP_PIPELINES = os.getenv("XMEM_SKIP_PIPELINES", "").lower() in {"1", "true", "yes"}
 
 
 def _init_pipelines_sync() -> None:
@@ -99,6 +104,11 @@ def _init_pipelines_sync() -> None:
 
 async def _init_pipelines_bg() -> None:
     """Kick off pipeline init in a thread and signal readiness when done."""
+    if SKIP_PIPELINES:
+        print("[init] Skipping pipeline init because XMEM_SKIP_PIPELINES=1", flush=True)
+        _pipelines_ready.set()
+        return
+
     loop = asyncio.get_running_loop()
     print("[init] Starting background pipeline init...", flush=True)
     await loop.run_in_executor(None, _init_pipelines_sync)
@@ -139,11 +149,18 @@ class IngestRequest(BaseModel):
     user_query: str
     agent_response: str = ""
     user_id: str = "demo_user"
+    session_datetime: str = ""
+    image_url: str = ""
+    effort_level: str = "low"
 
 
 class RetrieveRequest(BaseModel):
     query: str
     user_id: str = "demo_user"
+
+
+class ScrapeRequest(BaseModel):
+    url: str
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -162,6 +179,110 @@ async def health():
 @app.get("/")
 async def serve_ui():
     return FileResponse(Path(__file__).parent / "frontend" / "index.html")
+
+
+@app.post("/v1/memory/scrape")
+async def scrape_chat_link(req: ScrapeRequest):
+    start = time.perf_counter()
+    url = req.url
+
+    try:
+        result = await _scrape_chat_share(url)
+        pairs = result["pairs"]
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+
+        if not pairs:
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "data": None,
+                    "error": "Failed to extract messages from the provided link.",
+                    "elapsed_ms": elapsed,
+                },
+                status_code=400,
+            )
+
+        return JSONResponse(
+            {
+                "status": "ok",
+                "data": {"pairs": pairs},
+                "elapsed_ms": elapsed,
+            },
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "status": "error",
+                "data": None,
+                "error": str(exc) or repr(exc),
+                "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+            },
+            status_code=500,
+        )
+
+
+@app.post("/v1/memory/ingest")
+async def v1_ingest_memory(req: IngestRequest):
+    """V1-compatible ingest route used by the /context importer."""
+    start = time.perf_counter()
+
+    if _init_error:
+        return JSONResponse(
+            {
+                "status": "error",
+                "data": None,
+                "error": f"Pipeline init failed: {_init_error}",
+                "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+            },
+            status_code=503,
+        )
+    if not _pipelines_ready.is_set() or ingest_pipeline is None:
+        return JSONResponse(
+            {
+                "status": "error",
+                "data": None,
+                "error": "Ingest pipeline is not ready.",
+                "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+            },
+            status_code=503,
+        )
+
+    try:
+        result = await ingest_pipeline.run(
+            user_query=req.user_query,
+            agent_response=req.agent_response or "Acknowledged.",
+            user_id=req.user_id,
+            session_datetime=req.session_datetime,
+            image_url=req.image_url,
+            effort_level=req.effort_level,
+        )
+
+        data = {
+            "model": _get_model_name(ingest_pipeline.model),
+            "classification": _safe_classifications(result),
+            "profile": _build_memory_domain(result.get("profile_judge"), result.get("profile_weaver")),
+            "temporal": _build_memory_domain(result.get("temporal_judge"), result.get("temporal_weaver")),
+            "summary": _build_memory_domain(result.get("summary_judge"), result.get("summary_weaver")),
+            "image": _build_memory_domain(result.get("image_judge"), result.get("image_weaver")),
+        }
+
+        return JSONResponse(
+            {
+                "status": "ok",
+                "data": data,
+                "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+            },
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "status": "error",
+                "data": None,
+                "error": str(exc) or repr(exc),
+                "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+            },
+            status_code=500,
+        )
 
 
 @app.post("/api/ingest")
@@ -313,6 +434,211 @@ async def api_retrieve(req: RetrieveRequest):
 def _get_model_name(model) -> str:
     """Extract the model name string from a LangChain model instance."""
     return getattr(model, "model", getattr(model, "model_name", "unknown"))
+
+
+def _safe_classifications(result: Dict[str, Any]) -> list:
+    cr = result.get("classification_result")
+    if cr and getattr(cr, "classifications", None):
+        return cr.classifications
+    return []
+
+
+def _build_memory_domain(judge: Any, weaver: Any) -> dict[str, Any] | None:
+    if not judge or not getattr(judge, "operations", None):
+        return None
+
+    return {
+        "confidence": getattr(judge, "confidence", 0.0),
+        "operations": [
+            {
+                "type": getattr(op.type, "value", op.type),
+                "content": op.content,
+                "reason": op.reason,
+            }
+            for op in judge.operations
+        ],
+        "weaver": {
+            "succeeded": getattr(weaver, "succeeded", 0) if weaver else 0,
+            "skipped": getattr(weaver, "skipped", 0) if weaver else 0,
+            "failed": getattr(weaver, "failed", 0) if weaver else 0,
+        },
+    }
+
+
+def _detect_chat_provider(url: str) -> str:
+    lowered = url.lower()
+    if "chatgpt.com" in lowered or "chat.openai.com" in lowered or "openai.com" in lowered:
+        return "chatgpt"
+    if "claude.ai" in lowered:
+        return "claude"
+    if "gemini.google.com" in lowered or "g.co/gemini" in lowered:
+        return "gemini"
+    return "unknown"
+
+
+async def _render_chat_share(url: str) -> tuple[str, str]:
+    return await asyncio.to_thread(_render_chat_share_sync, url)
+
+
+def _render_chat_share_sync(url: str) -> tuple[str, str]:
+    html = ""
+    final_url = url
+
+    with sync_playwright() as p:
+        browser = None
+        launch_errors = []
+        for channel in (None, "msedge", "chrome"):
+            try:
+                kwargs = {"headless": True}
+                if channel:
+                    kwargs["channel"] = channel
+                browser = p.chromium.launch(**kwargs)
+                break
+            except Exception as exc:
+                launch_errors.append(f"{channel or 'bundled chromium'}: {exc}")
+
+        if browser is None:
+            raise RuntimeError(
+                "Could not launch Playwright browser. Tried bundled Chromium, "
+                f"Edge, and Chrome. Errors: {' | '.join(launch_errors)}"
+            )
+
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/123.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800},
+            ignore_https_errors=True,
+        )
+        try:
+            page = context.new_page()
+
+            def _block_heavy_assets(route):
+                if route.request.resource_type in {"image", "media", "font"}:
+                    route.abort()
+                    return
+                route.continue_()
+
+            page.route("**/*", _block_heavy_assets)
+
+            try:
+                page.goto(url, wait_until="networkidle", timeout=20000)
+            except Exception as exc:
+                print(f"[scrape] navigation warning: {exc}", flush=True)
+
+            provider = _detect_chat_provider(page.url or url)
+            selector = {
+                "chatgpt": "div[data-message-author-role]",
+                "claude": "script",
+                "gemini": "message-content, div.user-query, div.model-response",
+            }.get(provider)
+            if selector:
+                try:
+                    page.wait_for_selector(selector, timeout=12000)
+                except Exception as exc:
+                    print(f"[scrape] timed out waiting for {provider} content: {exc}", flush=True)
+
+            page.wait_for_timeout(2000)
+            final_url = page.url
+            html = page.content()
+        finally:
+            context.close()
+            browser.close()
+
+    return html, final_url
+
+
+def _extract_chat_pairs(url: str, html: str) -> tuple[str, str, list[dict[str, str]]]:
+    provider = _detect_chat_provider(url)
+    soup = BeautifulSoup(html, "html.parser")
+    pairs: list[dict[str, str]] = []
+    extraction_method = "none"
+
+    if provider == "chatgpt":
+        user_msgs = soup.find_all("div", {"data-message-author-role": "user"})
+        asst_msgs = soup.find_all("div", {"data-message-author-role": "assistant"})
+        for user_msg, assistant_msg in zip(user_msgs, asst_msgs):
+            pairs.append({
+                "user_query": user_msg.get_text(separator="\n").strip(),
+                "agent_response": assistant_msg.get_text(separator="\n").strip(),
+            })
+        if pairs:
+            extraction_method = "dom"
+
+    elif provider == "claude":
+        script_state = soup.find("script", string=re.compile(r"__PRELOADED_STATE__"))
+        if script_state and script_state.string:
+            try:
+                match = re.search(
+                    r"__PRELOADED_STATE__\s*=\s*(\{.*?\});",
+                    script_state.string,
+                    re.DOTALL,
+                )
+                if match:
+                    data = json.loads(match.group(1))
+                    messages = data.get("chat", {}).get("messages", [])
+                    current_user = ""
+                    for msg in messages:
+                        if msg.get("sender") == "human":
+                            current_user = msg.get("text", "")
+                        elif msg.get("sender") == "assistant":
+                            pairs.append({
+                                "user_query": current_user,
+                                "agent_response": msg.get("text", ""),
+                            })
+                            current_user = ""
+                    if pairs:
+                        extraction_method = "structured"
+            except Exception as exc:
+                print(f"[scrape] Claude parse warning: {exc}", flush=True)
+
+    elif provider == "gemini":
+        user_blocks = soup.select("message-content[role='user'], div.user-query")
+        model_blocks = soup.select("message-content[role='model'], div.model-response")
+        for user_block, model_block in zip(user_blocks, model_blocks):
+            pairs.append({
+                "user_query": user_block.get_text(separator="\n").strip(),
+                "agent_response": model_block.get_text(separator="\n").strip(),
+            })
+        if pairs:
+            extraction_method = "dom"
+
+    if not pairs and provider == "unknown":
+        paragraphs = [
+            node.get_text(separator="\n", strip=True)
+            for node in soup.find_all(["p", "div", "span"])
+            if len(node.get_text(strip=True)) > 50
+        ]
+        unique_paras = []
+        for paragraph in paragraphs:
+            if paragraph not in unique_paras:
+                unique_paras.append(paragraph)
+
+        if unique_paras:
+            pairs.append({
+                "user_query": "Extracted text from link",
+                "agent_response": "\n\n".join(unique_paras[:50])[:10000],
+            })
+            extraction_method = "fallback"
+
+    return provider, extraction_method, pairs
+
+
+async def _scrape_chat_share(url: str) -> dict[str, Any]:
+    html, final_url = await _render_chat_share(url)
+    provider, extraction_method, pairs = _extract_chat_pairs(final_url or url, html)
+
+    return {
+        "provider": provider,
+        "url": url,
+        "final_url": final_url,
+        "pairs": pairs,
+        "pair_count": len(pairs),
+        "html_length": len(html),
+        "extraction_method": extraction_method,
+    }
 
 
 def _get_xmem_loggers() -> List[logging.Logger]:

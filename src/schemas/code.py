@@ -36,6 +36,11 @@ class AnnotationType(str, Enum):
     FEATURE_IDEA = "feature_idea"
     EXPLANATION = "explanation"
     WARNING = "warning"
+    INSTRUCTION = "instruction"
+    ARCHITECTURE = "architecture"
+    BEST_PRACTICE = "best_practice"
+    TODO = "todo"
+    TECHNICAL_DEBT = "technical_debt"
 
 
 class AnnotationSeverity(str, Enum):
@@ -214,6 +219,9 @@ class ExtractedAnnotation(BaseModel):
     )
     repo: Optional[str] = Field(
         None, description="Repository the annotation targets"
+    )
+    assigned_to_name: Optional[str] = Field(
+        None, description="The name or role of the person this is assigned to (e.g. 'intern', 'john', etc.)"
     )
 
 

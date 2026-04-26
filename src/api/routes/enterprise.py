@@ -128,17 +128,21 @@ class CreateAnnotationRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=10000)
     annotation_type: str = Field(
         default="explanation",
-        pattern="^(bug_report|fix|explanation|warning|feature_idea)$"
+        pattern="^(bug_report|fix|explanation|warning|feature_idea|instruction|architecture|best_practice|todo|technical_debt)$"
     )
     file_path: Optional[str] = None
     symbol_name: Optional[str] = None
     severity: Optional[str] = Field(None, pattern="^(low|medium|high|critical)$")
+    assigned_to: Optional[str] = None  # user_id of the assignee
+    assigned_to_name: Optional[str] = None  # display name of the assignee
 
 
 class UpdateAnnotationRequest(BaseModel):
     content: Optional[str] = Field(None, min_length=1, max_length=10000)
     status: Optional[str] = Field(None, pattern="^(active|resolved|outdated)$")
     severity: Optional[str] = Field(None, pattern="^(low|medium|high|critical)$")
+    assigned_to: Optional[str] = Field(None, description="User ID of the assignee")
+    assigned_to_name: Optional[str] = Field(None, description="Username of the assignee")
 
 
 class SearchAnnotationsRequest(BaseModel):
@@ -609,6 +613,8 @@ async def create_annotation(
         file_path=req.file_path,
         symbol_name=req.symbol_name,
         severity=req.severity,
+        assigned_to=req.assigned_to,
+        assigned_to_name=req.assigned_to_name,
     )
 
     # Increment project annotation count
@@ -803,6 +809,8 @@ async def update_annotation(
         content=req.content,
         status=req.status,
         severity=req.severity,
+        assigned_to=req.assigned_to,
+        assigned_to_name=req.assigned_to_name,
     )
 
     if not success:
@@ -871,27 +879,42 @@ async def team_chat(
     user: dict = Depends(require_api_key),
 ) -> StreamingResponse:
     """Chat with the codebase, including team annotations as context."""
+    logger.info("="*60)
+    logger.info("ENTERPRISE CHAT ROUTE: /projects/%s/chat", project_id)
+    logger.info("  query=%s", req.query[:200])
+    logger.info("  user=%s", user.get("username") or user.get("name") or user.get("id"))
+    logger.info("="*60)
+
     project_store = _get_project_store()
     orchestrator = _get_chat_orchestrator()
 
     user_id = user.get("id") or user.get("google_id")
     username = user.get("username") or user.get("name") or user_id
+    logger.info("ENTERPRISE CHAT ROUTE: resolved user_id=%s, username=%s", user_id, username)
 
     # Check access
     if not project_store.check_user_has_access(project_id, user_id):
+        logger.warning("ENTERPRISE CHAT ROUTE: access denied for user %s on project %s",
+                       user_id, project_id)
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get project for org_id/repo
     project = project_store.get_project(project_id)
     if project is None:
+        logger.warning("ENTERPRISE CHAT ROUTE: project %s not found", project_id)
         raise HTTPException(status_code=404, detail="Project not found")
+
+    logger.info("ENTERPRISE CHAT ROUTE: project found — org=%s, repo=%s",
+                project["org_id"], project["repo"])
 
     # Get user's role in project
     user_role_obj = project_store.get_user_role_in_project(project_id, user_id)
     user_role = user_role_obj.value if user_role_obj else "member"
+    logger.info("ENTERPRISE CHAT ROUTE: user role = %s", user_role)
 
     # Check if user can create annotations (all except INTERN)
     can_create_annotations = project_store.check_user_can_annotate(project_id, user_id)
+    logger.info("ENTERPRISE CHAT ROUTE: can_create_annotations = %s", can_create_annotations)
 
     chat_context = EnterpriseChatContext(
         project=EnterpriseProjectContext(
@@ -914,7 +937,9 @@ async def team_chat(
         ),
     )
 
+    logger.info("ENTERPRISE CHAT ROUTE: returning StreamingResponse for orchestrator.stream_chat")
     return StreamingResponse(
         orchestrator.stream_chat(chat_context),
         media_type="application/x-ndjson",
     )
+

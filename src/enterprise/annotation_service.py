@@ -41,6 +41,11 @@ class EnterpriseAnnotationService:
         Enterprise annotations are canonical in TeamAnnotationStore, which maps
         to Pinecone namespace ``annotations:{project_id}``.
         """
+        logger.info("ANNOTATION SERVICE: extract_and_store called — "
+                     "user=%s, role=%s, can_create=%s, answer_len=%d",
+                     context.user.user_id, context.user.role,
+                     context.user.can_create_annotations, len(answer_text))
+
         if not context.user.can_create_annotations:
             logger.info(
                 "Skipping annotation extraction for user %s in role %s",
@@ -49,19 +54,37 @@ class EnterpriseAnnotationService:
             )
             return []
 
-        agent = self._get_code_agent()
+        try:
+            agent = self._get_code_agent()
+            logger.info("ANNOTATION SERVICE: code agent obtained — %s", type(agent).__name__)
+        except Exception as exc:
+            logger.error("ANNOTATION SERVICE: _get_code_agent FAILED: %s", exc, exc_info=True)
+            return []
+
         conversation = self._pack_conversation(context.request.query, answer_text)
-        result = await agent.arun({"classifier_output": conversation})
+        logger.debug("ANNOTATION SERVICE: packed conversation (first 300 chars): %s",
+                      conversation[:300])
+
+        try:
+            result = await agent.arun({"classifier_output": conversation})
+            logger.info("ANNOTATION SERVICE: agent returned — is_empty=%s",
+                         getattr(result, 'is_empty', 'N/A'))
+        except Exception as exc:
+            logger.error("ANNOTATION SERVICE: agent.arun FAILED: %s", exc, exc_info=True)
+            return []
 
         if getattr(result, "is_empty", True):
             logger.info("No enterprise annotations extracted from chat turn")
             return []
 
         created_ids: List[str] = []
+        last_assigned_to_name: str = ""
         for ann in result.annotations:
             content = (getattr(ann, "content", "") or "").strip()
             if not content:
                 continue
+
+            ann_assigned = getattr(ann, "assigned_to_name", None)
 
             try:
                 annotation_id = self.annotation_store.create_annotation(
@@ -81,16 +104,20 @@ class EnterpriseAnnotationService:
                     symbol_name=getattr(ann, "target_symbol", None)
                     or context.request.symbol_name,
                     severity=self._enum_value(getattr(ann, "severity", None)),
+                    assigned_to_name=ann_assigned,
                 )
                 if annotation_id:
                     created_ids.append(annotation_id)
+                    if ann_assigned:
+                        last_assigned_to_name = ann_assigned
             except Exception as exc:
                 logger.warning("Failed to store enterprise annotation: %s", exc)
 
         logger.info(
-            "Stored %d enterprise annotation(s) for project %s",
+            "Stored %d enterprise annotation(s) for project %s (assigned_to_name=%s)",
             len(created_ids),
             context.project.project_id,
+            last_assigned_to_name or "(none)",
         )
         if created_ids and self._annotation_count_incrementer is not None:
             try:
@@ -101,31 +128,31 @@ class EnterpriseAnnotationService:
             except Exception as exc:
                 logger.warning("Failed to increment project annotation count: %s", exc)
 
-        return created_ids
+        return created_ids, last_assigned_to_name
 
     def _get_code_agent(self) -> Any:
         if self._code_agent_factory is not None:
+            logger.debug("ANNOTATION SERVICE: using custom code_agent_factory")
             return self._code_agent_factory()
 
         if self._agent is None:
+            logger.info("ANNOTATION SERVICE: initializing CodeAgent for annotation extraction")
             from src.agents.code import CodeAgent
             from src.models import get_model
 
             override = getattr(settings, "code_model", None)
             model = get_model(model_name=override) if override else get_model()
             self._agent = CodeAgent(model=model)
+            logger.info("ANNOTATION SERVICE: CodeAgent initialized with model=%s", type(model).__name__)
 
         return self._agent
 
     @staticmethod
     def _pack_conversation(query: str, answer_text: str) -> str:
-        if answer_text.strip():
-            return (
-                "User message:\n"
-                f"{query.strip()}\n\n"
-                "Assistant response:\n"
-                f"{answer_text.strip()}"
-            )
+        # IMPORTANT: Only analyze the USER's query for annotations.
+        # The assistant's answer is NOT user-authored knowledge — extracting it
+        # would create annotation spam from every Q&A exchange.
+        # Only the user's own words (tasks, bug reports, decisions) should be annotated.
         return query.strip()
 
     @staticmethod

@@ -90,6 +90,8 @@ class TeamAnnotationStore:
         severity: Optional[str] = None,
         status: str = "active",
         source_message_id: Optional[str] = None,
+        assigned_to: Optional[str] = None,
+        assigned_to_name: Optional[str] = None,
     ) -> str:
         """Create a new team annotation.
 
@@ -101,12 +103,14 @@ class TeamAnnotationStore:
             author_role: Role of the author (manager|staff_engineer|sde2|intern)
             org_id: GitHub organization ID
             repo: Repository name
-            annotation_type: Type of annotation (bug_report|fix|explanation|warning|feature_idea)
+            annotation_type: Type of annotation (bug_report|fix|explanation|warning|feature_idea|instruction|todo|...)
             file_path: Optional target file path
             symbol_name: Optional target symbol name
             severity: Optional severity (low|medium|high|critical)
             status: Status (active|resolved|outdated)
             source_message_id: Optional chat message ID that created this
+            assigned_to: Optional user_id of the person this is assigned to
+            assigned_to_name: Optional display name of the assignee
 
         Returns:
             The annotation ID
@@ -137,6 +141,10 @@ class TeamAnnotationStore:
             metadata["severity"] = severity
         if source_message_id:
             metadata["source_message_id"] = source_message_id
+        if assigned_to:
+            metadata["assigned_to"] = assigned_to
+        if assigned_to_name:
+            metadata["assigned_to_name"] = assigned_to_name
 
         # Embed the content
         embedding = embed_text(content)
@@ -153,6 +161,7 @@ class TeamAnnotationStore:
         logger.info(
             f"Created annotation {annotation_id} for project {project_id} "
             f"targeting {symbol_name or file_path or repo}"
+            f"{' assigned to ' + assigned_to_name if assigned_to_name else ''}"
         )
 
         return annotation_id
@@ -255,6 +264,8 @@ class TeamAnnotationStore:
         content: Optional[str] = None,
         status: Optional[str] = None,
         severity: Optional[str] = None,
+        assigned_to: Optional[str] = None,
+        assigned_to_name: Optional[str] = None,
     ) -> bool:
         """Update an existing annotation.
 
@@ -264,6 +275,8 @@ class TeamAnnotationStore:
             content: New content (optional)
             status: New status (optional)
             severity: New severity (optional)
+            assigned_to: User ID of the assignee (optional)
+            assigned_to_name: Username of the assignee (optional)
 
         Returns:
             True if updated successfully
@@ -276,6 +289,10 @@ class TeamAnnotationStore:
             metadata["status"] = status
         if severity:
             metadata["severity"] = severity
+        if assigned_to is not None:
+            metadata["assigned_to"] = assigned_to
+        if assigned_to_name is not None:
+            metadata["assigned_to_name"] = assigned_to_name
 
         # Get new embedding if content changed
         embedding = None

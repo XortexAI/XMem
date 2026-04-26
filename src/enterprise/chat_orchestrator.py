@@ -41,9 +41,33 @@ class EnterpriseChatOrchestrator:
 
     async def stream_chat(self, context: EnterpriseChatContext):
         """Yield NDJSON chunks for an enterprise chat response."""
-        relevant_annotations, manager_instructions, memory_context = (
-            await self._load_context(context)
-        )
+        logger.info("="*60)
+        logger.info("ENTERPRISE CHAT START")
+        logger.info("  user=%s, role=%s, can_annotate=%s",
+                     context.user.username, context.user.role,
+                     context.user.can_create_annotations)
+        logger.info("  project=%s, org=%s, repo=%s",
+                     context.project.project_id, context.project.org_id,
+                     context.project.repo)
+        logger.info("  query=%s", context.request.query[:200])
+        logger.info("="*60)
+
+        try:
+            relevant_annotations, manager_instructions, memory_context = (
+                await self._load_context(context)
+            )
+        except Exception as exc:
+            logger.error("ENTERPRISE CHAT: _load_context FAILED: %s", exc, exc_info=True)
+            yield self._event("error", error=f"Context loading failed: {exc}")
+            return
+
+        logger.info("ENTERPRISE CHAT: context loaded — "
+                     "annotations=%d, manager_instructions=%d, memory_sources=%d",
+                     len(relevant_annotations), len(manager_instructions),
+                     len(memory_context.sources))
+        if memory_context.error:
+            logger.warning("ENTERPRISE CHAT: memory context had error: %s",
+                           memory_context.error)
 
         enhanced_query = self._build_enhanced_query(
             context=context,
@@ -51,42 +75,86 @@ class EnterpriseChatOrchestrator:
             manager_instructions=manager_instructions,
             memory_context=memory_context,
         )
+        logger.debug("ENTERPRISE CHAT: enhanced_query (first 500 chars):\n%s",
+                      enhanced_query[:500])
 
         if relevant_annotations:
+            logger.info("ENTERPRISE CHAT: yielding %d annotations to client",
+                         len(relevant_annotations))
             yield self._event("annotations", annotations=relevant_annotations)
 
         if manager_instructions:
+            logger.info("ENTERPRISE CHAT: yielding %d manager instructions",
+                         len(manager_instructions))
             yield self._event(
                 "manager_instructions",
                 instructions=manager_instructions,
             )
 
         if memory_context.sources:
+            logger.info("ENTERPRISE CHAT: yielding %d memory sources",
+                         len(memory_context.sources))
             yield self._event("memory_sources", sources=memory_context.sources)
 
-        pipeline = self._get_code_pipeline(context)
-        answer_parts: List[str] = []
+        try:
+            pipeline = self._get_code_pipeline(context)
+            logger.info("ENTERPRISE CHAT: code pipeline obtained — %s",
+                         type(pipeline).__name__)
+        except Exception as exc:
+            logger.error("ENTERPRISE CHAT: _get_code_pipeline FAILED: %s",
+                          exc, exc_info=True)
+            yield self._event("error", error=f"Pipeline creation failed: {exc}")
+            return
 
-        async for chunk in pipeline.run_stream(
-            query=enhanced_query,
-            user_id=context.user.username,
-            repo=context.project.repo,
-            top_k=context.request.top_k,
-        ):
-            answer_parts.extend(self._extract_text_parts(chunk))
-            yield chunk
+        answer_parts: List[str] = []
+        chunk_count = 0
+
+        logger.info("ENTERPRISE CHAT: starting pipeline.run_stream(repo=%s, user=%s, top_k=%d)",
+                     context.project.repo, context.user.username,
+                     context.request.top_k)
+
+        try:
+            async for chunk in pipeline.run_stream(
+                query=enhanced_query,
+                user_id=context.user.username,
+                repo=context.project.repo,
+                top_k=context.request.top_k,
+            ):
+                chunk_count += 1
+                text_parts = self._extract_text_parts(chunk)
+                answer_parts.extend(text_parts)
+                if chunk_count <= 5 or chunk_count % 20 == 0:
+                    logger.debug("ENTERPRISE CHAT: chunk #%d (len=%d): %s",
+                                  chunk_count, len(chunk),
+                                  chunk[:200] if len(chunk) > 200 else chunk)
+                yield chunk
+        except Exception as exc:
+            logger.error("ENTERPRISE CHAT: pipeline.run_stream FAILED: %s",
+                          exc, exc_info=True)
+            yield self._event("error", error=f"Streaming failed: {exc}")
+            return
+
+        logger.info("ENTERPRISE CHAT: stream finished — %d chunks, %d answer chars",
+                     chunk_count, sum(len(p) for p in answer_parts))
 
         answer_text = "".join(answer_parts).strip()
+        logger.info("ENTERPRISE CHAT: answer_text length = %d", len(answer_text))
 
         annotation_task = None
         if context.user.can_create_annotations:
+            logger.info("ENTERPRISE CHAT: scheduling annotation extraction")
             annotation_task = asyncio.create_task(
                 self.annotation_service.extract_and_store(
                     context=context,
                     answer_text=answer_text,
                 )
             )
+        else:
+            logger.info("ENTERPRISE CHAT: skipping annotation extraction "
+                         "(can_create_annotations=%s)",
+                         context.user.can_create_annotations)
 
+        logger.info("ENTERPRISE CHAT: scheduling memory ingest")
         memory_task = asyncio.create_task(
             self.memory_service.ingest_conversation(
                 query=context.request.query,
@@ -97,31 +165,43 @@ class EnterpriseChatOrchestrator:
 
         if annotation_task is not None:
             try:
-                created_ids = await annotation_task
+                result = await annotation_task
+                created_ids, assigned_to_name = result if isinstance(result, tuple) else (result, "")
+                logger.info("ENTERPRISE CHAT: annotation extraction returned %d ids (assigned=%s)",
+                             len(created_ids) if created_ids else 0, assigned_to_name or "(none)")
                 if created_ids:
                     yield self._event(
                         "annotations_created",
                         count=len(created_ids),
                         ids=created_ids,
+                        assigned_to_name=assigned_to_name or None,
                     )
             except Exception as exc:
-                logger.warning("Enterprise annotation write routing failed: %s", exc)
+                logger.warning("Enterprise annotation write routing failed: %s",
+                               exc, exc_info=True)
 
         try:
             ingest_result = await memory_task
+            logger.info("ENTERPRISE CHAT: memory ingest result — success=%s, error=%s",
+                         ingest_result.success, ingest_result.error)
             if not ingest_result.success and ingest_result.error:
                 logger.debug(
                     "Enterprise memory ingest skipped/failed: %s",
                     ingest_result.error,
                 )
         except Exception as exc:
-            logger.warning("Enterprise memory write routing failed: %s", exc)
+            logger.warning("Enterprise memory write routing failed: %s",
+                           exc, exc_info=True)
+
+        logger.info("ENTERPRISE CHAT COMPLETE")
+        logger.info("="*60)
 
     async def _load_context(
         self,
         context: EnterpriseChatContext,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], EnterpriseMemoryContext]:
         req = context.request
+        logger.debug("ENTERPRISE CHAT: _load_context starting 3 concurrent tasks")
 
         annotations_task = asyncio.create_task(
             self._safe_search_annotations(context)
@@ -144,6 +224,11 @@ class EnterpriseChatOrchestrator:
             manager_task,
             memory_task,
         )
+
+        logger.debug("ENTERPRISE CHAT: _load_context complete — "
+                      "annotations=%d, instructions=%d, memory_sources=%d",
+                      len(annotations), len(instructions),
+                      len(memory_context.sources))
 
         return annotations, instructions, memory_context
 
@@ -182,7 +267,11 @@ class EnterpriseChatOrchestrator:
             return []
 
     def _get_code_pipeline(self, context: EnterpriseChatContext) -> Any:
+        logger.debug("ENTERPRISE CHAT: _get_code_pipeline(org=%s, repo=%s, project=%s)",
+                      context.project.org_id, context.project.repo,
+                      context.project.project_id)
         if self._code_pipeline_factory is not None:
+            logger.debug("ENTERPRISE CHAT: using custom code_pipeline_factory")
             return self._code_pipeline_factory(
                 context.project.org_id,
                 context.project.repo,
@@ -191,6 +280,7 @@ class EnterpriseChatOrchestrator:
 
         from src.api.dependencies import get_code_pipeline
 
+        logger.debug("ENTERPRISE CHAT: using default get_code_pipeline dependency")
         return get_code_pipeline(
             org_id=context.project.org_id,
             repo=context.project.repo,

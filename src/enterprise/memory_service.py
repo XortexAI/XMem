@@ -32,19 +32,23 @@ class EnterpriseMemoryService:
         top_k: int = 5,
     ) -> EnterpriseMemoryContext:
         """Retrieve user-scoped memory sources for enterprise chat context."""
+        logger.info("MEMORY SERVICE: fetch_relevant_memory — user=%s, top_k=%d, query=%s",
+                     user_id, top_k, query[:100])
         try:
             pipeline = self._get_retrieval_pipeline()
+            logger.debug("MEMORY SERVICE: retrieval pipeline obtained — %s",
+                          type(pipeline).__name__)
             result = await pipeline.run(
                 query=query,
                 user_id=user_id,
                 top_k=max(1, min(top_k, self.source_limit)),
             )
         except Exception as exc:
-            logger.warning("Enterprise memory retrieval failed: %s", exc)
+            logger.warning("Enterprise memory retrieval failed: %s", exc, exc_info=True)
             return EnterpriseMemoryContext(error=str(exc))
 
         sources = []
-        for source in (result.sources or [])[: self.source_limit]:
+        for source in (result.sources or [])[:self.source_limit]:
             sources.append({
                 "domain": source.domain,
                 "content": source.content,
@@ -52,6 +56,7 @@ class EnterpriseMemoryService:
                 "metadata": source.metadata,
             })
 
+        logger.info("MEMORY SERVICE: fetch_relevant_memory returned %d sources", len(sources))
         return EnterpriseMemoryContext(
             answer=result.answer or "",
             sources=sources,
@@ -68,7 +73,10 @@ class EnterpriseMemoryService:
         Code/project knowledge is handled by EnterpriseAnnotationService, so the
         memory ingest call disables code and snippet lanes when supported.
         """
+        logger.info("MEMORY SERVICE: ingest_conversation — user=%s, query_len=%d, answer_len=%d",
+                     user_id, len(query), len(answer_text))
         if not query.strip() and not answer_text.strip():
+            logger.info("MEMORY SERVICE: skipping ingest (empty conversation)")
             return EnterpriseIngestResult(success=False, error="empty conversation")
 
         try:

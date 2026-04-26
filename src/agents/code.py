@@ -97,6 +97,7 @@ class CodeAgent(BaseAgent):
                     annotation_type=ann_type,
                     severity=severity,
                     repo=ann_dict.get("repo"),
+                    assigned_to_name=ann_dict.get("assigned_to_name"),
                 ))
 
             return CodeAnnotationResult(annotations=annotations)

@@ -24,13 +24,22 @@ def run_welcome_script():
 
     try:
         # Use stdout directly to bypass some pip output capturing
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, welcome_file],
             check=False,
             timeout=20,
+            capture_output=True,
+            text=True,
         )
-    except Exception:
-        pass
+        # Print output so user can see it
+        if result.stdout:
+            print(result.stdout)
+        if result.stderr:
+            print(result.stderr)
+    except subprocess.TimeoutExpired:
+        print("[xmem] Welcome script timed out")
+    except Exception as e:
+        print(f"[xmem] Welcome script error: {e}")
 
 # Run it immediately when setup.py is loaded
 run_welcome_script()

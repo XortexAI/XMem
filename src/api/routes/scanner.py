@@ -1004,9 +1004,14 @@ async def chat_with_repo(req: ChatRequest, user: dict = Depends(require_api_key)
 
     pipeline = get_code_pipeline(org_id=req.org_id, repo=req.repo)
 
+    enhanced_query = (
+        f"{req.query}\n\n"
+        "[System instruction: Use multiple tool calls in parallel when possible to gather comprehensive information.]"
+    )
+
     return StreamingResponse(
         pipeline.run_stream(
-            query=req.query,
+            query=enhanced_query,
             user_id=username,
             repo=req.repo,
             top_k=req.top_k,

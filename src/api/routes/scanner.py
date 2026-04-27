@@ -244,6 +244,29 @@ def _scanner_chat_allowed(store, username: str, org_id: str, repo: str) -> Optio
     )
 
 
+def _list_github_branches(org: str, repo: str, pat: str = "") -> list[str]:
+    """Fetch branch names from a GitHub repo (up to 100)."""
+    path = f"/repos/{org}/{repo}/branches?per_page=100"
+    try:
+        data = _github_get_json(path, pat)
+        if isinstance(data, list):
+            return [b["name"] for b in data if isinstance(b, dict) and "name" in b]
+    except urllib.error.HTTPError as e:
+        logger.warning("Could not list branches for %s/%s: %s", org, repo, e)
+    except Exception as e:
+        logger.warning("Branch listing failed for %s/%s: %s", org, repo, e)
+    return []
+
+
+# In-memory cancellation flags for pause functionality.
+# Keys are job_id strings, values are True when a cancel is requested.
+_cancel_flags: Dict[str, bool] = {}
+
+
+class ScanCancelled(Exception):
+    pass
+
+
 def _can_reuse_index(
     org: str, repo: str, remote_sha: Optional[str],
 ) -> Tuple[bool, bool]:
@@ -287,8 +310,6 @@ def _run_phase1(job_id: str, username: str, started_at: float, org: str, repo: s
         embedding_dimension=settings.pinecone_dimension,
     )
     store.connect()
-    # Ensure vector and fulltext indexes are explicitly created
-    # so search indices exist even if Neo4j was freshly wiped.
     store.setup_schema()
 
     def _embed(text: str):
@@ -297,6 +318,8 @@ def _run_phase1(job_id: str, username: str, started_at: float, org: str, repo: s
     embedder = Embedder(summary_embed_fn=_embed)
     indexer = IndexerV1(org_id=org, store=store, embedder=embedder)
     def _progress(stats: dict):
+        if _cancel_flags.get(job_id):
+            raise ScanCancelled("Scan paused by user.")
         _persist_job(
             job_id, username, org, repo, branch, url, started_at,
             phase1_status="running",
@@ -360,6 +383,8 @@ def _run_phase2(job_id: str, username: str, started_at: float, org: str, repo: s
         llm_call=_llm_call
     )
     def _progress(stats: dict):
+        if _cancel_flags.get(job_id):
+            raise ScanCancelled("Scan paused by user.")
         _persist_job(
             job_id, username, org, repo, branch, url, started_at,
             phase1_status="complete",
@@ -419,6 +444,7 @@ async def _run_scan_pipeline(
     store = _get_code_store()
     started = store.get_scanner_job(job_id)
     started_at = started["started_at"] if started else time.time()
+    _cancel_flags.pop(job_id, None)
 
     try:
         result = await loop.run_in_executor(
@@ -431,6 +457,15 @@ async def _run_scan_pipeline(
             phase1_result=result,
         )
         logger.info("Phase 1 complete for %s/%s", org, repo)
+    except ScanCancelled:
+        logger.info("Phase 1 paused by user for %s/%s", org, repo)
+        _persist_job(
+            job_id, username, org, repo, branch, url, started_at,
+            phase1_status="paused",
+            phase2_status="pending",
+        )
+        _cancel_flags.pop(job_id, None)
+        return
     except Exception as e:
         logger.error("Phase 1 failed for %s/%s: %s", org, repo, e)
         _persist_job(
@@ -453,6 +488,16 @@ async def _run_scan_pipeline(
             phase2_result=enrich_result,
         )
         logger.info("Phase 2 complete for %s/%s", org, repo)
+    except ScanCancelled:
+        logger.info("Phase 2 paused by user for %s/%s", org, repo)
+        _persist_job(
+            job_id, username, org, repo, branch, url, started_at,
+            phase1_status="complete",
+            phase2_status="paused",
+            phase1_result=result,
+        )
+        _cancel_flags.pop(job_id, None)
+        return
     except Exception as e:
         logger.error("Phase 2 failed for %s/%s: %s", org, repo, e)
         _persist_job(
@@ -476,6 +521,7 @@ async def _run_phase2_pipeline_only(
     store = _get_code_store()
     started = store.get_scanner_job(job_id)
     started_at = started["started_at"] if started else time.time()
+    _cancel_flags.pop(job_id, None)
 
     try:
         enrich_result = await loop.run_in_executor(
@@ -489,6 +535,16 @@ async def _run_phase2_pipeline_only(
             phase2_result=enrich_result,
         )
         logger.info("Phase 2-only complete for %s/%s", org, repo)
+    except ScanCancelled:
+        logger.info("Phase 2-only paused by user for %s/%s", org, repo)
+        _persist_job(
+            job_id, username, org, repo, branch, url, started_at,
+            phase1_status="complete",
+            phase2_status="paused",
+            phase1_result=started.get("phase1_result") if started else None,
+        )
+        _cancel_flags.pop(job_id, None)
+        return
     except Exception as e:
         logger.error("Phase 2-only failed for %s/%s: %s", org, repo, e)
         _persist_job(
@@ -530,6 +586,85 @@ async def validate_url(req: ValidateUrlRequest, user: dict = Depends(require_api
         payload["estimates"] = estimates
 
     return JSONResponse(payload)
+
+
+@router.get(
+    "/branches",
+    summary="List branches for a GitHub repository",
+)
+async def list_branches(
+    github_url: str = Query(..., min_length=1),
+    pat: str = Query(default=""),
+    user: dict = Depends(require_api_key),
+):
+    try:
+        org, repo = _parse_github_url(github_url)
+    except ValueError as e:
+        return JSONResponse(
+            {"status": "error", "error": str(e)}, status_code=400,
+        )
+
+    loop = asyncio.get_running_loop()
+
+    info, branches = await asyncio.gather(
+        loop.run_in_executor(None, lambda: _check_github_repo(org, repo, pat)),
+        loop.run_in_executor(None, lambda: _list_github_branches(org, repo, pat)),
+    )
+
+    if not info.get("accessible"):
+        return JSONResponse({
+            "status": "error",
+            "error": "Repository is not accessible. It may be private or not exist.",
+        }, status_code=400)
+
+    default_branch = info.get("default_branch", "main")
+
+    if not branches:
+        branches = [default_branch]
+
+    return JSONResponse({
+        "status": "ok",
+        "branches": branches,
+        "default_branch": default_branch,
+    })
+
+
+class PauseScanRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+    org_id: str = Field(..., min_length=1)
+    repo: str = Field(..., min_length=1)
+
+
+@router.post("/pause", summary="Pause an in-progress scan")
+async def pause_scan(req: PauseScanRequest, user: dict = Depends(require_api_key)):
+    job_id = f"{req.username}:{req.org_id}:{req.repo}"
+    store = _get_code_store()
+    job = store.get_scanner_job(job_id)
+
+    if not job:
+        return JSONResponse(
+            {"status": "error", "error": "No scan job found for this repository."},
+            status_code=404,
+        )
+
+    p1 = job.get("phase1_status")
+    p2 = job.get("phase2_status")
+
+    if p1 not in ("running",) and p2 not in ("running",):
+        return JSONResponse(
+            {"status": "error", "error": "No active scan to pause."},
+            status_code=400,
+        )
+
+    _cancel_flags[job_id] = True
+    logger.info("Pause requested for job %s", job_id)
+
+    return JSONResponse({
+        "status": "ok",
+        "message": "Pause signal sent. The scan will stop at the next checkpoint.",
+        "phase1_status": "paused" if p1 == "running" else p1,
+        "phase2_status": "paused" if p2 == "running" else p2,
+    })
 
 
 @router.post("/scan", summary="Start scanning a GitHub repository")

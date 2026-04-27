@@ -170,7 +170,18 @@ def create_app() -> FastAPI:
     # ── Sentry debug endpoint ─────────────────────────────────────────
     @app.get("/sentry-debug", include_in_schema=False)
     async def sentry_debug():
-        division_by_zero = 1 / 0
+        """Intentionally raises an error to verify Sentry is capturing exceptions."""
+        try:
+            division_by_zero = 1 / 0
+        except ZeroDivisionError as exc:
+            from src.config.monitoring import capture_exception
+            capture_exception(exc)
+            return JSONResponse({
+                "status": "ok",
+                "message": "Sentry test error captured successfully. Check your Sentry dashboard.",
+                "error_type": "ZeroDivisionError",
+            })
+
 
     # ── Global exception handler ──────────────────────────────────────
     @app.exception_handler(Exception)

@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from src.api.dependencies import (
     mark_failed,
@@ -21,7 +21,9 @@ from src.api.dependencies import (
     set_startup_time,
 )
 from src.api.middleware import (
+    AnalyticsMiddleware,
     MaxBodySizeMiddleware,
+    PrometheusMiddleware,
     RequestContextMiddleware,
     SecurityHeadersMiddleware,
 )
@@ -70,9 +72,22 @@ async def _boot_pipelines() -> None:
         traceback.print_exc()
         mark_failed(str(exc))
 
+        # Report to Sentry
+        from src.config.monitoring import capture_exception
+        capture_exception(exc)
+
 
 def create_app() -> FastAPI:
     """Build and return the fully-configured FastAPI application."""
+
+    # ── Sentry (must be before app creation) ──────────────────────────
+    from src.config.monitoring import init_sentry
+    init_sentry()
+
+    # ── Analytics collector ───────────────────────────────────────────
+    if settings.enable_analytics:
+        from src.config.analytics import analytics
+        analytics.start()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -85,6 +100,10 @@ def create_app() -> FastAPI:
             _ingest_pipeline.close()
         if _retrieval_pipeline:
             _retrieval_pipeline.close()
+        # Stop analytics flush thread
+        if settings.enable_analytics:
+            from src.config.analytics import analytics as _analytics
+            _analytics.stop()
         logger.info("Pipelines shut down.")
 
     app = FastAPI(
@@ -107,8 +126,18 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(MaxBodySizeMiddleware)
+
+    # Prometheus metrics middleware
+    if settings.enable_prometheus:
+        app.add_middleware(PrometheusMiddleware)
+
+    # Analytics middleware (fire-and-forget)
+    if settings.enable_analytics:
+        app.add_middleware(AnalyticsMiddleware)
+
     app.add_middleware(RequestContextMiddleware)
 
+    # ── Routes ────────────────────────────────────────────────────────
     app.include_router(health_router)
     app.include_router(memory_scrape_router)
     app.include_router(memory_router)
@@ -119,10 +148,40 @@ def create_app() -> FastAPI:
     app.include_router(enterprise_router)
     app.include_router(telemetry_router)
 
+    # Admin dashboard routes
+    from src.api.routes.admin import router as admin_router
+    app.include_router(admin_router)
+
+    # Serve admin static assets (CSS, JS)
+    from pathlib import Path
+    from fastapi.staticfiles import StaticFiles
+    admin_static = Path(__file__).resolve().parent.parent.parent / "admin"
+    if admin_static.exists():
+        app.mount("/admin-assets", StaticFiles(directory=str(admin_static)), name="admin-static")
+
+    # ── Prometheus /metrics endpoint ──────────────────────────────────
+    if settings.enable_prometheus:
+        @app.get("/metrics", include_in_schema=False)
+        async def prometheus_metrics():
+            from src.config.metrics import metrics_endpoint_content
+            body, content_type = metrics_endpoint_content()
+            return Response(content=body, media_type=content_type)
+
+    # ── Sentry debug endpoint ─────────────────────────────────────────
+    @app.get("/sentry-debug", include_in_schema=False)
+    async def sentry_debug():
+        division_by_zero = 1 / 0
+
+    # ── Global exception handler ──────────────────────────────────────
     @app.exception_handler(Exception)
     async def _unhandled_exception(request: Request, exc: Exception):
         request_id = getattr(request.state, "request_id", None)
         logger.exception("Unhandled exception [%s]", request_id)
+
+        # Report to Sentry
+        from src.config.monitoring import capture_exception
+        capture_exception(exc)
+
         body = APIResponse(
             status=StatusEnum.ERROR, request_id=request_id, error="Internal server error.",
         )

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>XMem Admin — Monitoring Dashboard</title>
+<link rel="stylesheet" href="/admin-assets/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="login-screen" class="login-wrap">
+  <div class="login-box">
+    <h1>⚡ XMem Admin</h1>
+    <p>Monitoring &amp; Analytics Dashboard</p>
+    <input id="login-user" type="text" placeholder="Username" autocomplete="username">
+    <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+    <button onclick="login()">Sign In</button>
+    <div id="login-err" class="login-error"></div>
+  </div>
+</div>
+
+<!-- App -->
+<div class="app">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="logo">XMem Admin<span>Monitoring Dashboard</span></div>
+    <div class="nav-item active" data-page="overview" onclick="navigate('overview')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Overview
+    </div>
+    <div class="nav-item" data-page="logs" onclick="navigate('logs')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      Live Logs
+    </div>
+    <div class="nav-item" data-page="llm" onclick="navigate('llm')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1010 10A10 10 0 0012 2z"/><path d="M12 6v6l4 2"/></svg>
+      LLM Analytics
+    </div>
+    <div class="nav-item" data-page="github" onclick="navigate('github')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"/></svg>
+      GitHub Traffic
+    </div>
+    <div class="sidebar-footer">
+      <button onclick="logout()">↪ Sign Out</button>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main">
+
+    <!-- Overview Page -->
+    <div id="page-overview" class="page active">
+      <h2 style="margin-bottom:20px">Server Overview</h2>
+      <div class="cards">
+        <div class="card green"><div class="label">Uptime</div><div class="value" id="card-uptime">—</div></div>
+        <div class="card blue"><div class="label">Pipeline Status</div><div class="value" id="card-status">—</div></div>
+        <div class="card accent"><div class="label">Active Users (24h)</div><div class="value" id="card-users">—</div></div>
+        <div class="card orange"><div class="label">Environment</div><div class="value" id="card-env">—</div></div>
+      </div>
+      <div class="row">
+        <div class="panel">
+          <h3>Request Volume</h3>
+          <div class="chart-wrap"><canvas id="chart-hourly"></canvas></div>
+        </div>
+        <div class="panel">
+          <h3>API Endpoints (24h)</h3>
+          <table class="tbl">
+            <thead><tr><th>Method</th><th>Path</th><th>Calls</th><th>Avg Latency</th><th>Errors</th></tr></thead>
+            <tbody id="api-calls-body"><tr><td colspan="5" style="color:var(--text2)">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Logs Page -->
+    <div id="page-logs" class="page">
+      <h2 style="margin-bottom:20px">Live Logs <span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;margin-left:8px"></span></h2>
+      <div class="log-toolbar">
+        <select onchange="setLogFilter(this.value)">
+          <option value="ALL">All Levels</option>
+          <option value="INFO">INFO</option>
+          <option value="WARNING">WARNING</option>
+          <option value="ERROR">ERROR</option>
+          <option value="CRITICAL">CRITICAL</option>
+        </select>
+        <input type="text" placeholder="Search logs..." oninput="setLogSearch(this.value)">
+        <button class="btn-sm" id="btn-autoscroll" onclick="toggleAutoScroll()">⏸ Pause</button>
+        <button class="btn-sm" onclick="clearLogs()">🗑 Clear</button>
+      </div>
+      <div id="log-container"></div>
+    </div>
+
+    <!-- LLM Analytics Page -->
+    <div id="page-llm" class="page">
+      <h2 style="margin-bottom:20px">LLM Analytics</h2>
+      <div class="cards">
+        <div class="card accent"><div class="label">Total Tokens (7d)</div><div class="value" id="card-total-tokens">—</div></div>
+        <div class="card green"><div class="label">Input Tokens (7d)</div><div class="value" id="card-input-tokens">—</div></div>
+        <div class="card blue"><div class="label">Output Tokens (7d)</div><div class="value" id="card-output-tokens">—</div></div>
+        <div class="card orange"><div class="label">LLM Calls (7d)</div><div class="value" id="card-llm-calls">—</div></div>
+      </div>
+      <div class="row">
+        <div class="panel">
+          <h3>Daily LLM Usage</h3>
+          <div class="chart-wrap"><canvas id="chart-daily-llm"></canvas></div>
+        </div>
+        <div class="panel">
+          <h3>LLM Calls by Agent (24h)</h3>
+          <table class="tbl">
+            <thead><tr><th>Provider</th><th>Model</th><th>Agent</th><th>Calls</th><th>Tokens</th><th>Avg Latency</th><th>Errors</th></tr></thead>
+            <tbody id="llm-stats-body"><tr><td colspan="7" style="color:var(--text2)">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- GitHub Traffic Page -->
+    <div id="page-github" class="page">
+      <h2 style="margin-bottom:20px">GitHub Traffic</h2>
+      <div id="gh-error" class="login-error" style="margin-bottom:12px"></div>
+      <div class="cards">
+        <div class="card blue"><div class="label">Views (14d)</div><div class="value" id="gh-views">—</div></div>
+        <div class="card green"><div class="label">Unique Visitors</div><div class="value" id="gh-unique-views">—</div></div>
+        <div class="card accent"><div class="label">Clones (14d)</div><div class="value" id="gh-clones">—</div></div>
+        <div class="card orange"><div class="label">Stars</div><div class="value" id="gh-stars">—</div></div>
+      </div>
+      <div class="row">
+        <div class="panel">
+          <h3>Views &amp; Clones</h3>
+          <div class="chart-wrap"><canvas id="chart-github"></canvas></div>
+        </div>
+        <div class="panel">
+          <h3>Top Referrers</h3>
+          <table class="tbl">
+            <thead><tr><th>Referrer</th><th>Views</th><th>Uniques</th></tr></thead>
+            <tbody id="gh-referrers-body"><tr><td colspan="3" style="color:var(--text2)">Loading...</td></tr></tbody>
+          </table>
+          <h3 style="margin-top:20px">Popular Content</h3>
+          <table class="tbl">
+            <thead><tr><th>Path</th><th>Views</th><th>Uniques</th></tr></thead>
+            <tbody id="gh-paths-body"><tr><td colspan="3" style="color:var(--text2)">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script src="/admin-assets/app.js"></script>
+</body>
+</html>

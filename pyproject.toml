@@ -43,6 +43,8 @@ dependencies = [
     "python-jose[cryptography]>=3.3.0",
     "google-auth>=2.27.0",
     "google-auth-oauthlib>=1.2.0",
+    "sentry-sdk[fastapi]>=2.0.0",
+    "prometheus-client>=0.20.0",
 ]
 
 [project.optional-dependencies]

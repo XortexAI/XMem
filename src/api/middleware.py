@@ -5,6 +5,8 @@ Production middleware stack for the XMem API.
 - Request timing
 - Security headers (OWASP best-practice)
 - Body-size guard
+- Prometheus metrics collection
+- Fire-and-forget analytics
 """
 
 from __future__ import annotations
@@ -82,3 +84,77 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
                 },
             )
         return await call_next(request)
+
+
+class PrometheusMiddleware(BaseHTTPMiddleware):
+    """Collect HTTP request metrics for Prometheus."""
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint,
+    ) -> Response:
+        from src.config.metrics import METRICS
+
+        # Normalise path to avoid high-cardinality (collapse IDs)
+        path = request.url.path
+        method = request.method
+
+        METRICS.http_active_requests.inc()
+        start = time.perf_counter()
+
+        try:
+            response = await call_next(request)
+            elapsed = time.perf_counter() - start
+
+            METRICS.http_requests_total.labels(
+                method=method, path=path, status=response.status_code,
+            ).inc()
+            METRICS.http_request_duration.labels(
+                method=method, path=path,
+            ).observe(elapsed)
+
+            return response
+        except Exception:
+            elapsed = time.perf_counter() - start
+            METRICS.http_requests_total.labels(
+                method=method, path=path, status=500,
+            ).inc()
+            METRICS.http_request_duration.labels(
+                method=method, path=path,
+            ).observe(elapsed)
+            raise
+        finally:
+            METRICS.http_active_requests.dec()
+
+
+class AnalyticsMiddleware(BaseHTTPMiddleware):
+    """Fire-and-forget analytics tracking for every API request."""
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint,
+    ) -> Response:
+        from src.config.analytics import analytics
+
+        start = time.perf_counter()
+        response = await call_next(request)
+        elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+
+        # Extract user_id from request state (set by auth middleware)
+        user_id = ""
+        if hasattr(request.state, "user"):
+            user = getattr(request.state, "user", {})
+            if isinstance(user, dict):
+                user_id = user.get("id", user.get("username", ""))
+
+        request_id = getattr(request.state, "request_id", "")
+
+        # Fire and forget — this just appends to an in-memory deque
+        analytics.track_api_call(
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            latency_ms=elapsed_ms,
+            user_id=user_id,
+            request_id=request_id,
+        )
+
+        return response

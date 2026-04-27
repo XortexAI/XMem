@@ -249,6 +249,54 @@ class Settings(BaseSettings):
     )
 
     # =============================================================================
+    # Monitoring & Observability
+    # =============================================================================
+    environment: str = Field(
+        default="production",
+        description="Deployment environment: dev, staging, production"
+    )
+    sentry_dsn: Optional[str] = Field(
+        default=None,
+        description="Sentry DSN for error tracking (leave empty to disable)"
+    )
+    sentry_traces_sample_rate: float = Field(
+        default=1.0,
+        description="Sentry performance traces sample rate (0.0 to 1.0)"
+    )
+    sentry_profile_sample_rate: float = Field(
+        default=1.0,
+        description="Sentry profiling sample rate (0.0 to 1.0)"
+    )
+    sentry_server_name: Optional[str] = Field(
+        default=None,
+        description="Sentry server name for multi-instance identification"
+    )
+    enable_prometheus: bool = Field(
+        default=True,
+        description="Enable Prometheus /metrics endpoint"
+    )
+    enable_analytics: bool = Field(
+        default=True,
+        description="Enable fire-and-forget analytics collection to MongoDB"
+    )
+
+    # =============================================================================
+    # GitHub Integration (for traffic analytics on admin dashboard)
+    # =============================================================================
+    github_token: Optional[str] = Field(
+        default=None,
+        description="GitHub personal access token for traffic API"
+    )
+    github_repo_owner: str = Field(
+        default="xmemlabs",
+        description="GitHub repo owner/org"
+    )
+    github_repo_name: str = Field(
+        default="xmem",
+        description="GitHub repo name"
+    )
+
+    # =============================================================================
     # Authentication Configuration (Google OAuth + JWT)
     # =============================================================================
     google_client_id: Optional[str] = Field(

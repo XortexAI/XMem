@@ -1,0 +1,82 @@
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0a0f;--surface:#12121a;--surface2:#1a1a26;--border:#2a2a3a;--text:#e4e4f0;--text2:#8888a0;--accent:#6c5ce7;--accent2:#a29bfe;--green:#00cec9;--red:#ff6b6b;--orange:#fdcb6e;--blue:#74b9ff;--font:'Inter',system-ui,sans-serif}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh}
+/* Login */
+.login-wrap{display:flex;align-items:center;justify-content:center;min-height:100vh;background:radial-gradient(ellipse at 50% 0%,#1a1a3e 0%,var(--bg) 70%)}
+.login-box{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:40px;width:380px;text-align:center}
+.login-box h1{font-size:24px;margin-bottom:8px;background:linear-gradient(135deg,var(--accent),var(--green));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.login-box p{color:var(--text2);font-size:13px;margin-bottom:24px}
+.login-box input{width:100%;padding:12px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:12px;outline:none;transition:border .2s}
+.login-box input:focus{border-color:var(--accent)}
+.login-box button{width:100%;padding:12px;background:linear-gradient(135deg,var(--accent),#5a4bd1);border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:600;cursor:pointer;transition:opacity .2s}
+.login-box button:hover{opacity:.9}
+.login-error{color:var(--red);font-size:12px;margin-top:8px}
+/* Layout */
+.app{display:none;height:100vh;overflow:hidden}
+.sidebar{width:220px;background:var(--surface);border-right:1px solid var(--border);padding:16px 0;display:flex;flex-direction:column;position:fixed;height:100vh;z-index:10}
+.sidebar .logo{padding:0 20px 20px;font-size:18px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--green));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.sidebar .logo span{font-size:11px;color:var(--text2);display:block;-webkit-text-fill-color:var(--text2)}
+.nav-item{padding:10px 20px;font-size:13px;color:var(--text2);cursor:pointer;display:flex;align-items:center;gap:10px;transition:all .15s;border-left:3px solid transparent}
+.nav-item:hover{color:var(--text);background:var(--surface2)}
+.nav-item.active{color:var(--accent2);background:rgba(108,92,231,.08);border-left-color:var(--accent)}
+.nav-item svg{width:16px;height:16px;flex-shrink:0}
+.sidebar-footer{margin-top:auto;padding:16px 20px;border-top:1px solid var(--border)}
+.sidebar-footer button{background:none;border:1px solid var(--border);border-radius:6px;color:var(--text2);padding:8px 12px;font-size:12px;cursor:pointer;width:100%}
+.sidebar-footer button:hover{border-color:var(--red);color:var(--red)}
+.main{margin-left:220px;height:100vh;overflow-y:auto;padding:24px 32px}
+/* Cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
+.card .label{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.card .value{font-size:28px;font-weight:700}
+.card .sub{font-size:11px;color:var(--text2);margin-top:4px}
+.card.green .value{color:var(--green)}
+.card.blue .value{color:var(--blue)}
+.card.orange .value{color:var(--orange)}
+.card.accent .value{color:var(--accent2)}
+/* Panels */
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px}
+.panel h3{font-size:14px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.panel h3 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+/* Table */
+.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl th{text-align:left;padding:8px 12px;color:var(--text2);font-weight:500;border-bottom:1px solid var(--border);text-transform:uppercase;font-size:10px;letter-spacing:.5px}
+.tbl td{padding:8px 12px;border-bottom:1px solid rgba(42,42,58,.5)}
+.tbl tr:hover td{background:var(--surface2)}
+/* Logs */
+#log-container{height:500px;overflow-y:auto;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.7;background:var(--bg);border-radius:8px;padding:12px;scroll-behavior:smooth}
+.log-line{padding:1px 0;white-space:pre-wrap;word-break:break-all}
+.log-line .ts{color:var(--text2)}
+.log-line .lvl{font-weight:600;padding:1px 4px;border-radius:3px;font-size:10px}
+.log-line .lvl-INFO{color:var(--green)}
+.log-line .lvl-WARNING{color:var(--orange)}
+.log-line .lvl-ERROR{color:var(--red);background:rgba(255,107,107,.1)}
+.log-line .lvl-CRITICAL{color:#fff;background:var(--red)}
+.log-line .src{color:var(--blue)}
+/* Charts */
+.chart-wrap{height:220px;position:relative}
+canvas{width:100%!important;height:100%!important}
+/* Pages */
+.page{display:none}
+.page.active{display:block}
+/* Status badges */
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.badge-ok{background:rgba(0,206,201,.15);color:var(--green)}
+.badge-err{background:rgba(255,107,107,.15);color:var(--red)}
+.badge-warn{background:rgba(253,203,110,.15);color:var(--orange)}
+/* Row layout */
+.row{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media(max-width:900px){.row{grid-template-columns:1fr}}
+/* Scrollbar */
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--text2)}
+/* Log filter */
+.log-toolbar{display:flex;gap:8px;margin-bottom:12px;align-items:center}
+.log-toolbar select,.log-toolbar input{background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 10px;font-size:12px;outline:none}
+.log-toolbar input{flex:1}
+.log-toolbar .btn-sm{background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text2);padding:6px 12px;font-size:11px;cursor:pointer}
+.log-toolbar .btn-sm:hover{border-color:var(--accent);color:var(--accent2)}

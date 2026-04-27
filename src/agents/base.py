@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict
 from dataclasses import dataclass, field
 from langchain_core.language_models import BaseChatModel
+import time
 
 @dataclass
 class BaseAgent(ABC):
@@ -31,7 +32,10 @@ class BaseAgent(ABC):
         return messages
 
     async def _call_model(self, messages: list) -> str:
+        start = time.perf_counter()
         response = await self.model.ainvoke(messages)
+        elapsed = time.perf_counter() - start
+
         content = response.content
         if isinstance(content, list):
             # Gemini thinking models may return list of dicts like
@@ -45,4 +49,108 @@ class BaseAgent(ABC):
                 else:
                     parts.append(str(c))
             content = "\n".join(parts)
+
+        # ── Track LLM call metrics (fire-and-forget) ──────────────────
+        self._track_llm_call(response, elapsed)
+
         return content
+
+    def _track_llm_call(self, response: Any, elapsed: float) -> None:
+        """Extract token usage from LLM response and emit metrics + analytics."""
+        try:
+            # Extract model name and provider
+            model_name = getattr(self.model, "model", getattr(self.model, "model_name", "unknown"))
+            provider = self._detect_provider()
+
+            # Extract token usage from response metadata
+            usage = getattr(response, "usage_metadata", None) or {}
+            if isinstance(usage, dict):
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
+            else:
+                input_tokens = getattr(usage, "input_tokens", 0)
+                output_tokens = getattr(usage, "output_tokens", 0)
+                total_tokens = getattr(usage, "total_tokens", 0)
+
+            # Also check response_metadata for providers that put it there
+            resp_meta = getattr(response, "response_metadata", {})
+            if isinstance(resp_meta, dict) and not total_tokens:
+                token_usage = resp_meta.get("token_usage", resp_meta.get("usage", {}))
+                if isinstance(token_usage, dict):
+                    input_tokens = input_tokens or token_usage.get("prompt_tokens", 0)
+                    output_tokens = output_tokens or token_usage.get("completion_tokens", 0)
+                    total_tokens = total_tokens or token_usage.get("total_tokens", 0)
+
+            if not total_tokens:
+                total_tokens = input_tokens + output_tokens
+
+            # ── Prometheus metrics ────────────────────────────────────
+            try:
+                from src.config.metrics import METRICS
+                METRICS.llm_calls_total.labels(
+                    provider=provider, model=model_name, agent=self.name,
+                ).inc()
+                METRICS.llm_latency.labels(
+                    provider=provider, model=model_name, agent=self.name,
+                ).observe(elapsed)
+                if input_tokens:
+                    METRICS.llm_tokens_total.labels(
+                        provider=provider, model=model_name, agent=self.name, token_type="input",
+                    ).inc(input_tokens)
+                if output_tokens:
+                    METRICS.llm_tokens_total.labels(
+                        provider=provider, model=model_name, agent=self.name, token_type="output",
+                    ).inc(output_tokens)
+            except Exception:
+                pass
+
+            # ── Analytics (fire-and-forget) ───────────────────────────
+            try:
+                from src.config.analytics import analytics
+                analytics.track_llm_call(
+                    provider=provider,
+                    model=model_name,
+                    agent=self.name,
+                    latency_ms=round(elapsed * 1000, 2),
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                )
+            except Exception:
+                pass
+
+            # ── Sentry breadcrumb ─────────────────────────────────────
+            try:
+                from src.config.monitoring import add_breadcrumb
+                add_breadcrumb(
+                    message=f"LLM call: {self.name} → {model_name}",
+                    category="llm",
+                    data={
+                        "provider": provider,
+                        "model": model_name,
+                        "latency_ms": round(elapsed * 1000, 2),
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                    },
+                )
+            except Exception:
+                pass
+
+        except Exception:
+            pass  # never let tracking break the pipeline
+
+    def _detect_provider(self) -> str:
+        """Best-effort provider detection from the model instance."""
+        cls_name = type(self.model).__name__.lower()
+        if "gemini" in cls_name or "google" in cls_name:
+            return "gemini"
+        if "claude" in cls_name or "anthropic" in cls_name:
+            return "claude"
+        if "openai" in cls_name or "chatopen" in cls_name:
+            return "openai"
+        if "bedrock" in cls_name:
+            return "bedrock"
+        if "openrouter" in cls_name:
+            return "openrouter"
+        return "unknown"

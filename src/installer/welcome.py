@@ -19,13 +19,16 @@ import socket
 import ssl
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 API_URL = "https://api.xmem.in/telemetry/clone"
 
 AUTH_TOKEN_HASH = hashlib.sha256(b"xmem-clone-telemetry-key").hexdigest()
+
+# IST timezone (UTC+5:30)
+IST = timezone(timedelta(hours=5, minutes=30), "IST")
 
 
 def get_full_name() -> str:
@@ -127,7 +130,7 @@ def collect_user_details() -> dict:
     details["pythonVersion"] = platform.python_version()
     details["homeDir"] = os.path.expanduser("~")
     details["cwd"] = os.getcwd()
-    details["clonedAt"] = datetime.now(timezone.utc).isoformat()
+    details["clonedAt"] = datetime.now(IST).isoformat()
     
     return details
 

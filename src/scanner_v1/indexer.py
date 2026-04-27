@@ -35,6 +35,7 @@ Key differences vs v0:
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -47,6 +48,7 @@ from src.scanner_v1.ast_parser import (
     compute_content_hash,
 )
 from src.scanner_v1.git_ops import (
+    SUPPORTED_EXTENSIONS,
     clone_or_pull,
     get_diff,
     get_language,
@@ -131,6 +133,29 @@ class IndexerV1:
 
         # 1. Clone or pull.
         head_sha = clone_or_pull(repo_url, local_path, branch=branch, token=token)
+
+        # 1b. Validate the repo contains at least some supported source files.
+        all_files = list_all_files(local_path)
+        source_files = [f for f in all_files if not should_skip_file(f)]
+        if not source_files:
+            supported_langs = sorted(set(SUPPORTED_EXTENSIONS.values()))
+            supported_exts = sorted(SUPPORTED_EXTENSIONS.keys())
+            logger.warning(
+                "No supported source files in %s/%s. Cleaning up clone.",
+                self.org_id, repo_name,
+            )
+            shutil.rmtree(local_path, ignore_errors=True)
+            raise ValueError(
+                f"This repository has no files with supported languages. "
+                f"Supported: {', '.join(supported_langs)} "
+                f"(extensions: {', '.join(supported_exts)}). "
+                f"The cloned repo has been cleaned up."
+            )
+
+        logger.info(
+            "Language check passed: %d supported source files found",
+            len(source_files),
+        )
 
         # 2. Upsert Repository node BEFORE start_scan — start_scan MATCHes it.
         self.store.upsert_repository(self.org_id, repo_name, branch=branch)

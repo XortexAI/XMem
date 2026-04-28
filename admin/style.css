@@ -90,3 +90,9 @@ canvas{width:100%!important;height:100%!important}
 .log-toolbar input{flex:1}
 .log-toolbar .btn-sm{background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text2);padding:6px 12px;font-size:11px;cursor:pointer}
 .log-toolbar .btn-sm:hover{border-color:var(--accent);color:var(--accent2)}
+/* Log connection status */
+.log-status{padding:3px 10px;border-radius:12px;font-weight:500;font-family:var(--font)}
+.log-status-live{color:var(--green);background:rgba(0,206,201,.1)}
+.log-status-polling{color:var(--blue);background:rgba(116,185,255,.1)}
+.log-status-connecting,.log-status-reconnecting{color:var(--orange);background:rgba(253,203,110,.1)}
+.log-status-auth-error{color:var(--red);background:rgba(255,107,107,.1)}

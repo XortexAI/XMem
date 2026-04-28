@@ -94,7 +94,8 @@
         <input type="text" placeholder="Search logs..." oninput="setLogSearch(this.value)" style="min-width:150px">
         <button class="btn-sm" id="btn-autoscroll" onclick="toggleAutoScroll()">▶ Resume</button>
         <button class="btn-sm" onclick="clearLogs()">🗑 Clear</button>
-        <span id="log-stats" style="margin-left:auto;font-size:12px;color:var(--text2)"></span>
+        <span id="log-connection-status" class="log-status" style="margin-left:auto;font-size:11px"></span>
+        <span id="log-stats" style="font-size:12px;color:var(--text2);margin-left:12px"></span>
       </div>
       <div id="log-container"></div>
     </div>

@@ -476,9 +476,18 @@ async def server_metrics(request: Request, user: dict = Depends(_verify_admin_to
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.get("/api/logs/recent")
-async def recent_logs(request: Request, user: dict = Depends(_verify_admin_token)):
-    """Return the last N log entries from the ring buffer."""
-    return JSONResponse(list(_log_buffer))
+async def recent_logs(request: Request, user: dict = Depends(_verify_admin_token), since_id: int = -1):
+    """Return log entries from the ring buffer.
+
+    If ``since_id`` is provided, only entries with id > since_id are returned,
+    enabling efficient incremental HTTP polling as a fallback when WebSocket
+    connections are blocked by reverse proxies.
+    """
+    if since_id >= 0:
+        entries = [e for e in _log_buffer if e.get("id", -1) > since_id]
+    else:
+        entries = list(_log_buffer)
+    return JSONResponse(entries)
 
 
 @router.post("/api/analytics/test-llm-track")

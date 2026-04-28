@@ -168,18 +168,129 @@ async function loadGitHub() {
   document.getElementById('gh-paths-body').innerHTML = pathRows || '<tr><td colspan="3" style="color:var(--text2)">No data</td></tr>';
 }
 
-// ── Live Logs WebSocket ──────────────────────────────────────────
+// ── Live Logs — WebSocket with HTTP polling fallback ─────────────
+let _wsFailCount = 0;
+const _WS_MAX_FAILURES = 3;       // Switch to polling after this many WS failures
+let _wsBackoff = 3000;            // Current reconnect delay (grows exponentially)
+let _logMode = 'ws';              // 'ws' | 'poll'
+let _pollTimer = null;
+let _lastLogId = -1;              // Track highest log id for incremental polling
+const _POLL_INTERVAL_MS = 2000;   // Poll every 2 seconds
+
 function connectLogs() {
-  if (ws) ws.close();
+  // If we've exceeded max WS failures, switch to polling permanently
+  if (_wsFailCount >= _WS_MAX_FAILURES) {
+    if (_logMode !== 'poll') {
+      _logMode = 'poll';
+      console.warn('[logs] WebSocket unavailable — switching to HTTP polling');
+      _updateLogStatus('polling');
+      _startPolling();
+    }
+    return;
+  }
+
+  if (ws) { try { ws.close(); } catch(e) {} }
+
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/admin/ws/logs?token=${token}`);
+  _updateLogStatus('connecting');
+
+  try {
+    ws = new WebSocket(`${proto}://${location.host}/admin/ws/logs?token=${token}`);
+  } catch (e) {
+    _onWsFail();
+    return;
+  }
+
+  ws.onopen = () => {
+    _wsFailCount = 0;
+    _wsBackoff = 3000;
+    _logMode = 'ws';
+    _updateLogStatus('live');
+    console.info('[logs] WebSocket connected');
+  };
+
   ws.onmessage = (e) => {
     const d = JSON.parse(e.data);
     if (d.type === 'ping') return;
+    if (d.id !== undefined && d.id > _lastLogId) _lastLogId = d.id;
     appendLog(d);
   };
-  ws.onclose = () => { setTimeout(connectLogs, 3000); };
-  ws.onerror = () => {};
+
+  ws.onclose = (ev) => {
+    // Code 4001 = auth rejected, don't retry
+    if (ev.code === 4001) {
+      _updateLogStatus('auth-error');
+      return;
+    }
+    _onWsFail();
+  };
+
+  ws.onerror = () => {
+    // onerror is always followed by onclose, so we just suppress here
+  };
+}
+
+function _onWsFail() {
+  _wsFailCount++;
+  if (_wsFailCount >= _WS_MAX_FAILURES) {
+    // Switch to polling
+    connectLogs();
+  } else {
+    // Retry WebSocket with exponential backoff
+    _updateLogStatus('reconnecting');
+    const delay = Math.min(_wsBackoff, 30000);
+    _wsBackoff = Math.round(_wsBackoff * 1.5);
+    setTimeout(connectLogs, delay);
+  }
+}
+
+function _startPolling() {
+  _stopPolling();
+  // Fetch initial batch
+  _pollLogs();
+  // Then poll on interval
+  _pollTimer = setInterval(_pollLogs, _POLL_INTERVAL_MS);
+}
+
+function _stopPolling() {
+  if (_pollTimer) {
+    clearInterval(_pollTimer);
+    _pollTimer = null;
+  }
+}
+
+async function _pollLogs() {
+  try {
+    const url = `${API}/logs/recent?since_id=${_lastLogId}`;
+    const r = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${token}` },
+      credentials: 'include',
+    });
+    if (r.status === 401) { logout(); return; }
+    if (!r.ok) return;
+
+    const entries = await r.json();
+    for (const entry of entries) {
+      if (entry.id !== undefined && entry.id > _lastLogId) _lastLogId = entry.id;
+      appendLog(entry);
+    }
+  } catch (e) {
+    // Network error — silently retry next interval
+  }
+}
+
+function _updateLogStatus(state) {
+  const el = document.getElementById('log-connection-status');
+  if (!el) return;
+  const labels = {
+    'connecting':   '🔄 Connecting…',
+    'live':         '🟢 Live (WebSocket)',
+    'reconnecting': '🟡 Reconnecting…',
+    'polling':      '🔵 Live (HTTP polling)',
+    'auth-error':   '🔴 Auth failed',
+  };
+  el.textContent = labels[state] || state;
+  el.className = 'log-status log-status-' + state;
 }
 
 let _seenLogIds = new Set();

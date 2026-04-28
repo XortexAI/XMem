@@ -75,8 +75,18 @@ canvas{width:100%!important;height:100%!important}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 ::-webkit-scrollbar-thumb:hover{background:var(--text2)}
 /* Log filter */
-.log-toolbar{display:flex;gap:8px;margin-bottom:12px;align-items:center}
+.log-toolbar{display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap}
 .log-toolbar select,.log-toolbar input{background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 10px;font-size:12px;outline:none}
+.log-toolbar select:focus,.log-toolbar input:focus{border-color:var(--accent)}
+/* Log container improvements */
+#log-container::-webkit-scrollbar{width:8px}
+#log-container::-webkit-scrollbar-thumb{background:var(--surface2);border-radius:4px}
+.log-line{transition:background .1s}
+.log-line:hover{background:rgba(108,92,231,.05)}
+/* Button styles */
+.btn-sm{background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 12px;font-size:12px;cursor:pointer;transition:all .15s}
+.btn-sm:hover{background:var(--surface);border-color:var(--accent)}
+.btn-sm:active{transform:translateY(1px)}
 .log-toolbar input{flex:1}
 .log-toolbar .btn-sm{background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text2);padding:6px 12px;font-size:11px;cursor:pointer}
 .log-toolbar .btn-sm:hover{border-color:var(--accent);color:var(--accent2)}

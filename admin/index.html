@@ -78,16 +78,23 @@
     <div id="page-logs" class="page">
       <h2 style="margin-bottom:20px">Live Logs <span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;margin-left:8px"></span></h2>
       <div class="log-toolbar">
-        <select onchange="setLogFilter(this.value)">
+        <select onchange="setLogFilter(this.value)" title="Filter by log level">
           <option value="ALL">All Levels</option>
           <option value="INFO">INFO</option>
           <option value="WARNING">WARNING</option>
           <option value="ERROR">ERROR</option>
           <option value="CRITICAL">CRITICAL</option>
         </select>
-        <input type="text" placeholder="Search logs..." oninput="setLogSearch(this.value)">
-        <button class="btn-sm" id="btn-autoscroll" onclick="toggleAutoScroll()">⏸ Pause</button>
+        <select onchange="setLogRate(this.value)" title="Logs per second to display">
+          <option value="5">5/sec (slow)</option>
+          <option value="10" selected>10/sec (normal)</option>
+          <option value="30">30/sec (fast)</option>
+          <option value="100">100/sec (unlimited)</option>
+        </select>
+        <input type="text" placeholder="Search logs..." oninput="setLogSearch(this.value)" style="min-width:150px">
+        <button class="btn-sm" id="btn-autoscroll" onclick="toggleAutoScroll()">▶ Resume</button>
         <button class="btn-sm" onclick="clearLogs()">🗑 Clear</button>
+        <span id="log-stats" style="margin-left:auto;font-size:12px;color:var(--text2)"></span>
       </div>
       <div id="log-container"></div>
     </div>

@@ -34,6 +34,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
       Live Logs
     </div>
+    <div class="nav-item" data-page="terminal" onclick="navigate('terminal')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+      System Terminal
+    </div>
     <div class="nav-item" data-page="llm" onclick="navigate('llm')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1010 10A10 10 0 0012 2z"/><path d="M12 6v6l4 2"/></svg>
       LLM Analytics
@@ -98,6 +102,21 @@
         <span id="log-stats" style="font-size:12px;color:var(--text2);margin-left:12px"></span>
       </div>
       <div id="log-container"></div>
+    </div>
+
+    <!-- System Terminal Page -->
+    <div id="page-terminal" class="page">
+      <h2 style="margin-bottom:20px">System Terminal <span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;margin-left:8px"></span></h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:16px">Real-time output from <code style="background:var(--surface2);padding:2px 6px;border-radius:4px;font-size:11px">journalctl -u xmem -f</code> — direct from the OS journal</p>
+      <div class="log-toolbar">
+        <input type="text" placeholder="Filter output..." oninput="setTermSearch(this.value)" style="min-width:180px" id="term-search-input">
+        <button class="btn-sm" id="btn-term-autoscroll" onclick="toggleTermAutoScroll()">⏸ Auto-scroll ON</button>
+        <button class="btn-sm" onclick="clearTerminal()">🗑 Clear</button>
+        <button class="btn-sm" id="btn-term-reconnect" onclick="connectSystemLogs()" style="display:none">🔄 Reconnect</button>
+        <span id="term-connection-status" class="log-status" style="margin-left:auto;font-size:11px"></span>
+        <span id="term-line-count" style="font-size:12px;color:var(--text2);margin-left:12px"></span>
+      </div>
+      <div id="terminal-container"></div>
     </div>
 
     <!-- LLM Analytics Page -->

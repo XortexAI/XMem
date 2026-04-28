@@ -42,6 +42,7 @@ function showApp() {
   document.querySelector('.app').style.display = 'flex';
   navigate('overview');
   connectLogs();
+  connectSystemLogs();
   loadAll();
 }
 
@@ -57,6 +58,7 @@ function navigate(page) {
   if (page === 'overview') loadOverview();
   if (page === 'llm') loadLLM();
   if (page === 'github') loadGitHub();
+  if (page === 'terminal' && !_sysWs) connectSystemLogs();
 }
 
 // ── API helper ───────────────────────────────────────────────────
@@ -526,6 +528,160 @@ function formatCost(usd) {
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── System Terminal — journalctl direct pipe ────────────────────
+let _sysWs = null;
+let _termAutoScroll = true;
+let _termSearch = '';
+let _termLineCount = 0;
+let _termReconnectTimer = null;
+
+function connectSystemLogs() {
+  if (_sysWs) { try { _sysWs.close(); } catch(e) {} }
+  if (_termReconnectTimer) { clearTimeout(_termReconnectTimer); _termReconnectTimer = null; }
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  _updateTermStatus('connecting');
+
+  try {
+    _sysWs = new WebSocket(`${proto}://${location.host}/admin/ws/system-logs?token=${token}`);
+  } catch (e) {
+    _updateTermStatus('error');
+    _scheduleTermReconnect();
+    return;
+  }
+
+  _sysWs.onopen = () => {
+    _updateTermStatus('live');
+    document.getElementById('btn-term-reconnect').style.display = 'none';
+  };
+
+  _sysWs.onmessage = (e) => {
+    _appendTermLine(e.data);
+  };
+
+  _sysWs.onclose = (ev) => {
+    _sysWs = null;
+    if (ev.code === 4001) {
+      _updateTermStatus('auth-error');
+      return;
+    }
+    _updateTermStatus('disconnected');
+    document.getElementById('btn-term-reconnect').style.display = '';
+    _scheduleTermReconnect();
+  };
+
+  _sysWs.onerror = () => {};
+}
+
+function _scheduleTermReconnect() {
+  if (_termReconnectTimer) return;
+  _termReconnectTimer = setTimeout(() => {
+    _termReconnectTimer = null;
+    connectSystemLogs();
+  }, 5000);
+}
+
+function _updateTermStatus(state) {
+  const el = document.getElementById('term-connection-status');
+  if (!el) return;
+  const labels = {
+    'connecting':   '🔄 Connecting…',
+    'live':         '🟢 Live (journalctl -f)',
+    'disconnected': '🔴 Disconnected',
+    'error':        '🔴 Connection Error',
+    'auth-error':   '🔴 Auth Failed',
+  };
+  el.textContent = labels[state] || state;
+  el.className = 'log-status log-status-' + (state === 'live' ? 'live' : state === 'connecting' ? 'connecting' : 'auth-error');
+}
+
+function _parseJournalLine(raw) {
+  // journalctl short-iso format:
+  // 2026-04-28T18:30:00+0530 hostname xmem[1234]: actual message
+  const match = raw.match(/^(\S+)\s+(\S+)\s+(\S+?)(?:\[\d+\])?:\s*(.*)$/);
+  if (match) {
+    return { ts: match[1], host: match[2], service: match[3], msg: match[4] };
+  }
+  return { ts: '', host: '', service: '', msg: raw };
+}
+
+function _appendTermLine(raw) {
+  if (!raw && raw !== '') return;
+
+  // Apply search filter
+  if (_termSearch && !raw.toLowerCase().includes(_termSearch.toLowerCase())) return;
+
+  const container = document.getElementById('terminal-container');
+  if (!container) return;
+
+  const parsed = _parseJournalLine(raw);
+  const div = document.createElement('div');
+  div.className = 'term-line';
+
+  // Detect error/warning lines
+  const msgLower = (parsed.msg || '').toLowerCase();
+  if (msgLower.includes('error') || msgLower.includes('exception') || msgLower.includes('traceback') || msgLower.includes('critical')) {
+    div.classList.add('term-error');
+  } else if (msgLower.includes('warning') || msgLower.includes('warn')) {
+    div.classList.add('term-warning');
+  }
+
+  let msgHtml = escHtml(parsed.msg || raw);
+
+  // Highlight search term if present
+  if (_termSearch) {
+    const regex = new RegExp(`(${_termSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    msgHtml = msgHtml.replace(regex, '<span class="term-match">$1</span>');
+  }
+
+  if (parsed.ts) {
+    const shortTs = parsed.ts.length > 19 ? parsed.ts.substring(11, 19) : parsed.ts;
+    div.innerHTML = `<span class="term-ts">${escHtml(shortTs)}</span> <span class="term-host">${escHtml(parsed.host)}</span> <span class="term-service">${escHtml(parsed.service)}</span> <span class="term-msg">${msgHtml}</span>`;
+  } else {
+    div.innerHTML = `<span class="term-msg">${msgHtml}</span>`;
+  }
+
+  const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 50;
+  container.appendChild(div);
+  _termLineCount++;
+
+  // Keep max 2000 lines
+  while (container.children.length > 2000) {
+    container.removeChild(container.firstChild);
+  }
+
+  // Update line count
+  const countEl = document.getElementById('term-line-count');
+  if (countEl) countEl.textContent = `${_termLineCount} lines`;
+
+  // Auto-scroll
+  if (_termAutoScroll && wasAtBottom) {
+    container.scrollTop = container.scrollHeight;
+  }
+}
+
+function clearTerminal() {
+  const container = document.getElementById('terminal-container');
+  if (container) container.innerHTML = '';
+  _termLineCount = 0;
+  const countEl = document.getElementById('term-line-count');
+  if (countEl) countEl.textContent = '0 lines';
+}
+
+function toggleTermAutoScroll() {
+  _termAutoScroll = !_termAutoScroll;
+  const btn = document.getElementById('btn-term-autoscroll');
+  if (btn) btn.textContent = _termAutoScroll ? '⏸ Auto-scroll ON' : '▶ Auto-scroll OFF';
+  if (_termAutoScroll) {
+    const container = document.getElementById('terminal-container');
+    if (container) container.scrollTop = container.scrollHeight;
+  }
+}
+
+function setTermSearch(val) {
+  _termSearch = val;
 }
 
 // ── Init ─────────────────────────────────────────────────────────

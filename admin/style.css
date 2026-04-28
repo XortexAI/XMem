@@ -96,3 +96,16 @@ canvas{width:100%!important;height:100%!important}
 .log-status-polling{color:var(--blue);background:rgba(116,185,255,.1)}
 .log-status-connecting,.log-status-reconnecting{color:var(--orange);background:rgba(253,203,110,.1)}
 .log-status-auth-error{color:var(--red);background:rgba(255,107,107,.1)}
+/* System Terminal */
+#terminal-container{height:calc(100vh - 220px);min-height:400px;overflow-y:auto;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.65;background:#0c0c0c;border-radius:10px;padding:16px;scroll-behavior:smooth;border:1px solid #1a1a2e;position:relative}
+#terminal-container::before{content:'';position:absolute;top:0;left:0;right:0;bottom:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,255,0,.015) 2px,rgba(0,255,0,.015) 4px);pointer-events:none;border-radius:10px;z-index:1}
+.term-line{padding:1px 0;white-space:pre-wrap;word-break:break-all;color:#c8d6e5;position:relative;z-index:2}
+.term-line:hover{background:rgba(108,92,231,.08)}
+.term-line .term-ts{color:#636e72}
+.term-line .term-host{color:#6c5ce7}
+.term-line .term-service{color:#00cec9}
+.term-line .term-msg{color:#dfe6e9}
+.term-line.term-error .term-msg{color:#ff6b6b}
+.term-line.term-warning .term-msg{color:#fdcb6e}
+.term-line.term-highlight{background:rgba(0,206,201,.08)}
+.term-line .term-match{background:rgba(253,203,110,.3);border-radius:2px;padding:0 1px}

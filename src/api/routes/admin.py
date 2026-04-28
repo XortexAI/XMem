@@ -245,6 +245,113 @@ async def ws_live_logs(websocket: WebSocket):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# System Logs — journalctl subprocess streamed over WebSocket
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.websocket("/ws/system-logs")
+async def ws_system_logs(websocket: WebSocket):
+    """Stream `journalctl -u xmem -f` output directly to the browser.
+
+    This is far more reliable than the Python logging-handler approach because
+    it captures ALL service output (stdout, stderr, crashes, OOM kills, etc.)
+    directly from the OS journal.
+    """
+    await websocket.accept()
+
+    # Validate auth token from query param
+    token = websocket.query_params.get("token", "")
+    if token not in _admin_sessions:
+        await websocket.close(code=4001, reason="Not authenticated")
+        return
+
+    proc: Optional[asyncio.subprocess.Process] = None
+    try:
+        # Spawn journalctl as an async subprocess.
+        # -u xmem : only the xmem service
+        # -f      : follow (tail) mode
+        # -n 200  : show last 200 lines on connect for context
+        # --no-pager : disable pager
+        # -o short-iso : concise timestamp format
+        #
+        # Try without sudo first; if that fails (no access), retry with sudo.
+        journal_cmd = [
+            "journalctl", "-u", "xmem", "-f",
+            "-n", "200", "--no-pager", "-o", "short-iso",
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *journal_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        # Read first line; if stderr contains "permission" or process exits
+        # immediately, retry with sudo
+        try:
+            first_err = await asyncio.wait_for(proc.stderr.readline(), timeout=2)
+            err_text = first_err.decode("utf-8", errors="replace").lower()
+            if "permission" in err_text or "access" in err_text or "denied" in err_text:
+                proc.terminate()
+                await proc.wait()
+                proc = await asyncio.create_subprocess_exec(
+                    "sudo", *journal_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+        except asyncio.TimeoutError:
+            pass  # No error within 2s = it's working fine
+
+        # Stream stdout line-by-line to the WebSocket
+        async def _stream_to_ws():
+            assert proc and proc.stdout
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break  # Process exited
+                text = line.decode("utf-8", errors="replace").rstrip("\n")
+                try:
+                    await websocket.send_text(text)
+                except Exception:
+                    break
+
+        # Also listen for client disconnect / messages
+        async def _listen_client():
+            try:
+                while True:
+                    msg = await websocket.receive_text()
+                    # Client can send "ping" to keep alive
+                    if msg == "ping":
+                        await websocket.send_text("")
+            except WebSocketDisconnect:
+                pass
+            except Exception:
+                pass
+
+        # Run both concurrently — whichever finishes first cancels the other
+        stream_task = asyncio.create_task(_stream_to_ws())
+        listen_task = asyncio.create_task(_listen_client())
+        done, pending = await asyncio.wait(
+            [stream_task, listen_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+
+    except Exception as exc:
+        logger.error("System logs WebSocket error: %s", exc)
+        try:
+            await websocket.send_text(f"[ERROR] {exc}")
+        except Exception:
+            pass
+    finally:
+        # Always clean up the subprocess
+        if proc and proc.returncode is None:
+            try:
+                proc.terminate()
+                await asyncio.wait_for(proc.wait(), timeout=3)
+            except Exception:
+                proc.kill()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Gemini pricing (paid tier, per 1M tokens in USD)
 # ═══════════════════════════════════════════════════════════════════════════
 COST_TABLE: Dict[str, Dict[str, float]] = {

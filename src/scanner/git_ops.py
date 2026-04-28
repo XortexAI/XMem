@@ -107,8 +107,11 @@ def clone_repo(
 
 def pull_latest(local_path: str, branch: str = "main") -> str:
     """Pull the latest changes. Returns the new HEAD SHA."""
-    _run_git(["checkout", branch], cwd=local_path)
-    _run_git(["pull", "origin", branch], cwd=local_path, timeout=600)
+    # Fetch the branch first in case it's not tracked locally (e.g. repo was
+    # previously cloned with a different branch).
+    _run_git(["fetch", "origin", branch], cwd=local_path)
+    # Use -B to create/reset the local branch to track origin/<branch>
+    _run_git(["checkout", "-B", branch, f"origin/{branch}"], cwd=local_path)
     sha = get_head_sha(local_path)
     logger.info("Pulled latest in %s (HEAD=%s)", local_path, sha[:8])
     return sha

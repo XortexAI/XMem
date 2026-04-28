@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time as _time
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -513,7 +514,6 @@ class CodeRetrievalPipeline:
                 confidence=0.0,
             )
 
-        import time as _time
         total_start = _time.perf_counter()
 
         # ── Deterministic fast paths ──────────────────────────────────

@@ -173,9 +173,9 @@ class WebSocketLogHandler(logging.Handler):
 
         for ws in list(_ws_clients):
             try:
-                loop.call_soon_threadsafe(
-                    loop.create_task,
+                asyncio.run_coroutine_threadsafe(
                     _send_log_safe(ws, entry),
+                    loop
                 )
             except RuntimeError:
                 pass

@@ -196,9 +196,17 @@ def track_model_response(
     ``elapsed`` is wall-clock seconds.  Never raises.
     """
     try:
-        model_name = getattr(model, "model", getattr(model, "model_name", "unknown"))
+        # Extract model name directly or from a bound/wrapped model
+        model_name = getattr(model, "model", getattr(model, "model_name", None))
+        if not model_name and hasattr(model, "bound"):
+            model_name = getattr(model.bound, "model", getattr(model.bound, "model_name", "unknown"))
+        if not model_name:
+            model_name = "unknown"
 
         cls_name = type(model).__name__.lower()
+        if hasattr(model, "bound"):
+            cls_name += "_" + type(model.bound).__name__.lower()
+
         if "gemini" in cls_name or "google" in cls_name:
             provider = "gemini"
         elif "openai" in cls_name or "chatopen" in cls_name:
@@ -240,6 +248,12 @@ def track_model_response(
 
         if not total_tokens:
             total_tokens = input_tokens + output_tokens
+
+        # Fallback: if we still don't have a model name but we know it's Gemini,
+        # use the default from settings as a best guess
+        if model_name == "unknown" and provider == "gemini":
+            from src.config import settings
+            model_name = settings.gemini_model
 
         analytics.track_llm_call(
             provider=provider,

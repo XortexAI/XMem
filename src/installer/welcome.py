@@ -148,10 +148,16 @@ def safe_print(msg: str) -> None:
 def report_clone() -> None:
     """Send clone telemetry to the Xmem backend."""
     safe_print("\n[*] Welcome to XMem!\n")
-    
+
     # Collect details
     safe_print("[xmem] Collecting system info...")
     details = collect_user_details()
+
+    # Skip if this is the AWS deployment user
+    if details.get('username') == 'cnb':
+        safe_print("[xmem] Skipping telemetry for server deployment user.")
+        return
+
     user_info = details['username']
     if details.get('fullName'):
         user_info = f"{details['fullName']} ({details['username']})"

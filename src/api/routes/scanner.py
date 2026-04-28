@@ -686,6 +686,72 @@ async def pause_scan(req: PauseScanRequest, user: dict = Depends(require_api_key
     })
 
 
+class ResumeScanRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+    org_id: str = Field(..., min_length=1)
+    repo: str = Field(..., min_length=1)
+
+
+@router.post("/resume", summary="Resume a paused scan")
+async def resume_scan(req: ResumeScanRequest, user: dict = Depends(require_api_key)):
+    job_id = f"{req.username}:{req.org_id}:{req.repo}"
+    store = _get_code_store()
+    job = store.get_scanner_job(job_id)
+
+    if not job:
+        return JSONResponse(
+            {"status": "error", "error": "No scan job found for this repository."},
+            status_code=404,
+        )
+
+    p1 = job.get("phase1_status")
+    p2 = job.get("phase2_status")
+
+    if p1 != "paused" and p2 != "paused":
+        return JSONResponse(
+            {"status": "error", "error": "Scan is not paused."},
+            status_code=400,
+        )
+
+    url = job.get("url", "")
+    branch = job.get("branch", "main")
+    started_at = job.get("started_at", time.time())
+
+    if p1 == "paused":
+        store.upsert_scanner_job(
+            job_id=job_id, username=req.username, org=req.org_id, repo=req.repo,
+            branch=branch, url=url, phase1_status="running", phase2_status="pending",
+            started_at=started_at, error=None,
+        )
+        asyncio.create_task(
+            _run_scan_pipeline(job_id, req.username, req.org_id, req.repo, url, branch, ""),
+        )
+        logger.info("Resumed Phase 1 for %s/%s", req.org_id, req.repo)
+        return JSONResponse({
+            "status": "ok",
+            "message": "Scan resumed from Phase 1.",
+            "phase1_status": "running",
+            "phase2_status": "pending",
+        })
+
+    # p2 == "paused"
+    store.upsert_scanner_job(
+        job_id=job_id, username=req.username, org=req.org_id, repo=req.repo,
+        branch=branch, url=url, phase1_status="complete", phase2_status="running",
+        started_at=started_at, error=None,
+    )
+    asyncio.create_task(
+        _run_phase2_pipeline_only(job_id, req.username, req.org_id, req.repo, url, branch),
+    )
+    logger.info("Resumed Phase 2 for %s/%s", req.org_id, req.repo)
+    return JSONResponse({
+        "status": "ok",
+        "message": "Scan resumed from Phase 2.",
+        "phase1_status": "complete",
+        "phase2_status": "running",
+    })
+
+
 @router.post("/scan", summary="Start scanning a GitHub repository")
 async def start_scan(req: ScanRequest):
     try:

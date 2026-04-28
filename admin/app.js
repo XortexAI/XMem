@@ -1,14 +1,7 @@
 /* admin/app.js — Admin Dashboard SPA logic */
 const API = '/admin/api';
 let token = '';
-let ws = null;
-let logAutoScroll = false;  // Start paused by default so logs don't fly by
-let logFilter = 'ALL';
-let logSearch = '';
 let currentPage = 'overview';
-let _pendingLogs = [];      // Buffer for incoming logs
-let _logFlushInterval = null;  // Interval for flushing logs
-let _logsPerSecond = 10;    // Rate limit: max logs to render per second
 
 // ── Auth ─────────────────────────────────────────────────────────
 async function login() {
@@ -32,7 +25,7 @@ async function login() {
 function logout() {
   fetch(`${API}/logout`, {method:'POST', credentials:'include'});
   token = ''; localStorage.removeItem('xmem_admin_token');
-  if (ws) ws.close();
+  if (_sseSource) { _sseSource.close(); _sseSource = null; }
   document.getElementById('login-screen').style.display = '';
   document.querySelector('.app').style.display = 'none';
 }
@@ -41,7 +34,6 @@ function showApp() {
   document.getElementById('login-screen').style.display = 'none';
   document.querySelector('.app').style.display = 'flex';
   navigate('overview');
-  connectLogs();
   connectSystemLogs();
   loadAll();
 }
@@ -58,7 +50,7 @@ function navigate(page) {
   if (page === 'overview') loadOverview();
   if (page === 'llm') loadLLM();
   if (page === 'github') loadGitHub();
-  if (page === 'terminal' && !_sysWs) connectSystemLogs();
+  if (page === 'logs' && !_sseSource) connectSystemLogs();
 }
 
 // ── API helper ───────────────────────────────────────────────────
@@ -180,258 +172,213 @@ async function loadGitHub() {
   document.getElementById('gh-paths-body').innerHTML = pathRows || '<tr><td colspan="3" style="color:var(--text2)">No data</td></tr>';
 }
 
-// ── Live Logs — WebSocket with HTTP polling fallback ─────────────
-let _wsFailCount = 0;
-const _WS_MAX_FAILURES = 3;       // Switch to polling after this many WS failures
-let _wsBackoff = 3000;            // Current reconnect delay (grows exponentially)
-let _logMode = 'ws';              // 'ws' | 'poll'
-let _pollTimer = null;
-let _lastLogId = -1;              // Track highest log id for incremental polling
-const _POLL_INTERVAL_MS = 2000;   // Poll every 2 seconds
 
-function connectLogs() {
-  // If we've exceeded max WS failures, switch to polling permanently
-  if (_wsFailCount >= _WS_MAX_FAILURES) {
-    if (_logMode !== 'poll') {
-      _logMode = 'poll';
-      console.warn('[logs] WebSocket unavailable — switching to HTTP polling');
-      _updateLogStatus('polling');
-      _startPolling();
-    }
-    return;
-  }
+// ═════════════════════════════════════════════════════════════════
+// Live Logs — SSE (Server-Sent Events) + journalctl subprocess
+//
+// NO WebSocket needed. SSE works over plain HTTP and is NOT
+// blocked by nginx/reverse proxies. This is the only log approach.
+// ═════════════════════════════════════════════════════════════════
 
-  if (ws) { try { ws.close(); } catch(e) {} }
+let _sseSource = null;
+let _termAutoScroll = true;
+let _termSearch = '';
+let _termLineCount = 0;
+let _termReconnectTimer = null;
 
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  _updateLogStatus('connecting');
+function connectSystemLogs() {
+  // Close existing connection
+  if (_sseSource) { _sseSource.close(); _sseSource = null; }
+  if (_termReconnectTimer) { clearTimeout(_termReconnectTimer); _termReconnectTimer = null; }
 
-  try {
-    ws = new WebSocket(`${proto}://${location.host}/admin/ws/logs?token=${token}`);
-  } catch (e) {
-    _onWsFail();
-    return;
-  }
+  _updateTermStatus('connecting');
 
-  ws.onopen = () => {
-    _wsFailCount = 0;
-    _wsBackoff = 3000;
-    _logMode = 'ws';
-    _updateLogStatus('live');
-    console.info('[logs] WebSocket connected');
-  };
+  // Use EventSource with fetch-based approach for auth header support
+  // EventSource doesn't support custom headers, so we use fetch + ReadableStream
+  const url = `${API}/system-logs/stream`;
 
-  ws.onmessage = (e) => {
-    const d = JSON.parse(e.data);
-    if (d.type === 'ping') return;
-    if (d.id !== undefined && d.id > _lastLogId) _lastLogId = d.id;
-    appendLog(d);
-  };
-
-  ws.onclose = (ev) => {
-    // Code 4001 = auth rejected, don't retry
-    if (ev.code === 4001) {
-      _updateLogStatus('auth-error');
+  fetch(url, {
+    headers: { 'Authorization': `Bearer ${token}` },
+    credentials: 'include',
+  }).then(response => {
+    if (response.status === 401) { logout(); return; }
+    if (!response.ok) {
+      _updateTermStatus('error');
+      _scheduleTermReconnect();
       return;
     }
-    _onWsFail();
-  };
 
-  ws.onerror = () => {
-    // onerror is always followed by onclose, so we just suppress here
-  };
-}
+    _updateTermStatus('live');
+    const reconnectBtn = document.getElementById('btn-term-reconnect');
+    if (reconnectBtn) reconnectBtn.style.display = 'none';
 
-function _onWsFail() {
-  _wsFailCount++;
-  if (_wsFailCount >= _WS_MAX_FAILURES) {
-    // Switch to polling
-    connectLogs();
-  } else {
-    // Retry WebSocket with exponential backoff
-    _updateLogStatus('reconnecting');
-    const delay = Math.min(_wsBackoff, 30000);
-    _wsBackoff = Math.round(_wsBackoff * 1.5);
-    setTimeout(connectLogs, delay);
-  }
-}
+    // Store a flag so we can abort
+    const controller = new AbortController();
+    _sseSource = { close: () => controller.abort() };
 
-function _startPolling() {
-  _stopPolling();
-  // Fetch initial batch
-  _pollLogs();
-  // Then poll on interval
-  _pollTimer = setInterval(_pollLogs, _POLL_INTERVAL_MS);
-}
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-function _stopPolling() {
-  if (_pollTimer) {
-    clearInterval(_pollTimer);
-    _pollTimer = null;
-  }
-}
+    function readChunk() {
+      reader.read().then(({ done, value }) => {
+        if (done) {
+          _sseSource = null;
+          _updateTermStatus('disconnected');
+          const btn = document.getElementById('btn-term-reconnect');
+          if (btn) btn.style.display = '';
+          _scheduleTermReconnect();
+          return;
+        }
 
-async function _pollLogs() {
-  try {
-    const url = `${API}/logs/recent?since_id=${_lastLogId}`;
-    const r = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${token}` },
-      credentials: 'include',
-    });
-    if (r.status === 401) { logout(); return; }
-    if (!r.ok) return;
+        buffer += decoder.decode(value, { stream: true });
 
-    const entries = await r.json();
-    for (const entry of entries) {
-      if (entry.id !== undefined && entry.id > _lastLogId) _lastLogId = entry.id;
-      appendLog(entry);
+        // Parse SSE events from the buffer
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete last line in buffer
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const text = line.substring(6); // Remove "data: " prefix
+            _appendTermLine(text);
+          } else if (line.startsWith('event: error')) {
+            // Next data line will be the error message
+          } else if (line.startsWith(':keepalive')) {
+            // Ignore keepalive comments
+          }
+          // Ignore empty lines (SSE event separators)
+        }
+
+        readChunk();
+      }).catch(err => {
+        if (err.name === 'AbortError') return; // Intentional close
+        console.error('[logs] Stream error:', err);
+        _sseSource = null;
+        _updateTermStatus('disconnected');
+        const btn = document.getElementById('btn-term-reconnect');
+        if (btn) btn.style.display = '';
+        _scheduleTermReconnect();
+      });
     }
-  } catch (e) {
-    // Network error — silently retry next interval
-  }
+
+    readChunk();
+
+  }).catch(err => {
+    console.error('[logs] Fetch error:', err);
+    _updateTermStatus('error');
+    _scheduleTermReconnect();
+  });
 }
 
-function _updateLogStatus(state) {
-  const el = document.getElementById('log-connection-status');
+function _scheduleTermReconnect() {
+  if (_termReconnectTimer) return;
+  _termReconnectTimer = setTimeout(() => {
+    _termReconnectTimer = null;
+    connectSystemLogs();
+  }, 5000);
+}
+
+function _updateTermStatus(state) {
+  const el = document.getElementById('term-connection-status');
   if (!el) return;
   const labels = {
     'connecting':   '🔄 Connecting…',
-    'live':         '🟢 Live (WebSocket)',
-    'reconnecting': '🟡 Reconnecting…',
-    'polling':      '🔵 Live (HTTP polling)',
-    'auth-error':   '🔴 Auth failed',
+    'live':         '🟢 Live (SSE stream)',
+    'disconnected': '🔴 Disconnected',
+    'error':        '🔴 Connection Error',
+    'auth-error':   '🔴 Auth Failed',
   };
   el.textContent = labels[state] || state;
-  el.className = 'log-status log-status-' + state;
+  el.className = 'log-status log-status-' + (state === 'live' ? 'live' : state === 'connecting' ? 'connecting' : 'auth-error');
 }
 
-let _seenLogIds = new Set();
-let _pausedBuffer = [];
-
-// Rate-limited log rendering
-function appendLog(entry) {
-  // Always add to pending queue - rate limited flush will handle it
-  _pendingLogs.push(entry);
-
-  // Keep pending queue from growing too large (drop old logs if too many)
-  if (_pendingLogs.length > 2000) {
-    _pendingLogs = _pendingLogs.slice(-1500);  // Keep most recent 1500
+function _parseJournalLine(raw) {
+  // journalctl short-iso format:
+  // 2026-04-28T18:30:00+0530 hostname xmem[1234]: actual message
+  const match = raw.match(/^(\S+)\s+(\S+)\s+(\S+?)(?:\[\d+\])?:\s*(.*)$/);
+  if (match) {
+    return { ts: match[1], host: match[2], service: match[3], msg: match[4] };
   }
-
-  // Update stats display
-  const statsEl = document.getElementById('log-stats');
-  if (statsEl) {
-    statsEl.textContent = `queued: ${_pendingLogs.length}`;
-  }
+  return { ts: '', host: '', service: '', msg: raw };
 }
 
-// Flush logs at a controlled rate (called periodically)
-function _flushLogs() {
-  if (_pendingLogs.length === 0) return;
+function _appendTermLine(raw) {
+  if (!raw && raw !== '') return;
 
-  // Calculate how many logs to render this flush
-  const toRender = Math.min(_pendingLogs.length, Math.ceil(_logsPerSecond / 10));
-  const entries = _pendingLogs.splice(0, toRender);
+  // Apply search filter
+  if (_termSearch && !raw.toLowerCase().includes(_termSearch.toLowerCase())) return;
 
-  const container = document.getElementById('log-container');
+  const container = document.getElementById('terminal-container');
   if (!container) return;
 
-  // Build HTML for all entries at once (much faster than individual DOM updates)
-  const htmlFragments = [];
-  for (const entry of entries) {
-    // Skip if already seen
-    if (entry.id !== undefined && _seenLogIds.has(entry.id)) continue;
-    if (entry.id !== undefined) _seenLogIds.add(entry.id);
+  const parsed = _parseJournalLine(raw);
+  const div = document.createElement('div');
+  div.className = 'term-line';
 
-    // Apply filters
-    if (logFilter !== 'ALL' && entry.level !== logFilter) continue;
-    if (logSearch && !(entry.msg||'').toLowerCase().includes(logSearch.toLowerCase())
-        && !(entry.logger||'').toLowerCase().includes(logSearch.toLowerCase())) continue;
-
-    const ts = entry.ts ? entry.ts.split('T')[1]?.substring(0,8) || '' : '';
-    htmlFragments.push(`<div class="log-line"><span class="ts">${ts}</span> <span class="lvl lvl-${entry.level}">${entry.level}</span> <span class="src">${entry.logger||''}</span> ${escHtml(entry.msg||'')}</div>`);
+  // Detect error/warning lines
+  const msgLower = (parsed.msg || '').toLowerCase();
+  if (msgLower.includes('error') || msgLower.includes('exception') || msgLower.includes('traceback') || msgLower.includes('critical')) {
+    div.classList.add('term-error');
+  } else if (msgLower.includes('warning') || msgLower.includes('warn')) {
+    div.classList.add('term-warning');
   }
 
-  if (htmlFragments.length === 0) return;
+  let msgHtml = escHtml(parsed.msg || raw);
 
-  // Single DOM insert for all logs
+  // Highlight search term if present
+  if (_termSearch) {
+    const regex = new RegExp(`(${_termSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    msgHtml = msgHtml.replace(regex, '<span class="term-match">$1</span>');
+  }
+
+  if (parsed.ts) {
+    const shortTs = parsed.ts.length > 19 ? parsed.ts.substring(11, 19) : parsed.ts;
+    div.innerHTML = `<span class="term-ts">${escHtml(shortTs)}</span> <span class="term-host">${escHtml(parsed.host)}</span> <span class="term-service">${escHtml(parsed.service)}</span> <span class="term-msg">${msgHtml}</span>`;
+  } else {
+    div.innerHTML = `<span class="term-msg">${msgHtml}</span>`;
+  }
+
   const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 50;
-  container.insertAdjacentHTML('beforeend', htmlFragments.join(''));
+  container.appendChild(div);
+  _termLineCount++;
 
-  // Keep max 1000 lines
-  while (container.children.length > 1000) {
+  // Keep max 2000 lines
+  while (container.children.length > 2000) {
     container.removeChild(container.firstChild);
   }
 
-  // Auto-scroll only if we were already near bottom and not paused
-  if (logAutoScroll && wasAtBottom) {
+  // Update line count
+  const countEl = document.getElementById('term-line-count');
+  if (countEl) countEl.textContent = `${_termLineCount} lines`;
+
+  // Auto-scroll
+  if (_termAutoScroll && wasAtBottom) {
     container.scrollTop = container.scrollHeight;
   }
 }
 
-function clearLogs() {
-  const container = document.getElementById('log-container');
+function clearTerminal() {
+  const container = document.getElementById('terminal-container');
   if (container) container.innerHTML = '';
-  _seenLogIds.clear();
-  _pausedBuffer = [];
-  _pendingLogs = [];
+  _termLineCount = 0;
+  const countEl = document.getElementById('term-line-count');
+  if (countEl) countEl.textContent = '0 lines';
 }
 
-function setLogFilter(val) {
-  logFilter = val;
-  // Update button text to show active filter
-  const select = document.querySelector('#page-logs select');
-  if (select) select.value = val;
-}
-
-function setLogSearch(val) {
-  logSearch = val;
-}
-
-function toggleAutoScroll() {
-  logAutoScroll = !logAutoScroll;
-  const btn = document.getElementById('btn-autoscroll');
-  if (btn) btn.textContent = logAutoScroll ? '⏸ Pause' : '▶ Resume';
-
-  // If resuming, scroll to bottom immediately
-  if (logAutoScroll) {
-    const container = document.getElementById('log-container');
+function toggleTermAutoScroll() {
+  _termAutoScroll = !_termAutoScroll;
+  const btn = document.getElementById('btn-term-autoscroll');
+  if (btn) btn.textContent = _termAutoScroll ? '⏸ Auto-scroll ON' : '▶ Auto-scroll OFF';
+  if (_termAutoScroll) {
+    const container = document.getElementById('terminal-container');
     if (container) container.scrollTop = container.scrollHeight;
   }
 }
 
-function setLogRate(rate) {
-  _logsPerSecond = parseInt(rate, 10) || 10;
+function setTermSearch(val) {
+  _termSearch = val;
 }
 
-// Internal append for direct rendering (used by flush)
-function _appendLogInternal(entry) {
-  // Skip if already seen (by id)
-  if (entry.id !== undefined && _seenLogIds.has(entry.id)) return;
-  if (entry.id !== undefined) _seenLogIds.add(entry.id);
-
-  const container = document.getElementById('log-container');
-  if (!container) return;
-
-  // Filter
-  if (logFilter !== 'ALL' && entry.level !== logFilter) return;
-  if (logSearch && !(entry.msg||'').toLowerCase().includes(logSearch.toLowerCase())
-      && !(entry.logger||'').toLowerCase().includes(logSearch.toLowerCase())) return;
-
-  const div = document.createElement('div');
-  div.className = 'log-line';
-  const ts = entry.ts ? entry.ts.split('T')[1]?.substring(0,8) || '' : '';
-  div.innerHTML = `<span class="ts">${ts}</span> <span class="lvl lvl-${entry.level}">${entry.level}</span> <span class="src">${entry.logger||''}</span> ${escHtml(entry.msg||'')}`;
-  container.appendChild(div);
-
-  // Keep max 1000 lines
-  while (container.children.length > 1000) {
-    const first = container.firstChild;
-    if (first) container.removeChild(first);
-  }
-
-  if (logAutoScroll) container.scrollTop = container.scrollHeight;
-}
 
 // ── Charts (Chart.js) ────────────────────────────────────────────
 let hourlyChart, dailyLLMChart, ghChart;
@@ -530,170 +477,9 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// ── System Terminal — journalctl direct pipe ────────────────────
-let _sysWs = null;
-let _termAutoScroll = true;
-let _termSearch = '';
-let _termLineCount = 0;
-let _termReconnectTimer = null;
-
-function connectSystemLogs() {
-  if (_sysWs) { try { _sysWs.close(); } catch(e) {} }
-  if (_termReconnectTimer) { clearTimeout(_termReconnectTimer); _termReconnectTimer = null; }
-
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  _updateTermStatus('connecting');
-
-  try {
-    _sysWs = new WebSocket(`${proto}://${location.host}/admin/ws/system-logs?token=${token}`);
-  } catch (e) {
-    _updateTermStatus('error');
-    _scheduleTermReconnect();
-    return;
-  }
-
-  _sysWs.onopen = () => {
-    _updateTermStatus('live');
-    document.getElementById('btn-term-reconnect').style.display = 'none';
-  };
-
-  _sysWs.onmessage = (e) => {
-    _appendTermLine(e.data);
-  };
-
-  _sysWs.onclose = (ev) => {
-    _sysWs = null;
-    if (ev.code === 4001) {
-      _updateTermStatus('auth-error');
-      return;
-    }
-    _updateTermStatus('disconnected');
-    document.getElementById('btn-term-reconnect').style.display = '';
-    _scheduleTermReconnect();
-  };
-
-  _sysWs.onerror = () => {};
-}
-
-function _scheduleTermReconnect() {
-  if (_termReconnectTimer) return;
-  _termReconnectTimer = setTimeout(() => {
-    _termReconnectTimer = null;
-    connectSystemLogs();
-  }, 5000);
-}
-
-function _updateTermStatus(state) {
-  const el = document.getElementById('term-connection-status');
-  if (!el) return;
-  const labels = {
-    'connecting':   '🔄 Connecting…',
-    'live':         '🟢 Live (journalctl -f)',
-    'disconnected': '🔴 Disconnected',
-    'error':        '🔴 Connection Error',
-    'auth-error':   '🔴 Auth Failed',
-  };
-  el.textContent = labels[state] || state;
-  el.className = 'log-status log-status-' + (state === 'live' ? 'live' : state === 'connecting' ? 'connecting' : 'auth-error');
-}
-
-function _parseJournalLine(raw) {
-  // journalctl short-iso format:
-  // 2026-04-28T18:30:00+0530 hostname xmem[1234]: actual message
-  const match = raw.match(/^(\S+)\s+(\S+)\s+(\S+?)(?:\[\d+\])?:\s*(.*)$/);
-  if (match) {
-    return { ts: match[1], host: match[2], service: match[3], msg: match[4] };
-  }
-  return { ts: '', host: '', service: '', msg: raw };
-}
-
-function _appendTermLine(raw) {
-  if (!raw && raw !== '') return;
-
-  // Apply search filter
-  if (_termSearch && !raw.toLowerCase().includes(_termSearch.toLowerCase())) return;
-
-  const container = document.getElementById('terminal-container');
-  if (!container) return;
-
-  const parsed = _parseJournalLine(raw);
-  const div = document.createElement('div');
-  div.className = 'term-line';
-
-  // Detect error/warning lines
-  const msgLower = (parsed.msg || '').toLowerCase();
-  if (msgLower.includes('error') || msgLower.includes('exception') || msgLower.includes('traceback') || msgLower.includes('critical')) {
-    div.classList.add('term-error');
-  } else if (msgLower.includes('warning') || msgLower.includes('warn')) {
-    div.classList.add('term-warning');
-  }
-
-  let msgHtml = escHtml(parsed.msg || raw);
-
-  // Highlight search term if present
-  if (_termSearch) {
-    const regex = new RegExp(`(${_termSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    msgHtml = msgHtml.replace(regex, '<span class="term-match">$1</span>');
-  }
-
-  if (parsed.ts) {
-    const shortTs = parsed.ts.length > 19 ? parsed.ts.substring(11, 19) : parsed.ts;
-    div.innerHTML = `<span class="term-ts">${escHtml(shortTs)}</span> <span class="term-host">${escHtml(parsed.host)}</span> <span class="term-service">${escHtml(parsed.service)}</span> <span class="term-msg">${msgHtml}</span>`;
-  } else {
-    div.innerHTML = `<span class="term-msg">${msgHtml}</span>`;
-  }
-
-  const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 50;
-  container.appendChild(div);
-  _termLineCount++;
-
-  // Keep max 2000 lines
-  while (container.children.length > 2000) {
-    container.removeChild(container.firstChild);
-  }
-
-  // Update line count
-  const countEl = document.getElementById('term-line-count');
-  if (countEl) countEl.textContent = `${_termLineCount} lines`;
-
-  // Auto-scroll
-  if (_termAutoScroll && wasAtBottom) {
-    container.scrollTop = container.scrollHeight;
-  }
-}
-
-function clearTerminal() {
-  const container = document.getElementById('terminal-container');
-  if (container) container.innerHTML = '';
-  _termLineCount = 0;
-  const countEl = document.getElementById('term-line-count');
-  if (countEl) countEl.textContent = '0 lines';
-}
-
-function toggleTermAutoScroll() {
-  _termAutoScroll = !_termAutoScroll;
-  const btn = document.getElementById('btn-term-autoscroll');
-  if (btn) btn.textContent = _termAutoScroll ? '⏸ Auto-scroll ON' : '▶ Auto-scroll OFF';
-  if (_termAutoScroll) {
-    const container = document.getElementById('terminal-container');
-    if (container) container.scrollTop = container.scrollHeight;
-  }
-}
-
-function setTermSearch(val) {
-  _termSearch = val;
-}
-
 // ── Init ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   token = localStorage.getItem('xmem_admin_token') || '';
-
-  // Start the rate-limited log flush (100ms = 10fps max)
-  _logFlushInterval = setInterval(_flushLogs, 100);
-
-  // Update pause button to show correct initial state
-  const btn = document.getElementById('btn-autoscroll');
-  if (btn) btn.textContent = logAutoScroll ? '⏸ Pause' : '▶ Resume';
 
   if (token) {
     // Verify token still valid

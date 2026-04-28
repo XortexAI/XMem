@@ -31,12 +31,8 @@
       Overview
     </div>
     <div class="nav-item" data-page="logs" onclick="navigate('logs')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-      Live Logs
-    </div>
-    <div class="nav-item" data-page="terminal" onclick="navigate('terminal')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-      System Terminal
+      Live Logs
     </div>
     <div class="nav-item" data-page="llm" onclick="navigate('llm')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1010 10A10 10 0 0012 2z"/><path d="M12 6v6l4 2"/></svg>
@@ -78,36 +74,10 @@
       </div>
     </div>
 
-    <!-- Live Logs Page -->
+    <!-- Live Logs Page (SSE + journalctl) -->
     <div id="page-logs" class="page">
       <h2 style="margin-bottom:20px">Live Logs <span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;margin-left:8px"></span></h2>
-      <div class="log-toolbar">
-        <select onchange="setLogFilter(this.value)" title="Filter by log level">
-          <option value="ALL">All Levels</option>
-          <option value="INFO">INFO</option>
-          <option value="WARNING">WARNING</option>
-          <option value="ERROR">ERROR</option>
-          <option value="CRITICAL">CRITICAL</option>
-        </select>
-        <select onchange="setLogRate(this.value)" title="Logs per second to display">
-          <option value="5">5/sec (slow)</option>
-          <option value="10" selected>10/sec (normal)</option>
-          <option value="30">30/sec (fast)</option>
-          <option value="100">100/sec (unlimited)</option>
-        </select>
-        <input type="text" placeholder="Search logs..." oninput="setLogSearch(this.value)" style="min-width:150px">
-        <button class="btn-sm" id="btn-autoscroll" onclick="toggleAutoScroll()">▶ Resume</button>
-        <button class="btn-sm" onclick="clearLogs()">🗑 Clear</button>
-        <span id="log-connection-status" class="log-status" style="margin-left:auto;font-size:11px"></span>
-        <span id="log-stats" style="font-size:12px;color:var(--text2);margin-left:12px"></span>
-      </div>
-      <div id="log-container"></div>
-    </div>
-
-    <!-- System Terminal Page -->
-    <div id="page-terminal" class="page">
-      <h2 style="margin-bottom:20px">System Terminal <span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;margin-left:8px"></span></h2>
-      <p style="color:var(--text2);font-size:12px;margin-bottom:16px">Real-time output from <code style="background:var(--surface2);padding:2px 6px;border-radius:4px;font-size:11px">journalctl -u xmem -f</code> — direct from the OS journal</p>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:16px">Real-time output from <code style="background:var(--surface2);padding:2px 6px;border-radius:4px;font-size:11px">journalctl -u xmem -f</code> — streamed via SSE (no WebSocket needed)</p>
       <div class="log-toolbar">
         <input type="text" placeholder="Filter output..." oninput="setTermSearch(this.value)" style="min-width:180px" id="term-search-input">
         <button class="btn-sm" id="btn-term-autoscroll" onclick="toggleTermAutoScroll()">⏸ Auto-scroll ON</button>

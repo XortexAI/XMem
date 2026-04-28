@@ -29,6 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Query, Depends
@@ -430,6 +431,19 @@ def _persist_job(
     )
 
 
+def _cleanup_clone(org: str, repo: str) -> None:
+    """Remove the cloned repo from disk after scanning is done."""
+    import shutil
+    clone_path = Path("/tmp/xmem_repos_v1") / org / repo
+    if clone_path.exists():
+        size_mb = sum(f.stat().st_size for f in clone_path.rglob("*") if f.is_file()) / 1_048_576
+        shutil.rmtree(clone_path, ignore_errors=True)
+        logger.info("Cleaned up clone %s/%s (freed %.1f MB)", org, repo, size_mb)
+        org_dir = clone_path.parent
+        if org_dir.exists() and not any(org_dir.iterdir()):
+            org_dir.rmdir()
+
+
 async def _run_scan_pipeline(
     job_id: str,
     username: str,
@@ -474,6 +488,7 @@ async def _run_scan_pipeline(
             phase2_status="pending",
             error=str(e),
         )
+        _cleanup_clone(org, repo)
         return
 
     try:
@@ -507,6 +522,8 @@ async def _run_scan_pipeline(
             error=str(e),
             phase1_result=result,
         )
+
+    _cleanup_clone(org, repo)
 
 
 async def _run_phase2_pipeline_only(
@@ -554,6 +571,8 @@ async def _run_phase2_pipeline_only(
             error=str(e),
             phase1_result=started.get("phase1_result") if started else None,
         )
+
+    _cleanup_clone(org, repo)
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -1018,3 +1037,58 @@ async def chat_with_repo(req: ChatRequest, user: dict = Depends(require_api_key)
         ),
         media_type="application/x-ndjson",
     )
+
+
+@router.post("/cleanup-clones", summary="Delete cloned repos on disk that are no longer tracked in MongoDB")
+async def cleanup_clones(user: dict = Depends(require_api_key)):
+    import shutil
+    clone_root = Path("/tmp/xmem_repos_v1")
+    if not clone_root.exists():
+        return JSONResponse({"status": "ok", "message": "Clone directory does not exist.", "deleted": [], "kept": []})
+
+    store = _get_code_store()
+
+    tracked: set[tuple[str, str]] = set()
+    for col, org_field, repo_field in [
+        (store.scanner_jobs, "org", "repo"),
+        (store.scanner_user_repos, "github_org", "repo"),
+        (store.scan_runs, "org_id", "repo"),
+    ]:
+        for doc in col.find({}, {org_field: 1, repo_field: 1}):
+            o = doc.get(org_field)
+            r = doc.get(repo_field)
+            if o and r:
+                tracked.add((o.lower(), r.lower()))
+
+    deleted = []
+    kept = []
+    freed_bytes = 0
+
+    for org_dir in clone_root.iterdir():
+        if not org_dir.is_dir():
+            continue
+        for repo_dir in org_dir.iterdir():
+            if not repo_dir.is_dir():
+                continue
+            key = (org_dir.name.lower(), repo_dir.name.lower())
+            if key in tracked:
+                kept.append(f"{org_dir.name}/{repo_dir.name}")
+            else:
+                dir_size = sum(f.stat().st_size for f in repo_dir.rglob("*") if f.is_file())
+                freed_bytes += dir_size
+                shutil.rmtree(repo_dir, ignore_errors=True)
+                deleted.append(f"{org_dir.name}/{repo_dir.name}")
+                logger.info("Cleaned up orphan clone: %s/%s (%.1f MB)", org_dir.name, repo_dir.name, dir_size / 1_048_576)
+
+        if org_dir.exists() and not any(org_dir.iterdir()):
+            org_dir.rmdir()
+
+    freed_mb = round(freed_bytes / 1_048_576, 2)
+    logger.info("Clone cleanup done: deleted %d repos, kept %d, freed %.2f MB", len(deleted), len(kept), freed_mb)
+
+    return JSONResponse({
+        "status": "ok",
+        "deleted": deleted,
+        "kept": kept,
+        "freed_mb": freed_mb,
+    })

@@ -189,7 +189,7 @@ class Settings(BaseSettings):
         description="API server port"
     )
     cors_origins: List[str] = Field(
-        default=["http://localhost:3000", "http://localhost:5173"],
+        default=["http://localhost:3000", "http://localhost:5173", "https://api.xmem.in"],
         description="Allowed CORS origins"
     )
     rate_limit: int = Field(
@@ -288,11 +288,11 @@ class Settings(BaseSettings):
         description="GitHub personal access token for traffic API"
     )
     github_repo_owner: str = Field(
-        default="xmemlabs",
+        default="XortexAI",
         description="GitHub repo owner/org"
     )
     github_repo_name: str = Field(
-        default="xmem",
+        default="XMem",
         description="GitHub repo name"
     )
 

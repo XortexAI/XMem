@@ -402,8 +402,8 @@ function renderHourlyChart(data) {
     data: {
       labels,
       datasets: [
-        {label:'Requests',data:counts,backgroundColor:'rgba(124,108,240,0.5)',borderColor:'rgba(124,108,240,0.8)',borderWidth:1,borderRadius:6,borderSkipped:false},
-        {label:'Errors',data:errors,backgroundColor:'rgba(248,113,113,0.5)',borderColor:'rgba(248,113,113,0.8)',borderWidth:1,borderRadius:6,borderSkipped:false}
+        {label:'Requests',data:counts,backgroundColor:'rgba(0,255,0,0.5)',borderColor:'#00ff00',borderWidth:1,borderRadius:0},
+        {label:'Errors',data:errors,backgroundColor:'rgba(255,0,60,0.5)',borderColor:'#ff003c',borderWidth:1,borderRadius:0}
       ]
     },
     options: chartOpts('Hourly Request Volume (24h)')
@@ -423,8 +423,8 @@ function renderDailyLLMChart(data) {
     data: {
       labels,
       datasets: [
-        {label:'LLM Calls',data:calls,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,0.08)',fill:true,tension:.4,pointBackgroundColor:'#a78bfa'},
-        {label:'Tokens (÷100)',data:tokens.map(t=>Math.round(t/100)),borderColor:'#34d399',backgroundColor:'rgba(52,211,153,0.08)',fill:true,tension:.4,pointBackgroundColor:'#34d399'}
+        {label:'LLM Calls',data:calls,borderColor:'#00ff00',backgroundColor:'rgba(0,255,0,0.1)',fill:true,tension:0,pointBackgroundColor:'#00ff00',pointStyle:'rect'},
+        {label:'Tokens (÷100)',data:tokens.map(t=>Math.round(t/100)),borderColor:'#00ffff',backgroundColor:'rgba(0,255,255,0.1)',fill:true,tension:0,pointBackgroundColor:'#00ffff',pointStyle:'rect'}
       ]
     },
     options: chartOpts('Daily LLM Usage (7d)')
@@ -446,8 +446,8 @@ function renderGitHubChart(views, clones) {
     data: {
       labels,
       datasets: [
-        {label:'Views',data:viewCounts,borderColor:'#60a5fa',backgroundColor:'rgba(96,165,250,0.08)',fill:true,tension:.4,pointBackgroundColor:'#60a5fa'},
-        {label:'Clones',data:cloneCounts,borderColor:'#34d399',backgroundColor:'rgba(52,211,153,0.08)',fill:true,tension:.4,pointBackgroundColor:'#34d399'}
+        {label:'Views',data:viewCounts,borderColor:'#00ff00',backgroundColor:'rgba(0,255,0,0.1)',fill:true,tension:0,pointBackgroundColor:'#00ff00',pointStyle:'rect'},
+        {label:'Clones',data:cloneCounts,borderColor:'#00ffff',backgroundColor:'rgba(0,255,255,0.1)',fill:true,tension:0,pointBackgroundColor:'#00ffff',pointStyle:'rect'}
       ]
     },
     options: chartOpts('GitHub Traffic (14d)')
@@ -458,14 +458,14 @@ function chartOpts(title) {
   return {
     responsive:true, maintainAspectRatio:false,
     plugins:{
-      legend:{labels:{color:'#7878a0',font:{family:'Inter',size:11},usePointStyle:true,pointStyle:'circle',padding:16}},
+      legend:{labels:{color:'#00aa00',font:{family:'JetBrains Mono',size:10},usePointStyle:true,pointStyle:'rect',padding:16}},
       title:{display:false}
     },
     scales:{
-      x:{ticks:{color:'#50506e',font:{family:'Inter',size:10}},grid:{color:'rgba(30,30,58,0.4)',drawBorder:false}},
-      y:{ticks:{color:'#50506e',font:{family:'Inter',size:10}},grid:{color:'rgba(30,30,58,0.4)',drawBorder:false},beginAtZero:true}
+      x:{ticks:{color:'#006600',font:{family:'JetBrains Mono',size:10}},grid:{color:'rgba(0,51,0,0.8)',drawBorder:false}},
+      y:{ticks:{color:'#006600',font:{family:'JetBrains Mono',size:10}},grid:{color:'rgba(0,51,0,0.8)',drawBorder:false},beginAtZero:true}
     },
-    elements:{line:{borderWidth:2},point:{radius:3,hoverRadius:5}}
+    elements:{line:{borderWidth:1},point:{radius:2,hoverRadius:4}}
   };
 }
 

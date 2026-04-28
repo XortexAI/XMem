@@ -93,10 +93,10 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
 .sidebar-footer button svg{width:15px;height:15px}
 
 /* ── Main Content ─────────────────────────────────────────── */
-.main{margin-left:240px;height:100vh;overflow-y:auto;padding:0 32px 32px;background:var(--bg)}
+.main{margin-left:240px;height:100vh;overflow-y:auto;padding:0 32px 32px;background:var(--bg);min-width:0}
 
 /* ── Top Bar ──────────────────────────────────────────────── */
-.topbar{display:flex;align-items:center;justify-content:space-between;padding:20px 0 24px;position:sticky;top:0;background:var(--bg);z-index:5;border-bottom:1px solid var(--border);margin-bottom:24px}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:20px 0 24px;position:sticky;top:0;background:var(--bg);z-index:5;border-bottom:1px solid var(--border);margin-bottom:24px;width:100%}
 .topbar h2{font-size:22px;font-weight:600;letter-spacing:-.3px}
 .topbar-right{display:flex;align-items:center;gap:16px}
 .topbar-time{font-family:var(--mono);font-size:12px;color:var(--text2);background:var(--surface);padding:6px 14px;border-radius:20px;border:1px solid var(--border)}
@@ -146,7 +146,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
 canvas{width:100%!important;height:100%!important}
 
 /* ── Pages ────────────────────────────────────────────────── */
-.page{display:none;animation:fadeIn .3s ease}
+.page{display:none;animation:fadeIn .3s ease;width:100%}
 .page.active{display:block}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 

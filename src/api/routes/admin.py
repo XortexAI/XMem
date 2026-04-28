@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import time
+import itertools
 from collections import deque
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -24,6 +25,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from src.config import settings
+from src.config.analytics import analytics
 
 logger = logging.getLogger("xmem.api.admin")
 
@@ -137,6 +139,7 @@ async def admin_logout(request: Request):
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Ring buffer of recent log records
+_log_counter = itertools.count()
 _log_buffer: deque[Dict[str, Any]] = deque(maxlen=500)
 _ws_clients: List[WebSocket] = []
 
@@ -146,6 +149,7 @@ class WebSocketLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         entry = {
+            "id": next(_log_counter),
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
@@ -156,12 +160,23 @@ class WebSocketLogHandler(logging.Handler):
 
         _log_buffer.append(entry)
 
-        # Broadcast to all connected WebSocket clients (fire-and-forget)
+        # Broadcast to all connected WebSocket clients
+        # Use call_soon_threadsafe to safely schedule from any thread
         for ws in list(_ws_clients):
             try:
-                asyncio.get_event_loop().create_task(ws.send_json(entry))
+                loop = asyncio.get_event_loop()
+                loop.call_soon_threadsafe(lambda w=ws, e=entry: asyncio.create_task(_send_log_safe(w, e)))
             except Exception:
                 pass
+
+
+async def _send_log_safe(websocket: WebSocket, entry: Dict[str, Any]) -> None:
+    """Safely send a log entry to a WebSocket client."""
+    try:
+        await websocket.send_json(entry)
+    except Exception:
+        # Client disconnected or other error — ignore
+        pass
 
 
 # Install the handler on the root logger so ALL logs are captured
@@ -172,6 +187,11 @@ logging.getLogger().addHandler(_ws_log_handler)
 logging.getLogger("xmem").addHandler(_ws_log_handler)
 logging.getLogger("src").addHandler(_ws_log_handler)
 logging.getLogger("uvicorn").addHandler(_ws_log_handler)
+# Explicitly capture AWS boto3 logs at INFO level
+logging.getLogger("boto3").setLevel(logging.INFO)
+logging.getLogger("botocore").setLevel(logging.INFO)
+logging.getLogger("boto3").addHandler(_ws_log_handler)
+logging.getLogger("botocore").addHandler(_ws_log_handler)
 
 
 @router.websocket("/ws/logs")
@@ -188,17 +208,27 @@ async def ws_live_logs(websocket: WebSocket):
     _ws_clients.append(websocket)
 
     try:
+        last_id = -1
         # Send buffered logs first
         for entry in list(_log_buffer):
             await websocket.send_json(entry)
+            last_id = entry.get("id", -1)
 
-        # Keep alive — wait for disconnect
+        # Keep alive — wait for disconnect or new logs
         while True:
+            # Send any new logs that arrived in the buffer
+            for entry in list(_log_buffer):
+                entry_id = entry.get("id", -1)
+                if entry_id > last_id:
+                    await websocket.send_json(entry)
+                    last_id = entry_id
+
             try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                # Sleep briefly, check if client disconnected
+                await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
             except asyncio.TimeoutError:
-                # Send ping to keep connection alive
-                await websocket.send_json({"type": "ping"})
+                # Send ping to keep connection alive occasionally
+                pass
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -327,13 +357,18 @@ async def github_traffic(request: Request, user: dict = Depends(_verify_admin_to
     if not token:
         return JSONResponse({"error": "GITHUB_TOKEN not configured"}, status_code=400)
 
+    # Use Bearer format for OAuth tokens (Fine-grained PATs) or token format for classic PATs
+    # Try Bearer first (modern format), fallback logic handles both
     headers = {
-        "Authorization": f"token {token}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28",
     }
     base_url = f"https://api.github.com/repos/{owner}/{repo}"
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    # Create client without SSL_CERT_FILE env interference
+    ssl_context = httpx.create_ssl_context(verify=True, trust_env=False)
+    async with httpx.AsyncClient(timeout=15, verify=ssl_context) as client:
         results = {}
         endpoints = {
             "views": f"{base_url}/traffic/views",
@@ -348,11 +383,70 @@ async def github_traffic(request: Request, user: dict = Depends(_verify_admin_to
                 if resp.status_code == 200:
                     results[key] = resp.json()
                 else:
-                    results[key] = {"error": f"HTTP {resp.status_code}"}
+                    # Log detailed error for debugging
+                    error_body = resp.text[:500] if resp.text else "No response body"
+                    logger.warning(f"GitHub API {key} failed: HTTP {resp.status_code} - {error_body}")
+                    results[key] = {"error": f"HTTP {resp.status_code}", "details": error_body}
             except Exception as exc:
+                logger.exception(f"GitHub API {key} exception")
                 results[key] = {"error": str(exc)}
 
     return JSONResponse(results)
+
+
+@router.get("/api/github/config-debug")
+async def github_config_debug(request: Request, user: dict = Depends(_verify_admin_token)):
+    """Debug endpoint to verify GitHub settings are loaded (does not expose full token)."""
+    token = settings.github_token
+    owner = settings.github_repo_owner
+    repo = settings.github_repo_name
+
+    return JSONResponse({
+        "token_configured": bool(token),
+        "token_prefix": token[:10] + "..." if token and len(token) > 10 else "N/A",
+        "token_length": len(token) if token else 0,
+        "owner": owner,
+        "repo": repo,
+        "full_repo_path": f"{owner}/{repo}" if owner and repo else "N/A",
+        "hint": "If token shows as 'N/A', check your .env file has GITHUB_TOKEN and restart the server.",
+    })
+
+
+@router.get("/api/analytics/recent-events")
+async def analytics_recent_events(request: Request, user: dict = Depends(_verify_admin_token), limit: int = 20):
+    """Debug endpoint to see recent analytics events (including LLM calls)."""
+    try:
+        from pymongo import MongoClient
+        client = MongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=3000)
+        db = client[settings.mongodb_database]
+        collection = db["analytics"]
+
+        # Get recent events of all types
+        events = list(collection.find(
+            {},
+            {"_id": 0}
+        ).sort("ts", -1).limit(limit))
+
+        # Get counts by event type
+        event_counts = list(collection.aggregate([
+            {"$group": {"_id": "$event", "count": {"$sum": 1}}}
+        ]))
+
+        # Get recent LLM calls specifically
+        llm_calls = list(collection.find(
+            {"event": "llm_call"},
+            {"_id": 0}
+        ).sort("ts", -1).limit(10))
+
+        return JSONResponse({
+            "event_counts": _bson_safe(event_counts),
+            "recent_llm_calls": _bson_safe(llm_calls),
+            "recent_events": _bson_safe(events),
+            "analytics_queue_size": len(getattr(analytics, '_queue', [])),
+        })
+    except Exception as exc:
+        logger.exception("Failed to fetch recent events")
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -385,6 +479,31 @@ async def server_metrics(request: Request, user: dict = Depends(_verify_admin_to
 async def recent_logs(request: Request, user: dict = Depends(_verify_admin_token)):
     """Return the last N log entries from the ring buffer."""
     return JSONResponse(list(_log_buffer))
+
+
+@router.post("/api/analytics/test-llm-track")
+async def test_llm_track(request: Request, user: dict = Depends(_verify_admin_token)):
+    """Test endpoint to manually trigger an LLM analytics event."""
+    import random
+    test_providers = ["gemini", "openai", "claude", "bedrock"]
+    test_models = ["gemini-2.5-flash", "gpt-4.1-mini", "claude-3-5-sonnet", "nova-lite"]
+
+    analytics.track_llm_call(
+        provider=random.choice(test_providers),
+        model=random.choice(test_models),
+        agent="test-agent",
+        latency_ms=123.45,
+        input_tokens=random.randint(100, 500),
+        output_tokens=random.randint(50, 200),
+        total_tokens=random.randint(150, 700),
+        success=True,
+    )
+
+    return JSONResponse({
+        "status": "ok",
+        "message": "Test LLM call tracked. Check /admin/api/analytics/summary or /admin/api/analytics/recent-events to verify.",
+        "queue_size": len(getattr(analytics, '_queue', [])),
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════

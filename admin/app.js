@@ -2,10 +2,13 @@
 const API = '/admin/api';
 let token = '';
 let ws = null;
-let logAutoScroll = true;
+let logAutoScroll = false;  // Start paused by default so logs don't fly by
 let logFilter = 'ALL';
 let logSearch = '';
 let currentPage = 'overview';
+let _pendingLogs = [];      // Buffer for incoming logs
+let _logFlushInterval = null;  // Interval for flushing logs
+let _logsPerSecond = 10;    // Rate limit: max logs to render per second
 
 // ── Auth ─────────────────────────────────────────────────────────
 async function login() {
@@ -179,7 +182,111 @@ function connectLogs() {
   ws.onerror = () => {};
 }
 
+let _seenLogIds = new Set();
+let _pausedBuffer = [];
+
+// Rate-limited log rendering
 function appendLog(entry) {
+  // Always add to pending queue - rate limited flush will handle it
+  _pendingLogs.push(entry);
+
+  // Keep pending queue from growing too large (drop old logs if too many)
+  if (_pendingLogs.length > 2000) {
+    _pendingLogs = _pendingLogs.slice(-1500);  // Keep most recent 1500
+  }
+
+  // Update stats display
+  const statsEl = document.getElementById('log-stats');
+  if (statsEl) {
+    statsEl.textContent = `queued: ${_pendingLogs.length}`;
+  }
+}
+
+// Flush logs at a controlled rate (called periodically)
+function _flushLogs() {
+  if (_pendingLogs.length === 0) return;
+
+  // Calculate how many logs to render this flush
+  const toRender = Math.min(_pendingLogs.length, Math.ceil(_logsPerSecond / 10));
+  const entries = _pendingLogs.splice(0, toRender);
+
+  const container = document.getElementById('log-container');
+  if (!container) return;
+
+  // Build HTML for all entries at once (much faster than individual DOM updates)
+  const htmlFragments = [];
+  for (const entry of entries) {
+    // Skip if already seen
+    if (entry.id !== undefined && _seenLogIds.has(entry.id)) continue;
+    if (entry.id !== undefined) _seenLogIds.add(entry.id);
+
+    // Apply filters
+    if (logFilter !== 'ALL' && entry.level !== logFilter) continue;
+    if (logSearch && !(entry.msg||'').toLowerCase().includes(logSearch.toLowerCase())
+        && !(entry.logger||'').toLowerCase().includes(logSearch.toLowerCase())) continue;
+
+    const ts = entry.ts ? entry.ts.split('T')[1]?.substring(0,8) || '' : '';
+    htmlFragments.push(`<div class="log-line"><span class="ts">${ts}</span> <span class="lvl lvl-${entry.level}">${entry.level}</span> <span class="src">${entry.logger||''}</span> ${escHtml(entry.msg||'')}</div>`);
+  }
+
+  if (htmlFragments.length === 0) return;
+
+  // Single DOM insert for all logs
+  const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 50;
+  container.insertAdjacentHTML('beforeend', htmlFragments.join(''));
+
+  // Keep max 1000 lines
+  while (container.children.length > 1000) {
+    container.removeChild(container.firstChild);
+  }
+
+  // Auto-scroll only if we were already near bottom and not paused
+  if (logAutoScroll && wasAtBottom) {
+    container.scrollTop = container.scrollHeight;
+  }
+}
+
+function clearLogs() {
+  const container = document.getElementById('log-container');
+  if (container) container.innerHTML = '';
+  _seenLogIds.clear();
+  _pausedBuffer = [];
+  _pendingLogs = [];
+}
+
+function setLogFilter(val) {
+  logFilter = val;
+  // Update button text to show active filter
+  const select = document.querySelector('#page-logs select');
+  if (select) select.value = val;
+}
+
+function setLogSearch(val) {
+  logSearch = val;
+}
+
+function toggleAutoScroll() {
+  logAutoScroll = !logAutoScroll;
+  const btn = document.getElementById('btn-autoscroll');
+  if (btn) btn.textContent = logAutoScroll ? '⏸ Pause' : '▶ Resume';
+
+  // If resuming, scroll to bottom immediately
+  if (logAutoScroll) {
+    const container = document.getElementById('log-container');
+    if (container) container.scrollTop = container.scrollHeight;
+  }
+}
+
+function setLogRate(rate) {
+  _logsPerSecond = parseInt(rate, 10) || 10;
+}
+
+// Internal append for direct rendering (used by flush)
+function _appendLogInternal(entry) {
+  // Skip if already seen (by id)
+  if (entry.id !== undefined && _seenLogIds.has(entry.id)) return;
+  if (entry.id !== undefined) _seenLogIds.add(entry.id);
+
   const container = document.getElementById('log-container');
   if (!container) return;
 
@@ -195,18 +302,12 @@ function appendLog(entry) {
   container.appendChild(div);
 
   // Keep max 1000 lines
-  while (container.children.length > 1000) container.removeChild(container.firstChild);
+  while (container.children.length > 1000) {
+    const first = container.firstChild;
+    if (first) container.removeChild(first);
+  }
 
   if (logAutoScroll) container.scrollTop = container.scrollHeight;
-}
-
-function clearLogs() { document.getElementById('log-container').innerHTML = ''; }
-
-function setLogFilter(val) { logFilter = val; }
-function setLogSearch(val) { logSearch = val; }
-function toggleAutoScroll() {
-  logAutoScroll = !logAutoScroll;
-  document.getElementById('btn-autoscroll').textContent = logAutoScroll ? '⏸ Pause' : '▶ Resume';
 }
 
 // ── Charts (Chart.js) ────────────────────────────────────────────
@@ -302,6 +403,14 @@ function escHtml(s) {
 // ── Init ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   token = localStorage.getItem('xmem_admin_token') || '';
+
+  // Start the rate-limited log flush (100ms = 10fps max)
+  _logFlushInterval = setInterval(_flushLogs, 100);
+
+  // Update pause button to show correct initial state
+  const btn = document.getElementById('btn-autoscroll');
+  if (btn) btn.textContent = logAutoScroll ? '⏸ Pause' : '▶ Resume';
+
   if (token) {
     // Verify token still valid
     apiFetch('/server/metrics').then(r => {

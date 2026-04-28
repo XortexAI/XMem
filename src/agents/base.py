@@ -62,7 +62,11 @@ class BaseAgent(ABC):
             model_name = getattr(self.model, "model", getattr(self.model, "model_name", "unknown"))
             provider = self._detect_provider()
 
-            # Extract token usage from response metadata
+            input_tokens = 0
+            output_tokens = 0
+            total_tokens = 0
+
+            # Extract token usage from response metadata (LangChain standard)
             usage = getattr(response, "usage_metadata", None) or {}
             if isinstance(usage, dict):
                 input_tokens = usage.get("input_tokens", 0)
@@ -73,16 +77,25 @@ class BaseAgent(ABC):
                 output_tokens = getattr(usage, "output_tokens", 0)
                 total_tokens = getattr(usage, "total_tokens", 0)
 
-            # Also check response_metadata for providers that put it there
-            resp_meta = getattr(response, "response_metadata", {})
-            if isinstance(resp_meta, dict) and not total_tokens:
-                token_usage = resp_meta.get("token_usage", resp_meta.get("usage", {}))
+            # Check response_metadata for providers that put it there
+            resp_meta = getattr(response, "response_metadata", {}) or {}
+            if isinstance(resp_meta, dict):
+                # Try various token usage locations
+                token_usage = resp_meta.get("token_usage") or resp_meta.get("usage") or {}
                 if isinstance(token_usage, dict):
-                    input_tokens = input_tokens or token_usage.get("prompt_tokens", 0)
-                    output_tokens = output_tokens or token_usage.get("completion_tokens", 0)
+                    input_tokens = input_tokens or token_usage.get("prompt_tokens") or token_usage.get("input_tokens", 0)
+                    output_tokens = output_tokens or token_usage.get("completion_tokens") or token_usage.get("output_tokens", 0)
                     total_tokens = total_tokens or token_usage.get("total_tokens", 0)
 
-            if not total_tokens:
+                # Gemini puts usage in different location
+                if not total_tokens and "usage_metadata" in resp_meta:
+                    gemini_usage = resp_meta["usage_metadata"]
+                    if isinstance(gemini_usage, dict):
+                        input_tokens = input_tokens or gemini_usage.get("prompt_token_count", 0)
+                        output_tokens = output_tokens or gemini_usage.get("candidates_token_count", 0)
+                        total_tokens = total_tokens or gemini_usage.get("total_token_count", 0)
+
+            if not total_tokens and (input_tokens or output_tokens):
                 total_tokens = input_tokens + output_tokens
 
             # ── Prometheus metrics ────────────────────────────────────

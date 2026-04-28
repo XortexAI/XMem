@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>XMem Admin — Monitoring Dashboard</title>
+<title>XMem Admin — Command Center</title>
 <link rel="stylesheet" href="/admin-assets/style.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 </head>
@@ -11,13 +11,28 @@
 
 <!-- Login Screen -->
 <div id="login-screen" class="login-wrap">
+  <div class="login-glow"></div>
   <div class="login-box">
-    <h1>⚡ XMem Admin</h1>
-    <p>Monitoring &amp; Analytics Dashboard</p>
-    <input id="login-user" type="text" placeholder="Username" autocomplete="username">
-    <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
-    <button onclick="login()">Sign In</button>
-    <div id="login-err" class="login-error"></div>
+    <div class="login-logo">
+      <div class="login-logo-icon">⚡</div>
+      <h1>XMem</h1>
+      <p>Admin Command Center</p>
+    </div>
+    <div class="login-form">
+      <div class="input-group">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <input id="login-user" type="text" placeholder="Username" autocomplete="username">
+      </div>
+      <div class="input-group">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+      </div>
+      <button onclick="login()" id="login-btn">
+        <span>Sign In</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+      <div id="login-err" class="login-error"></div>
+    </div>
   </div>
 </div>
 
@@ -25,108 +40,176 @@
 <div class="app">
   <!-- Sidebar -->
   <div class="sidebar">
-    <div class="logo">XMem Admin<span>Monitoring Dashboard</span></div>
+    <div class="sidebar-brand">
+      <div class="brand-icon">⚡</div>
+      <div class="brand-text">
+        <span class="brand-name">XMem</span>
+        <span class="brand-sub">Command Center</span>
+      </div>
+    </div>
+
+    <div class="nav-section-label">MONITORING</div>
     <div class="nav-item active" data-page="overview" onclick="navigate('overview')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-      Overview
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      <span>Overview</span>
     </div>
     <div class="nav-item" data-page="logs" onclick="navigate('logs')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-      Live Logs
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+      <span>Live Terminal</span>
+      <div class="nav-badge pulse-badge"></div>
     </div>
+
+    <div class="nav-section-label">ANALYTICS</div>
     <div class="nav-item" data-page="llm" onclick="navigate('llm')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1010 10A10 10 0 0012 2z"/><path d="M12 6v6l4 2"/></svg>
-      LLM Analytics
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/><path d="M9 12l2 2 4-4"/></svg>
+      <span>LLM & Costs</span>
     </div>
     <div class="nav-item" data-page="github" onclick="navigate('github')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"/></svg>
-      GitHub Traffic
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"/></svg>
+      <span>GitHub</span>
     </div>
+
     <div class="sidebar-footer">
-      <button onclick="logout()">↪ Sign Out</button>
+      <div class="server-status" id="sidebar-status">
+        <div class="status-dot"></div>
+        <span>System Online</span>
+      </div>
+      <button onclick="logout()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        Sign Out
+      </button>
     </div>
   </div>
 
   <!-- Main Content -->
   <div class="main">
 
+    <!-- Top Bar -->
+    <div class="topbar">
+      <h2 id="page-title">Overview</h2>
+      <div class="topbar-right">
+        <div class="topbar-time" id="topbar-clock"></div>
+      </div>
+    </div>
+
     <!-- Overview Page -->
     <div id="page-overview" class="page active">
-      <h2 style="margin-bottom:20px">Server Overview</h2>
       <div class="cards">
-        <div class="card green"><div class="label">Uptime</div><div class="value" id="card-uptime">—</div></div>
-        <div class="card blue"><div class="label">Pipeline Status</div><div class="value" id="card-status">—</div></div>
-        <div class="card accent"><div class="label">Active Users (24h)</div><div class="value" id="card-users">—</div></div>
-        <div class="card orange"><div class="label">Environment</div><div class="value" id="card-env">—</div></div>
+        <div class="card card-glow-green">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+          <div class="card-content"><div class="label">Uptime</div><div class="value" id="card-uptime">—</div></div>
+        </div>
+        <div class="card card-glow-blue">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
+          <div class="card-content"><div class="label">Pipeline</div><div class="value" id="card-status">—</div></div>
+        </div>
+        <div class="card card-glow-purple">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></div>
+          <div class="card-content"><div class="label">Users (24h)</div><div class="value" id="card-users">—</div></div>
+        </div>
+        <div class="card card-glow-amber">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
+          <div class="card-content"><div class="label">Environment</div><div class="value" id="card-env">—</div></div>
+        </div>
       </div>
       <div class="row">
         <div class="panel">
-          <h3>Request Volume</h3>
+          <div class="panel-header"><h3>Request Volume</h3><span class="panel-badge">24h</span></div>
           <div class="chart-wrap"><canvas id="chart-hourly"></canvas></div>
         </div>
         <div class="panel">
-          <h3>API Endpoints (24h)</h3>
-          <table class="tbl">
-            <thead><tr><th>Method</th><th>Path</th><th>Calls</th><th>Avg Latency</th><th>Errors</th></tr></thead>
-            <tbody id="api-calls-body"><tr><td colspan="5" style="color:var(--text2)">Loading...</td></tr></tbody>
-          </table>
+          <div class="panel-header"><h3>API Endpoints</h3><span class="panel-badge">24h</span></div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead><tr><th>Method</th><th>Path</th><th>Calls</th><th>Latency</th><th>Errors</th></tr></thead>
+              <tbody id="api-calls-body"><tr><td colspan="5" class="empty-state">Loading...</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
 
     <!-- Live Logs Page (SSE + journalctl) -->
     <div id="page-logs" class="page">
-      <h2 style="margin-bottom:20px">Live Logs <span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;margin-left:8px"></span></h2>
-      <p style="color:var(--text2);font-size:12px;margin-bottom:16px">Real-time output from <code style="background:var(--surface2);padding:2px 6px;border-radius:4px;font-size:11px">journalctl -u xmem -f</code> — streamed via SSE (no WebSocket needed)</p>
+      <div class="terminal-header">
+        <div class="terminal-dots"><span></span><span></span><span></span></div>
+        <div class="terminal-title">journalctl -u xmem -f</div>
+        <div id="term-connection-status" class="log-status"></div>
+      </div>
       <div class="log-toolbar">
-        <input type="text" placeholder="Filter output..." oninput="setTermSearch(this.value)" style="min-width:180px" id="term-search-input">
-        <button class="btn-sm" id="btn-term-autoscroll" onclick="toggleTermAutoScroll()">⏸ Auto-scroll ON</button>
-        <button class="btn-sm" onclick="clearTerminal()">🗑 Clear</button>
-        <button class="btn-sm" id="btn-term-reconnect" onclick="connectSystemLogs()" style="display:none">🔄 Reconnect</button>
-        <span id="term-connection-status" class="log-status" style="margin-left:auto;font-size:11px"></span>
-        <span id="term-line-count" style="font-size:12px;color:var(--text2);margin-left:12px"></span>
+        <div class="search-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" placeholder="Filter output..." oninput="setTermSearch(this.value)" id="term-search-input">
+        </div>
+        <button class="toolbar-btn" id="btn-term-autoscroll" onclick="toggleTermAutoScroll()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+          Auto-scroll
+        </button>
+        <button class="toolbar-btn" onclick="clearTerminal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+          Clear
+        </button>
+        <button class="toolbar-btn" id="btn-term-reconnect" onclick="connectSystemLogs()" style="display:none">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+          Reconnect
+        </button>
+        <span id="term-line-count" class="line-counter"></span>
       </div>
       <div id="terminal-container"></div>
     </div>
 
     <!-- LLM Analytics Page -->
     <div id="page-llm" class="page">
-      <h2 style="margin-bottom:20px">LLM Analytics</h2>
       <div class="cards">
-        <div class="card accent"><div class="label">Total Tokens (7d)</div><div class="value" id="card-total-tokens">—</div></div>
-        <div class="card green"><div class="label">Input Tokens (7d)</div><div class="value" id="card-input-tokens">—</div></div>
-        <div class="card blue"><div class="label">Output Tokens (7d)</div><div class="value" id="card-output-tokens">—</div></div>
-        <div class="card orange"><div class="label">LLM Calls (7d)</div><div class="value" id="card-llm-calls">—</div></div>
+        <div class="card card-glow-purple">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></div>
+          <div class="card-content"><div class="label">Total Tokens (7d)</div><div class="value" id="card-total-tokens">—</div></div>
+        </div>
+        <div class="card card-glow-green">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+          <div class="card-content"><div class="label">Input Tokens (7d)</div><div class="value" id="card-input-tokens">—</div></div>
+        </div>
+        <div class="card card-glow-blue">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></div>
+          <div class="card-content"><div class="label">Output Tokens (7d)</div><div class="value" id="card-output-tokens">—</div></div>
+        </div>
+        <div class="card card-glow-amber">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg></div>
+          <div class="card-content"><div class="label">LLM Calls (7d)</div><div class="value" id="card-llm-calls">—</div></div>
+        </div>
       </div>
 
-      <!-- Cost Summary -->
-      <div class="cards" style="margin-top:8px">
-        <div class="card" style="background:linear-gradient(135deg,#1e3a5f 0%,#0d1b2a 100%);border:1px solid #2196f3">
-          <div class="label" style="color:#90caf9">Estimated Cost (7d)</div>
-          <div class="value" style="color:#4fc3f7;font-size:28px" id="card-total-cost">$0.00</div>
+      <!-- Cost Hero Card -->
+      <div class="cost-hero">
+        <div class="cost-hero-inner">
+          <div class="cost-label">Estimated Cost (7d)</div>
+          <div class="cost-value" id="card-total-cost">$0.00</div>
+          <div class="cost-sub">Based on Gemini API pricing</div>
         </div>
       </div>
 
       <div class="row">
         <div class="panel">
-          <h3>Daily LLM Usage</h3>
+          <div class="panel-header"><h3>Daily LLM Usage</h3><span class="panel-badge">7d</span></div>
           <div class="chart-wrap"><canvas id="chart-daily-llm"></canvas></div>
         </div>
         <div class="panel">
-          <h3>Cost Breakdown by Model (7d)</h3>
-          <table class="tbl">
-            <thead><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Cost (USD)</th></tr></thead>
-            <tbody id="cost-breakdown-body"><tr><td colspan="5" style="color:var(--text2)">Loading...</td></tr></tbody>
-          </table>
+          <div class="panel-header"><h3>Cost by Model</h3><span class="panel-badge">7d</span></div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead><tr><th>Model</th><th>Calls</th><th>In Tokens</th><th>Out Tokens</th><th>Cost</th></tr></thead>
+              <tbody id="cost-breakdown-body"><tr><td colspan="5" class="empty-state">Loading...</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </div>
 
-      <div class="row" style="margin-top:16px">
-        <div class="panel" style="flex:1">
-          <h3>LLM Calls by Agent (24h)</h3>
+      <div class="panel" style="margin-top:4px">
+        <div class="panel-header"><h3>LLM Calls by Agent</h3><span class="panel-badge">24h</span></div>
+        <div class="table-wrap">
           <table class="tbl">
-            <thead><tr><th>Provider</th><th>Model</th><th>Agent</th><th>Calls</th><th>Tokens</th><th>Cost</th><th>Avg Latency</th><th>Errors</th></tr></thead>
-            <tbody id="llm-stats-body"><tr><td colspan="8" style="color:var(--text2)">Loading...</td></tr></tbody>
+            <thead><tr><th>Provider</th><th>Model</th><th>Agent</th><th>Calls</th><th>Tokens</th><th>Cost</th><th>Latency</th><th>Errors</th></tr></thead>
+            <tbody id="llm-stats-body"><tr><td colspan="8" class="empty-state">Loading...</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -134,30 +217,45 @@
 
     <!-- GitHub Traffic Page -->
     <div id="page-github" class="page">
-      <h2 style="margin-bottom:20px">GitHub Traffic</h2>
       <div id="gh-error" class="login-error" style="margin-bottom:12px"></div>
       <div class="cards">
-        <div class="card blue"><div class="label">Views (14d)</div><div class="value" id="gh-views">—</div></div>
-        <div class="card green"><div class="label">Unique Visitors</div><div class="value" id="gh-unique-views">—</div></div>
-        <div class="card accent"><div class="label">Clones (14d)</div><div class="value" id="gh-clones">—</div></div>
-        <div class="card orange"><div class="label">Stars</div><div class="value" id="gh-stars">—</div></div>
+        <div class="card card-glow-blue">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></div>
+          <div class="card-content"><div class="label">Views (14d)</div><div class="value" id="gh-views">—</div></div>
+        </div>
+        <div class="card card-glow-green">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
+          <div class="card-content"><div class="label">Unique Visitors</div><div class="value" id="gh-unique-views">—</div></div>
+        </div>
+        <div class="card card-glow-purple">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 17l5-5-5-5M19.8 12H9M13 7l-5 5 5 5"/></svg></div>
+          <div class="card-content"><div class="label">Clones (14d)</div><div class="value" id="gh-clones">—</div></div>
+        </div>
+        <div class="card card-glow-amber">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></div>
+          <div class="card-content"><div class="label">Stars</div><div class="value" id="gh-stars">—</div></div>
+        </div>
       </div>
       <div class="row">
         <div class="panel">
-          <h3>Views &amp; Clones</h3>
+          <div class="panel-header"><h3>Views & Clones</h3><span class="panel-badge">14d</span></div>
           <div class="chart-wrap"><canvas id="chart-github"></canvas></div>
         </div>
         <div class="panel">
-          <h3>Top Referrers</h3>
-          <table class="tbl">
-            <thead><tr><th>Referrer</th><th>Views</th><th>Uniques</th></tr></thead>
-            <tbody id="gh-referrers-body"><tr><td colspan="3" style="color:var(--text2)">Loading...</td></tr></tbody>
-          </table>
-          <h3 style="margin-top:20px">Popular Content</h3>
-          <table class="tbl">
-            <thead><tr><th>Path</th><th>Views</th><th>Uniques</th></tr></thead>
-            <tbody id="gh-paths-body"><tr><td colspan="3" style="color:var(--text2)">Loading...</td></tr></tbody>
-          </table>
+          <div class="panel-header"><h3>Top Referrers</h3></div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead><tr><th>Referrer</th><th>Views</th><th>Uniques</th></tr></thead>
+              <tbody id="gh-referrers-body"><tr><td colspan="3" class="empty-state">Loading...</td></tr></tbody>
+            </table>
+          </div>
+          <div class="panel-header" style="margin-top:20px"><h3>Popular Content</h3></div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead><tr><th>Path</th><th>Views</th><th>Uniques</th></tr></thead>
+              <tbody id="gh-paths-body"><tr><td colspan="3" class="empty-state">Loading...</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

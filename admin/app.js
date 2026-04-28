@@ -47,6 +47,12 @@ function navigate(page) {
   if (el) el.classList.add('active');
   const nav = document.querySelector(`[data-page="${page}"]`);
   if (nav) nav.classList.add('active');
+
+  // Update page title
+  const titles = { overview:'Overview', logs:'Live Terminal', llm:'LLM & Costs', github:'GitHub Traffic' };
+  const titleEl = document.getElementById('page-title');
+  if (titleEl) titleEl.textContent = titles[page] || page;
+
   if (page === 'overview') loadOverview();
   if (page === 'llm') loadLLM();
   if (page === 'github') loadGitHub();
@@ -396,8 +402,8 @@ function renderHourlyChart(data) {
     data: {
       labels,
       datasets: [
-        {label:'Requests',data:counts,backgroundColor:'rgba(108,92,231,0.6)',borderRadius:4},
-        {label:'Errors',data:errors,backgroundColor:'rgba(255,107,107,0.6)',borderRadius:4}
+        {label:'Requests',data:counts,backgroundColor:'rgba(124,108,240,0.5)',borderColor:'rgba(124,108,240,0.8)',borderWidth:1,borderRadius:6,borderSkipped:false},
+        {label:'Errors',data:errors,backgroundColor:'rgba(248,113,113,0.5)',borderColor:'rgba(248,113,113,0.8)',borderWidth:1,borderRadius:6,borderSkipped:false}
       ]
     },
     options: chartOpts('Hourly Request Volume (24h)')
@@ -417,8 +423,8 @@ function renderDailyLLMChart(data) {
     data: {
       labels,
       datasets: [
-        {label:'LLM Calls',data:calls,borderColor:'#6c5ce7',backgroundColor:'rgba(108,92,231,0.1)',fill:true,tension:.3},
-        {label:'Tokens (÷100)',data:tokens.map(t=>Math.round(t/100)),borderColor:'#00cec9',backgroundColor:'rgba(0,206,201,0.1)',fill:true,tension:.3}
+        {label:'LLM Calls',data:calls,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,0.08)',fill:true,tension:.4,pointBackgroundColor:'#a78bfa'},
+        {label:'Tokens (÷100)',data:tokens.map(t=>Math.round(t/100)),borderColor:'#34d399',backgroundColor:'rgba(52,211,153,0.08)',fill:true,tension:.4,pointBackgroundColor:'#34d399'}
       ]
     },
     options: chartOpts('Daily LLM Usage (7d)')
@@ -440,8 +446,8 @@ function renderGitHubChart(views, clones) {
     data: {
       labels,
       datasets: [
-        {label:'Views',data:viewCounts,borderColor:'#74b9ff',backgroundColor:'rgba(116,185,255,0.1)',fill:true,tension:.3},
-        {label:'Clones',data:cloneCounts,borderColor:'#00cec9',backgroundColor:'rgba(0,206,201,0.1)',fill:true,tension:.3}
+        {label:'Views',data:viewCounts,borderColor:'#60a5fa',backgroundColor:'rgba(96,165,250,0.08)',fill:true,tension:.4,pointBackgroundColor:'#60a5fa'},
+        {label:'Clones',data:cloneCounts,borderColor:'#34d399',backgroundColor:'rgba(52,211,153,0.08)',fill:true,tension:.4,pointBackgroundColor:'#34d399'}
       ]
     },
     options: chartOpts('GitHub Traffic (14d)')
@@ -451,11 +457,15 @@ function renderGitHubChart(views, clones) {
 function chartOpts(title) {
   return {
     responsive:true, maintainAspectRatio:false,
-    plugins:{legend:{labels:{color:'#8888a0',font:{size:11}}},title:{display:true,text:title,color:'#e4e4f0',font:{size:13}}},
+    plugins:{
+      legend:{labels:{color:'#7878a0',font:{family:'Inter',size:11},usePointStyle:true,pointStyle:'circle',padding:16}},
+      title:{display:false}
+    },
     scales:{
-      x:{ticks:{color:'#8888a0',font:{size:10}},grid:{color:'rgba(42,42,58,0.5)'}},
-      y:{ticks:{color:'#8888a0',font:{size:10}},grid:{color:'rgba(42,42,58,0.5)'},beginAtZero:true}
-    }
+      x:{ticks:{color:'#50506e',font:{family:'Inter',size:10}},grid:{color:'rgba(30,30,58,0.4)',drawBorder:false}},
+      y:{ticks:{color:'#50506e',font:{family:'Inter',size:10}},grid:{color:'rgba(30,30,58,0.4)',drawBorder:false},beginAtZero:true}
+    },
+    elements:{line:{borderWidth:2},point:{radius:3,hoverRadius:5}}
   };
 }
 
@@ -478,8 +488,22 @@ function escHtml(s) {
 }
 
 // ── Init ─────────────────────────────────────────────────────────
+function _updateClock() {
+  const el = document.getElementById('topbar-clock');
+  if (!el) return;
+  const now = new Date();
+  const h = String(now.getHours()).padStart(2,'0');
+  const m = String(now.getMinutes()).padStart(2,'0');
+  const s = String(now.getSeconds()).padStart(2,'0');
+  el.textContent = `${h}:${m}:${s}`;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   token = localStorage.getItem('xmem_admin_token') || '';
+
+  // Start clock
+  _updateClock();
+  setInterval(_updateClock, 1000);
 
   if (token) {
     // Verify token still valid

@@ -152,13 +152,33 @@ def embed_text(text: str) -> tuple[float, ...]:
 
 
 def _embed_text_gemini(text: str) -> tuple[float, ...]:
+    import time as _time
     client = get_embedding_client()
+    start = _time.perf_counter()
     result = client.models.embed_content(
         model=settings.embedding_model,
         contents=text,
         config=types.EmbedContentConfig(output_dimensionality=settings.pinecone_dimension),
     )
+    elapsed = _time.perf_counter() - start
     [embedding_obj] = result.embeddings
+
+    # Track embedding call for cost analytics
+    input_tokens = getattr(result, "input_tokens", 0) or len(text.split())
+    try:
+        from src.config.analytics import analytics
+        analytics.track_llm_call(
+            provider="gemini",
+            model=settings.embedding_model,
+            agent="embedding",
+            latency_ms=round(elapsed * 1000, 2),
+            input_tokens=input_tokens,
+            output_tokens=0,
+            total_tokens=input_tokens,
+        )
+    except Exception:
+        pass
+
     return tuple(embedding_obj.values)
 
 

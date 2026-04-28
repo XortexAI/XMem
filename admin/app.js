@@ -123,11 +123,21 @@ async function loadLLM() {
   document.getElementById('card-output-tokens').textContent = formatNum(tu.total_output || 0);
   document.getElementById('card-llm-calls').textContent = formatNum(tu.call_count || 0);
 
-  // LLM stats table
-  const rows = (data.llm_stats_24h || []).map(r =>
-    `<tr><td>${r._id?.provider||''}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r._id?.model||''}</td><td>${r._id?.agent||''}</td><td>${r.count}</td><td>${formatNum(r.total_tokens||0)}</td><td>${Math.round(r.avg_latency||0)}ms</td><td>${r.errors||0}</td></tr>`
+  // Total cost card
+  const totalCost = tu.total_cost_usd || 0;
+  document.getElementById('card-total-cost').textContent = formatCost(totalCost);
+
+  // Cost breakdown table
+  const costRows = (data.cost_by_model_7d || []).map(r =>
+    `<tr><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r._id||'unknown'}</td><td>${r.call_count||0}</td><td>${formatNum(r.total_input||0)}</td><td>${formatNum(r.total_output||0)}</td><td style="color:#4fc3f7;font-weight:600">${formatCost(r.cost_usd||0)}</td></tr>`
   ).join('');
-  document.getElementById('llm-stats-body').innerHTML = rows || '<tr><td colspan="7" style="color:var(--text2)">No LLM calls recorded yet</td></tr>';
+  document.getElementById('cost-breakdown-body').innerHTML = costRows || '<tr><td colspan="5" style="color:var(--text2)">No cost data yet</td></tr>';
+
+  // LLM stats table (with cost column)
+  const rows = (data.llm_stats_24h || []).map(r =>
+    `<tr><td>${r._id?.provider||''}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r._id?.model||''}</td><td>${r._id?.agent||''}</td><td>${r.count}</td><td>${formatNum(r.total_tokens||0)}</td><td style="color:#4fc3f7">${formatCost(r.cost_usd||0)}</td><td>${Math.round(r.avg_latency||0)}ms</td><td>${r.errors||0}</td></tr>`
+  ).join('');
+  document.getElementById('llm-stats-body').innerHTML = rows || '<tr><td colspan="8" style="color:var(--text2)">No LLM calls recorded yet</td></tr>';
 
   // Daily LLM chart
   renderDailyLLMChart(data.daily_llm_calls || []);
@@ -505,6 +515,13 @@ function formatNum(n) {
   if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
   if (n >= 1e3) return (n/1e3).toFixed(1)+'K';
   return String(n);
+}
+
+function formatCost(usd) {
+  if (usd === 0 || usd === undefined) return '$0.00';
+  if (usd < 0.01) return '$' + usd.toFixed(4);
+  if (usd < 1) return '$' + usd.toFixed(3);
+  return '$' + usd.toFixed(2);
 }
 
 function escHtml(s) {

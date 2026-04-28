@@ -92,6 +92,11 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         set_startup_time(time.time())
+
+        # Capture the event loop for the WebSocket log handler
+        from src.api.routes.admin import _set_event_loop
+        _set_event_loop(asyncio.get_running_loop())
+
         boot_task = asyncio.create_task(_boot_pipelines())
         yield
         await boot_task

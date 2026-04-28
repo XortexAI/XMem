@@ -142,6 +142,13 @@ async def admin_logout(request: Request):
 _log_counter = itertools.count()
 _log_buffer: deque[Dict[str, Any]] = deque(maxlen=500)
 _ws_clients: List[WebSocket] = []
+_event_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Store the main event loop reference for cross-thread access."""
+    global _event_loop
+    _event_loop = loop
 
 
 class WebSocketLogHandler(logging.Handler):
@@ -160,13 +167,17 @@ class WebSocketLogHandler(logging.Handler):
 
         _log_buffer.append(entry)
 
-        # Broadcast to all connected WebSocket clients
-        # Use call_soon_threadsafe to safely schedule from any thread
+        loop = _event_loop
+        if loop is None or loop.is_closed():
+            return
+
         for ws in list(_ws_clients):
             try:
-                loop = asyncio.get_event_loop()
-                loop.call_soon_threadsafe(lambda w=ws, e=entry: asyncio.create_task(_send_log_safe(w, e)))
-            except Exception:
+                loop.call_soon_threadsafe(
+                    loop.create_task,
+                    _send_log_safe(ws, entry),
+                )
+            except RuntimeError:
                 pass
 
 
@@ -175,7 +186,6 @@ async def _send_log_safe(websocket: WebSocket, entry: Dict[str, Any]) -> None:
     try:
         await websocket.send_json(entry)
     except Exception:
-        # Client disconnected or other error — ignore
         pass
 
 
@@ -183,11 +193,9 @@ async def _send_log_safe(websocket: WebSocket, entry: Dict[str, Any]) -> None:
 _ws_log_handler = WebSocketLogHandler()
 _ws_log_handler.setLevel(logging.INFO)
 logging.getLogger().addHandler(_ws_log_handler)
-# Also capture xmem-specific loggers
 logging.getLogger("xmem").addHandler(_ws_log_handler)
 logging.getLogger("src").addHandler(_ws_log_handler)
 logging.getLogger("uvicorn").addHandler(_ws_log_handler)
-# Explicitly capture AWS boto3 logs at INFO level
 logging.getLogger("boto3").setLevel(logging.INFO)
 logging.getLogger("botocore").setLevel(logging.INFO)
 logging.getLogger("boto3").addHandler(_ws_log_handler)
@@ -199,6 +207,9 @@ async def ws_live_logs(websocket: WebSocket):
     """WebSocket endpoint for live log streaming."""
     await websocket.accept()
 
+    # Capture the running event loop so the log handler can broadcast
+    _set_event_loop(asyncio.get_running_loop())
+
     # Validate auth token from query param
     token = websocket.query_params.get("token", "")
     if token not in _admin_sessions:
@@ -208,27 +219,22 @@ async def ws_live_logs(websocket: WebSocket):
     _ws_clients.append(websocket)
 
     try:
-        last_id = -1
         # Send buffered logs first
         for entry in list(_log_buffer):
             await websocket.send_json(entry)
-            last_id = entry.get("id", -1)
 
-        # Keep alive — wait for disconnect or new logs
+        # Keep alive — the WebSocketLogHandler.emit() pushes new logs
+        # via call_soon_threadsafe. We just need to keep the connection
+        # open by waiting for client messages (or disconnect).
         while True:
-            # Send any new logs that arrived in the buffer
-            for entry in list(_log_buffer):
-                entry_id = entry.get("id", -1)
-                if entry_id > last_id:
-                    await websocket.send_json(entry)
-                    last_id = entry_id
-
             try:
-                # Sleep briefly, check if client disconnected
-                await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
+                await asyncio.wait_for(websocket.receive_text(), timeout=30)
             except asyncio.TimeoutError:
-                # Send ping to keep connection alive occasionally
-                pass
+                # Send a lightweight ping to detect broken connections
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    break
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -236,6 +242,33 @@ async def ws_live_logs(websocket: WebSocket):
     finally:
         if websocket in _ws_clients:
             _ws_clients.remove(websocket)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Gemini pricing (paid tier, per 1M tokens in USD)
+# ═══════════════════════════════════════════════════════════════════════════
+COST_TABLE: Dict[str, Dict[str, float]] = {
+    "gemini-embedding-001":   {"input": 0.15,  "output": 0.00},
+    "gemini-2.5-flash-lite":  {"input": 0.10,  "output": 0.40},
+    "gemini-2.5-flash":       {"input": 0.15,  "output": 0.60},
+    "gemini-2.0-flash":       {"input": 0.10,  "output": 0.40},
+    "gemini-2.0-flash-lite":  {"input": 0.075, "output": 0.30},
+}
+_PER_M = 1_000_000
+
+
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Estimate USD cost for a given model and token counts."""
+    key = model.lower().strip()
+    prices = COST_TABLE.get(key)
+    if prices is None:
+        for prefix, p in COST_TABLE.items():
+            if key.startswith(prefix):
+                prices = p
+                break
+    if prices is None:
+        return 0.0
+    return (input_tokens * prices["input"] + output_tokens * prices["output"]) / _PER_M
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -284,6 +317,15 @@ async def analytics_summary(request: Request, user: dict = Depends(_verify_admin
             {"$sort": {"count": -1}},
         ]))
 
+        # Compute cost for each LLM stats row
+        for row in llm_stats_24h:
+            model_name = (row.get("_id") or {}).get("model", "")
+            row["cost_usd"] = round(_estimate_cost(
+                model_name,
+                row.get("total_input_tokens", 0),
+                row.get("total_output_tokens", 0),
+            ), 6)
+
         # Hourly request volume (last 24h)
         hourly_volume = list(collection.aggregate([
             {"$match": {"event": "api_call", "ts": {"$gte": last_24h}}},
@@ -303,7 +345,7 @@ async def analytics_summary(request: Request, user: dict = Depends(_verify_admin
             "event": "api_call", "ts": {"$gte": last_24h}, "user_id": {"$ne": ""},
         })
 
-        # Total token usage (last 7d, last 30d)
+        # Total token usage (last 7d)
         token_usage_7d = list(collection.aggregate([
             {"$match": {"event": "llm_call", "ts": {"$gte": last_7d}}},
             {"$group": {
@@ -314,6 +356,28 @@ async def analytics_summary(request: Request, user: dict = Depends(_verify_admin
                 "call_count": {"$sum": 1},
             }},
         ]))
+
+        # Per-model cost breakdown (last 7d)
+        cost_by_model_7d = list(collection.aggregate([
+            {"$match": {"event": "llm_call", "ts": {"$gte": last_7d}}},
+            {"$group": {
+                "_id": "$model",
+                "total_input": {"$sum": "$input_tokens"},
+                "total_output": {"$sum": "$output_tokens"},
+                "call_count": {"$sum": 1},
+            }},
+            {"$sort": {"total_input": -1}},
+        ]))
+
+        total_cost_7d = 0.0
+        for row in cost_by_model_7d:
+            model_name = row.get("_id") or ""
+            cost = _estimate_cost(model_name, row.get("total_input", 0), row.get("total_output", 0))
+            row["cost_usd"] = round(cost, 6)
+            total_cost_7d += cost
+
+        if token_usage_7d:
+            token_usage_7d[0]["total_cost_usd"] = round(total_cost_7d, 6)
 
         # Daily LLM calls (last 7d) for chart
         daily_llm = list(collection.aggregate([
@@ -337,6 +401,8 @@ async def analytics_summary(request: Request, user: dict = Depends(_verify_admin
             "unique_users_24h": len(unique_users),
             "token_usage_7d": _bson_safe(token_usage_7d[0] if token_usage_7d else {}),
             "daily_llm_calls": _bson_safe(daily_llm),
+            "cost_by_model_7d": _bson_safe(cost_by_model_7d),
+            "cost_table": COST_TABLE,
         })
     except Exception as exc:
         logger.exception("Analytics summary failed")

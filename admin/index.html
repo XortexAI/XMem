@@ -109,16 +109,35 @@
         <div class="card blue"><div class="label">Output Tokens (7d)</div><div class="value" id="card-output-tokens">—</div></div>
         <div class="card orange"><div class="label">LLM Calls (7d)</div><div class="value" id="card-llm-calls">—</div></div>
       </div>
+
+      <!-- Cost Summary -->
+      <div class="cards" style="margin-top:8px">
+        <div class="card" style="background:linear-gradient(135deg,#1e3a5f 0%,#0d1b2a 100%);border:1px solid #2196f3">
+          <div class="label" style="color:#90caf9">Estimated Cost (7d)</div>
+          <div class="value" style="color:#4fc3f7;font-size:28px" id="card-total-cost">$0.00</div>
+        </div>
+      </div>
+
       <div class="row">
         <div class="panel">
           <h3>Daily LLM Usage</h3>
           <div class="chart-wrap"><canvas id="chart-daily-llm"></canvas></div>
         </div>
         <div class="panel">
+          <h3>Cost Breakdown by Model (7d)</h3>
+          <table class="tbl">
+            <thead><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Cost (USD)</th></tr></thead>
+            <tbody id="cost-breakdown-body"><tr><td colspan="5" style="color:var(--text2)">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:16px">
+        <div class="panel" style="flex:1">
           <h3>LLM Calls by Agent (24h)</h3>
           <table class="tbl">
-            <thead><tr><th>Provider</th><th>Model</th><th>Agent</th><th>Calls</th><th>Tokens</th><th>Avg Latency</th><th>Errors</th></tr></thead>
-            <tbody id="llm-stats-body"><tr><td colspan="7" style="color:var(--text2)">Loading...</td></tr></tbody>
+            <thead><tr><th>Provider</th><th>Model</th><th>Agent</th><th>Calls</th><th>Tokens</th><th>Cost</th><th>Avg Latency</th><th>Errors</th></tr></thead>
+            <tbody id="llm-stats-body"><tr><td colspan="8" style="color:var(--text2)">Loading...</td></tr></tbody>
           </table>
         </div>
       </div>

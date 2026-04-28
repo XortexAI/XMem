@@ -29,6 +29,10 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint,
     ) -> Response:
+        # Skip WebSocket connections — BaseHTTPMiddleware breaks WS protocol
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
+
         request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
         request.state.request_id = request_id
 
@@ -53,6 +57,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint,
     ) -> Response:
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
+
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -70,6 +77,9 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint,
     ) -> Response:
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
+
         content_length = request.headers.get("content-length")
         if content_length and int(content_length) > settings.max_request_body_bytes:
             from fastapi.responses import JSONResponse
@@ -92,6 +102,9 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint,
     ) -> Response:
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
+
         from src.config.metrics import METRICS
 
         # Normalise path to avoid high-cardinality (collapse IDs)
@@ -132,6 +145,9 @@ class AnalyticsMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint,
     ) -> Response:
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
+
         from src.config.analytics import analytics
 
         start = time.perf_counter()

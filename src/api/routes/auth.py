@@ -113,7 +113,8 @@ def verify_google_token(credential: str) -> dict:
         idinfo = id_token.verify_oauth2_token(
             credential,
             google_requests.Request(),
-            settings.google_client_id
+            settings.google_client_id,
+            clock_skew_in_seconds=60
         )
 
         # Check issuer

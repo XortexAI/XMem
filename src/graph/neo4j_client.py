@@ -141,9 +141,21 @@ class Neo4jClient:
         UNWIND $dates AS date_str
         MERGE (d:{GraphSchema.LABEL_DATE} {{ {GraphSchema.PROP_DATE_VAL}: date_str }})
         """
+        dummy_query = f"""
+        CREATE (dummy:__Dummy__ {{
+            {GraphSchema.PROP_EVENT_NAME}: "",
+            {GraphSchema.PROP_DESC}: "",
+            {GraphSchema.PROP_YEAR}: "",
+            {GraphSchema.PROP_TIME}: "",
+            {GraphSchema.PROP_DATE_EXPRESSION}: "",
+            {GraphSchema.PROP_EMBEDDING}: []
+        }})
+        DELETE dummy
+        """
         with self._session() as session:
             session.run(query, dates=dates)
-        logger.info("Initialised %d date nodes.", len(dates))
+            session.run(dummy_query)
+        logger.info("Initialised %d date nodes and registered property keys.", len(dates))
 
     @_neo4j_retry()
     def create_user_node(self, user_id: str) -> None:

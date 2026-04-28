@@ -182,3 +182,73 @@ class AnalyticsCollector:
 
 # Module-level singleton
 analytics = AnalyticsCollector()
+
+
+def track_model_response(
+    model: Any,
+    response: Any,
+    elapsed: float,
+    agent: str = "unknown",
+) -> None:
+    """Extract token usage from a LangChain response and track it.
+
+    Works with any LangChain model (Gemini, OpenAI, Bedrock, etc.).
+    ``elapsed`` is wall-clock seconds.  Never raises.
+    """
+    try:
+        model_name = getattr(model, "model", getattr(model, "model_name", "unknown"))
+
+        cls_name = type(model).__name__.lower()
+        if "gemini" in cls_name or "google" in cls_name:
+            provider = "gemini"
+        elif "openai" in cls_name or "chatopen" in cls_name:
+            provider = "openai"
+        elif "bedrock" in cls_name:
+            provider = "bedrock"
+        elif "anthropic" in cls_name or "claude" in cls_name:
+            provider = "claude"
+        else:
+            provider = "unknown"
+
+        input_tokens = 0
+        output_tokens = 0
+        total_tokens = 0
+
+        usage = getattr(response, "usage_metadata", None) or {}
+        if isinstance(usage, dict):
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+            total_tokens = usage.get("total_tokens", 0)
+        else:
+            input_tokens = getattr(usage, "input_tokens", 0)
+            output_tokens = getattr(usage, "output_tokens", 0)
+            total_tokens = getattr(usage, "total_tokens", 0)
+
+        resp_meta = getattr(response, "response_metadata", {}) or {}
+        if isinstance(resp_meta, dict):
+            tu = resp_meta.get("token_usage") or resp_meta.get("usage") or {}
+            if isinstance(tu, dict):
+                input_tokens = input_tokens or tu.get("prompt_tokens") or tu.get("input_tokens", 0)
+                output_tokens = output_tokens or tu.get("completion_tokens") or tu.get("output_tokens", 0)
+                total_tokens = total_tokens or tu.get("total_tokens", 0)
+            if not total_tokens and "usage_metadata" in resp_meta:
+                gu = resp_meta["usage_metadata"]
+                if isinstance(gu, dict):
+                    input_tokens = input_tokens or gu.get("prompt_token_count", 0)
+                    output_tokens = output_tokens or gu.get("candidates_token_count", 0)
+                    total_tokens = total_tokens or gu.get("total_token_count", 0)
+
+        if not total_tokens:
+            total_tokens = input_tokens + output_tokens
+
+        analytics.track_llm_call(
+            provider=provider,
+            model=model_name,
+            agent=agent,
+            latency_ms=round(elapsed * 1000, 2),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+        )
+    except Exception:
+        pass

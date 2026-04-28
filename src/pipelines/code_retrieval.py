@@ -543,6 +543,12 @@ class CodeRetrievalPipeline:
             ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
             llm_ms = (_time.perf_counter() - t0) * 1000
 
+            try:
+                from src.config.analytics import track_model_response
+                track_model_response(self.model_with_tools, ai_response, llm_ms / 1000, agent="code-chat")
+            except Exception:
+                pass
+
             if not ai_response.tool_calls:
                 answer = ai_response.content
                 logger.info("Turn %d: LLM answered directly (%.0fms)", turn + 1, llm_ms)
@@ -657,6 +663,7 @@ class CodeRetrievalPipeline:
         for round_num in range(MAX_TOOL_ROUNDS):
             try:
                 ai_response = None
+                _stream_t0 = _time.perf_counter()
                 async for chunk in self.model_with_tools.astream(messages):
                     if ai_response is None:
                         ai_response = chunk
@@ -672,6 +679,12 @@ class CodeRetrievalPipeline:
                                     yield json.dumps({"type": "chunk", "text": c["text"]}) + "\n"
                                 else:
                                     yield json.dumps({"type": "chunk", "text": str(c)}) + "\n"
+                _stream_elapsed = _time.perf_counter() - _stream_t0
+                try:
+                    from src.config.analytics import track_model_response
+                    track_model_response(self.model_with_tools, ai_response, _stream_elapsed, agent="code-chat-stream")
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error("LLM tool call failed (round %d): %s", round_num + 1, e)
                 yield json.dumps({"type": "error", "error": f"LLM Error (Tool Call): {str(e)}"}) + "\n"
@@ -742,7 +755,13 @@ class CodeRetrievalPipeline:
         )
 
         try:
+            _ans_t0 = _time.perf_counter()
+            _ans_response = None
             async for chunk in self.model.astream([HumanMessage(content=answer_prompt)]):
+                if _ans_response is None:
+                    _ans_response = chunk
+                else:
+                    _ans_response = _ans_response + chunk
                 if chunk.content:
                     if isinstance(chunk.content, str):
                         yield json.dumps({"type": "chunk", "text": chunk.content}) + "\n"
@@ -752,6 +771,12 @@ class CodeRetrievalPipeline:
                                 yield json.dumps({"type": "chunk", "text": c["text"]}) + "\n"
                             else:
                                 yield json.dumps({"type": "chunk", "text": str(c)}) + "\n"
+            _ans_elapsed = _time.perf_counter() - _ans_t0
+            try:
+                from src.config.analytics import track_model_response
+                track_model_response(self.model, _ans_response, _ans_elapsed, agent="code-chat-answer")
+            except Exception:
+                pass
         except Exception as e:
             logger.error("LLM streaming failed: %s", e)
             yield json.dumps({"type": "error", "error": f"\n\n**LLM Streaming Failed:** {str(e)}"}) + "\n"

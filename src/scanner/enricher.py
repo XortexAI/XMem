@@ -190,7 +190,12 @@ class Enricher:
         )
 
         def call(prompt: str) -> str:
+            import time as _t
+            from src.config.analytics import track_model_response
+            _start = _t.perf_counter()
             response = model.invoke([{"role": "user", "content": prompt}])
+            _elapsed = _t.perf_counter() - _start
+            track_model_response(model, response, _elapsed, agent="code-enricher")
             content = response.content
             if isinstance(content, list):
                 return "\n".join(str(c) for c in content)

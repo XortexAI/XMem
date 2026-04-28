@@ -97,9 +97,12 @@ def _build_llm_call() -> Callable[[str], str]:
     model = get_model()
 
     def _call(prompt: str) -> str:
+        import time as _t
+        from src.config.analytics import track_model_response
+        _start = _t.perf_counter()
         response = model.invoke(prompt)
-        # LangChain-style models return an object with `.content`;
-        # fall back to str() if we got a raw string.
+        _elapsed = _t.perf_counter() - _start
+        track_model_response(model, response, _elapsed, agent="scanner-v1-enricher")
         return getattr(response, "content", None) or str(response)
 
     return _call

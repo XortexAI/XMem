@@ -364,9 +364,13 @@ def _run_phase2(job_id: str, username: str, started_at: float, org: str, repo: s
     
     model = get_model()
     def _llm_call(prompt: str) -> str:
+        import time as _t
+        from src.config.analytics import track_model_response
+        _start = _t.perf_counter()
         response = model.invoke(prompt)
+        _elapsed = _t.perf_counter() - _start
+        track_model_response(model, response, _elapsed, agent="scanner-enricher")
         content = getattr(response, "content", None)
-        # Gemini models return content as a list of dicts: [{"type": "text", "text": "..."}]
         if isinstance(content, list):
             parts = []
             for part in content:

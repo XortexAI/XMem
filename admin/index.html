@@ -68,6 +68,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"/></svg>
       <span>GitHub</span>
     </div>
+    <div class="nav-item" data-page="users" onclick="navigate('users')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+      <span>Users</span>
+    </div>
 
     <div class="sidebar-footer">
       <div class="server-status" id="sidebar-status">
@@ -255,6 +259,108 @@
               <thead><tr><th>Path</th><th>Views</th><th>Uniques</th></tr></thead>
               <tbody id="gh-paths-body"><tr><td colspan="3" class="empty-state">Loading...</td></tr></tbody>
             </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Users Page -->
+    <div id="page-users" class="page">
+      <div class="cards">
+        <div class="card card-glow-blue">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>
+          <div class="card-content"><div class="label">Total Users</div><div class="value" id="users-total">—</div></div>
+        </div>
+        <div class="card card-glow-green">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg></div>
+          <div class="card-content"><div class="label">API Keys</div><div class="value" id="users-total-keys">—</div></div>
+        </div>
+        <div class="card card-glow-purple">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+          <div class="card-content"><div class="label">Active Today</div><div class="value" id="users-active-today">—</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <h3>Users</h3>
+          <div class="search-box" style="max-width: 300px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" placeholder="Search users..." oninput="filterUsers(this.value)" id="users-search-input">
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Email</th>
+                <th>Username</th>
+                <th>Created</th>
+                <th>Last Login</th>
+                <th>API Keys</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="users-table-body">
+              <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- User Trail Modal -->
+      <div id="user-trail-modal" class="modal" style="display:none;">
+        <div class="modal-backdrop" onclick="closeUserTrailModal()"></div>
+        <div class="modal-content" style="max-width: 900px; max-height: 80vh; overflow: auto;">
+          <div class="modal-header">
+            <h3 id="trail-modal-title">User Activity Trail</h3>
+            <button class="modal-close" onclick="closeUserTrailModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div id="trail-user-info" style="margin-bottom: 16px; padding: 12px; background: rgba(59, 130, 246, 0.1); border-radius: 8px;">
+              <!-- User info will be populated here -->
+            </div>
+
+            <div style="display: flex; gap: 16px; margin-bottom: 16px;">
+              <div class="trail-stat">
+                <span class="trail-stat-label">Calls (24h)</span>
+                <span class="trail-stat-value" id="trail-calls-24h">—</span>
+              </div>
+              <div class="trail-stat">
+                <span class="trail-stat-label">Unique Routes</span>
+                <span class="trail-stat-value" id="trail-unique-routes">—</span>
+              </div>
+              <div class="trail-stat">
+                <span class="trail-stat-label">Period</span>
+                <span class="trail-stat-value">24h</span>
+              </div>
+            </div>
+
+            <div style="margin-bottom: 12px;">
+              <strong>Routes Accessed:</strong>
+              <div id="trail-unique-paths" style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;">
+                <!-- Unique paths will be populated here -->
+              </div>
+            </div>
+
+            <div class="panel-header"><h4>Recent API Calls</h4></div>
+            <div class="table-wrap">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Method</th>
+                    <th>Path</th>
+                    <th>Status</th>
+                    <th>Latency</th>
+                  </tr>
+                </thead>
+                <tbody id="trail-table-body">
+                  <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>

@@ -49,13 +49,14 @@ function navigate(page) {
   if (nav) nav.classList.add('active');
 
   // Update page title
-  const titles = { overview:'Overview', logs:'Live Terminal', llm:'LLM & Costs', github:'GitHub Traffic' };
+  const titles = { overview:'Overview', logs:'Live Terminal', llm:'LLM & Costs', github:'GitHub Traffic', users:'Users' };
   const titleEl = document.getElementById('page-title');
   if (titleEl) titleEl.textContent = titles[page] || page;
 
   if (page === 'overview') loadOverview();
   if (page === 'llm') loadLLM();
   if (page === 'github') loadGitHub();
+  if (page === 'users') loadUsers();
   if (page === 'logs' && !_sseSource) connectSystemLogs();
 }
 
@@ -78,7 +79,190 @@ async function loadAll() {
   setInterval(() => {
     if (currentPage === 'overview') loadOverview();
     if (currentPage === 'llm') loadLLM();
+    if (currentPage === 'users') loadUsers();
   }, 30000);
+}
+
+// ── Users page ──────────────────────────────────────────────────
+let _usersData = [];
+let _usersFilter = '';
+
+async function loadUsers() {
+  const data = await apiFetch('/users');
+  if (!data || data.error) {
+    document.getElementById('users-table-body').innerHTML = `<tr><td colspan="7" class="empty-state">${data?.error || 'Failed to load users'}</td></tr>`;
+    return;
+  }
+
+  _usersData = data.users || [];
+
+  // Update summary cards
+  document.getElementById('users-total').textContent = data.total_users || 0;
+
+  const totalKeys = _usersData.reduce((sum, u) => sum + (u.api_key_count || 0), 0);
+  document.getElementById('users-total-keys').textContent = totalKeys;
+
+  // Count active today (last_login within 24h)
+  const now = new Date();
+  const activeToday = _usersData.filter(u => {
+    if (!u.last_login) return false;
+    const lastLogin = new Date(u.last_login);
+    return (now - lastLogin) < 24 * 60 * 60 * 1000;
+  }).length;
+  document.getElementById('users-active-today').textContent = activeToday;
+
+  renderUsersTable();
+}
+
+function renderUsersTable() {
+  const tbody = document.getElementById('users-table-body');
+
+  let users = _usersData;
+  if (_usersFilter) {
+    const f = _usersFilter.toLowerCase();
+    users = users.filter(u =>
+      (u.name || '').toLowerCase().includes(f) ||
+      (u.email || '').toLowerCase().includes(f) ||
+      (u.username || '').toLowerCase().includes(f)
+    );
+  }
+
+  if (users.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No users found</td></tr>';
+    return;
+  }
+
+  const rows = users.map(u => {
+    const avatar = u.picture
+      ? `<img src="${escHtml(u.picture)}" alt="" class="user-avatar">`
+      : `<div class="user-avatar-placeholder">${(u.name || '?').charAt(0).toUpperCase()}</div>`;
+    const username = u.username ? `@${escHtml(u.username)}` : '<span style="color:var(--text3)">—</span>';
+    const created = u.created_at ? formatDateShort(u.created_at) : '—';
+    const lastLogin = u.last_login ? formatDateShort(u.last_login) : '—';
+
+    return `<tr>
+      <td>
+        <div class="user-cell">
+          ${avatar}
+          <div class="user-info">
+            <div class="user-name">${escHtml(u.name || 'Unknown')}</div>
+            <div class="user-email">${escHtml(u.email || '')}</div>
+          </div>
+        </div>
+      </td>
+      <td>${escHtml(u.email || '—')}</td>
+      <td>${username}</td>
+      <td>${created}</td>
+      <td>${lastLogin}</td>
+      <td>${u.api_key_count || 0}</td>
+      <td>
+        <button class="action-btn" onclick="showUserTrailModal('${escHtml(u.id)}')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          View Trail
+        </button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  tbody.innerHTML = rows;
+}
+
+function filterUsers(query) {
+  _usersFilter = query;
+  renderUsersTable();
+}
+
+async function showUserTrailModal(userId) {
+  const modal = document.getElementById('user-trail-modal');
+  const user = _usersData.find(u => u.id === userId);
+  if (!user) return;
+
+  // Show modal with loading state
+  modal.style.display = 'flex';
+  document.getElementById('trail-modal-title').textContent = `Activity Trail: ${escHtml(user.name || user.email)}`;
+  document.getElementById('trail-table-body').innerHTML = '<tr><td colspan="5" class="empty-state">Loading...</td></tr>';
+  document.getElementById('trail-calls-24h').textContent = '—';
+  document.getElementById('trail-unique-routes').textContent = '—';
+  document.getElementById('trail-unique-paths').innerHTML = '';
+
+  // Update user info
+  const avatar = user.picture
+    ? `<img src="${escHtml(user.picture)}" alt="" style="width:48px;height:48px;border-radius:50%;object-fit:cover;border:2px solid var(--border);">`
+    : `<div style="width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:600;">${(user.name || '?').charAt(0).toUpperCase()}</div>`;
+
+  document.getElementById('trail-user-info').innerHTML = `
+    <div style="display:flex;align-items:center;gap:16px;">
+      ${avatar}
+      <div>
+        <div style="font-size:16px;font-weight:600;color:var(--text);">${escHtml(user.name || 'Unknown')}</div>
+        <div style="font-size:13px;color:var(--text2);">${escHtml(user.email || '')}</div>
+        ${user.username ? `<div style="font-size:12px;color:var(--blue);margin-top:4px;">@${escHtml(user.username)}</div>` : ''}
+      </div>
+    </div>
+  `;
+
+  // Fetch trail data
+  const trailData = await apiFetch(`/users/${encodeURIComponent(userId)}/trail?hours=24&limit=50`);
+  if (!trailData || trailData.error) {
+    document.getElementById('trail-table-body').innerHTML = `<tr><td colspan="5" class="empty-state">${trailData?.error || 'Failed to load trail'}</td></tr>`;
+    return;
+  }
+
+  // Update stats
+  document.getElementById('trail-calls-24h').textContent = trailData.total_calls_24h || 0;
+  document.getElementById('trail-unique-routes').textContent = (trailData.unique_paths || []).length;
+
+  // Show unique paths as tags
+  const uniquePaths = trailData.unique_paths || [];
+  if (uniquePaths.length > 0) {
+    document.getElementById('trail-unique-paths').innerHTML = uniquePaths.map(p =>
+      `<span class="path-tag">${escHtml(p)}</span>`
+    ).join('');
+  } else {
+    document.getElementById('trail-unique-paths').innerHTML = '<span style="color:var(--text3);">No routes accessed</span>';
+  }
+
+  // Render trail table
+  const trail = trailData.trail || [];
+  if (trail.length === 0) {
+    document.getElementById('trail-table-body').innerHTML = '<tr><td colspan="5" class="empty-state">No activity in the last 24 hours</td></tr>';
+    return;
+  }
+
+  const rows = trail.map(t => {
+    const ts = new Date(t.ts);
+    const timeStr = ts.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const dateStr = ts.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const statusClass = t.status >= 400 ? 'style="color:var(--red)"' : (t.status >= 300 ? 'style="color:var(--amber)"' : 'style="color:var(--green)"');
+
+    return `<tr>
+      <td title="${ts.toISOString()}">${dateStr} ${timeStr}</td>
+      <td><span style="font-family:var(--mono);font-size:11px;padding:2px 6px;background:var(--surface2);border-radius:4px;">${t.method || 'GET'}</span></td>
+      <td style="font-family:var(--mono);font-size:12px;">${escHtml(t.path || '/')}</td>
+      <td ${statusClass}>${t.status || '—'}</td>
+      <td>${Math.round(t.latency_ms || 0)}ms</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('trail-table-body').innerHTML = rows;
+}
+
+function closeUserTrailModal() {
+  document.getElementById('user-trail-modal').style.display = 'none';
+}
+
+function formatDateShort(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 // ── Overview page ────────────────────────────────────────────────

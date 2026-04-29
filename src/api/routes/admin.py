@@ -673,6 +673,162 @@ async def test_llm_track(request: Request, user: dict = Depends(_verify_admin_to
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Users management endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/users")
+async def list_users(request: Request, user: dict = Depends(_verify_admin_token)):
+    """Return list of all users with their details and API key counts."""
+    try:
+        from pymongo import MongoClient
+        client = MongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=3000)
+        db = client[settings.mongodb_database]
+        users_collection = db["users"]
+        api_keys_collection = db["api_keys"]
+
+        # Fetch all users
+        users = list(users_collection.find({}, {
+            "_id": 1,
+            "email": 1,
+            "name": 1,
+            "google_id": 1,
+            "picture": 1,
+            "username": 1,
+            "created_at": 1,
+            "last_login": 1,
+        }).sort("created_at", -1))
+
+        # Get API key counts per user
+        user_ids = [str(u["_id"]) for u in users]
+        api_key_counts = {}
+        if user_ids:
+            pipeline = [
+                {"$match": {"user_id": {"$in": user_ids}}},
+                {"$group": {"_id": "$user_id", "count": {"$sum": 1}}}
+            ]
+            for doc in api_keys_collection.aggregate(pipeline):
+                api_key_counts[doc["_id"]] = doc["count"]
+
+        # Format response
+        formatted_users = []
+        for u in users:
+            user_id = str(u["_id"])
+            formatted_users.append({
+                "id": user_id,
+                "email": u.get("email", ""),
+                "name": u.get("name", ""),
+                "google_id": u.get("google_id", ""),
+                "picture": u.get("picture", ""),
+                "username": u.get("username", None),
+                "created_at": u.get("created_at"),
+                "last_login": u.get("last_login"),
+                "api_key_count": api_key_counts.get(user_id, 0),
+            })
+
+        return JSONResponse({
+            "users": _bson_safe(formatted_users),
+            "total_users": len(formatted_users),
+        })
+    except Exception as exc:
+        logger.exception("Failed to fetch users list")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.get("/api/users/{user_id}/trail")
+async def get_user_trail(
+    request: Request,
+    user_id: str,
+    user: dict = Depends(_verify_admin_token),
+    hours: int = 24,
+    limit: int = 50
+):
+    """Return API call trail for a specific user from analytics data.
+
+    Args:
+        user_id: The user ID to fetch trail for
+        hours: How many hours back to look (default: 24)
+        limit: Maximum number of trail entries (default: 50)
+    """
+    try:
+        from pymongo import MongoClient
+        client = MongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=3000)
+        db = client[settings.mongodb_database]
+        users_collection = db["users"]
+        analytics_collection = db["analytics"]
+
+        # Fetch user details
+        user_doc = users_collection.find_one({"_id": user_id})
+        if not user_doc:
+            # Try finding by string ID
+            from bson.objectid import ObjectId
+            try:
+                user_doc = users_collection.find_one({"_id": ObjectId(user_id)})
+            except Exception:
+                pass
+
+        if not user_doc:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_email = user_doc.get("email", "")
+        user_name = user_doc.get("name", "")
+
+        # Calculate time range
+        now = datetime.now(timezone.utc)
+        since = now - timedelta(hours=hours)
+
+        # Fetch recent API calls for this user
+        # Try matching by user_id in various formats
+        trail_query = {
+            "event": "api_call",
+            "ts": {"$gte": since},
+            "$or": [
+                {"user_id": user_id},
+                {"user_id": str(user_doc.get("_id", ""))},
+                {"user_id": user_doc.get("email", "")},
+            ]
+        }
+
+        trail = list(analytics_collection.find(
+            trail_query,
+            {"_id": 0, "path": 1, "method": 1, "status": 1, "latency_ms": 1, "ts": 1, "user_id": 1}
+        ).sort("ts", -1).limit(limit))
+
+        # Get unique paths accessed
+        unique_paths = list(set(t.get("path", "") for t in trail if t.get("path")))
+
+        # Get total calls in the period
+        total_calls = analytics_collection.count_documents(trail_query)
+
+        # Get calls in last 24h specifically
+        trail_24h_query = {
+            "event": "api_call",
+            "ts": {"$gte": now - timedelta(hours=24)},
+            "$or": [
+                {"user_id": user_id},
+                {"user_id": str(user_doc.get("_id", ""))},
+                {"user_id": user_doc.get("email", "")},
+            ]
+        }
+        total_calls_24h = analytics_collection.count_documents(trail_24h_query)
+
+        return JSONResponse({
+            "user_id": user_id,
+            "user_email": user_email,
+            "user_name": user_name,
+            "trail": _bson_safe(trail),
+            "unique_paths": sorted(unique_paths),
+            "total_calls_period": total_calls,
+            "total_calls_24h": total_calls_24h,
+            "period_hours": hours,
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to fetch user trail")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Dashboard HTML
 # ═══════════════════════════════════════════════════════════════════════════
 

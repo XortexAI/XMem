@@ -78,6 +78,7 @@ class ScanRequest(BaseModel):
     username: str = Field(..., min_length=1)
     pat: str = Field(default="")
     branch: str = Field(default="main")
+    force_full: bool = Field(default=True)
 
 
 class ChatRequest(BaseModel):
@@ -297,7 +298,7 @@ def _can_reuse_index(
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 
-def _run_phase1(job_id: str, username: str, started_at: float, org: str, repo: str, url: str, branch: str, pat: str) -> dict:
+def _run_phase1(job_id: str, username: str, started_at: float, org: str, repo: str, url: str, branch: str, pat: str, force_full: bool = True) -> dict:
     from src.scanner_v1.indexer import IndexerV1
     from src.scanner_v1.store import CodeStoreV1
     from src.scanner_v1.embedder import Embedder
@@ -334,7 +335,7 @@ def _run_phase1(job_id: str, username: str, started_at: float, org: str, repo: s
             repo_url=url,
             branch=branch,
             token=pat or None,
-            force_full=True,
+            force_full=force_full,
             progress_cb=_progress,
         )
     finally:
@@ -456,6 +457,7 @@ async def _run_scan_pipeline(
     url: str,
     branch: str,
     pat: str,
+    force_full: bool = True,
 ):
     """Run Phase 1 then Phase 2 in a background thread."""
     loop = asyncio.get_running_loop()
@@ -466,7 +468,7 @@ async def _run_scan_pipeline(
 
     try:
         result = await loop.run_in_executor(
-            None, lambda: _run_phase1(job_id, username, started_at, org, repo, url, branch, pat),
+            None, lambda: _run_phase1(job_id, username, started_at, org, repo, url, branch, pat, force_full),
         )
         _persist_job(
             job_id, username, org, repo, branch, url, started_at,
@@ -867,7 +869,7 @@ async def start_scan(req: ScanRequest):
 
     asyncio.create_task(
         _run_scan_pipeline(
-            job_id, username, org, repo, clone_url, branch, req.pat,
+            job_id, username, org, repo, clone_url, branch, req.pat, req.force_full,
         ),
     )
 
@@ -1015,6 +1017,7 @@ async def list_repos(username: str = Query(...)):
         repos.append({
             "org": o,
             "repo": r,
+            "branch": j.get("branch", "main"),
             "phase1_status": j.get("phase1_status", "not_started"),
             "phase2_status": j.get("phase2_status", "not_started"),
         })
@@ -1028,6 +1031,7 @@ async def list_repos(username: str = Query(...)):
         repos.append({
             "org": o,
             "repo": r,
+            "branch": row.get("branch", "main"),
             "phase1_status": "not_started",
             "phase2_status": "not_started",
         })

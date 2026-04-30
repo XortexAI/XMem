@@ -22,6 +22,8 @@ from src.api.schemas import (
     APIResponse,
     CodeQueryRequest,
     CodeQueryResponse,
+    ExecuteToolRequest,
+    ExecuteToolResponse,
     DirectoryNode,
     DirectoryTreeResponse,
     RepoListResponse,
@@ -121,6 +123,55 @@ async def code_query_stream(req: CodeQueryRequest, request: Request):
         ),
         media_type="application/x-ndjson",
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# POST /v1/code/execute-tool
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/execute-tool",
+    response_model=APIResponse,
+    summary="Execute a raw native tool (like search_symbols or impact_analysis) natively",
+)
+async def execute_tool(req: ExecuteToolRequest, request: Request, user: dict = Depends(require_api_key)):
+    start = time.perf_counter()
+    username = user.get("username") or user.get("name") or user.get("id") or req.user_id
+    
+    # Enforce privacy check!
+    from src.api.routes.scanner import _scanner_chat_allowed
+    store = _get_code_store()
+    denied = _scanner_chat_allowed(store, username, req.org_id, req.repo)
+    if denied:
+        return _error(request, f"Permission Denied: {denied}", 403, 0)
+
+    pipeline = get_code_pipeline(org_id=req.org_id, repo=req.repo)
+
+    try:
+        results = await pipeline._execute_tool(
+            tool_name=req.tool_name,
+            tool_args=req.tool_args,
+            repo=req.repo,
+            top_k=req.top_k,
+            user_id=username,
+        )
+        
+        data = ExecuteToolResponse(
+            records=[
+                SourceRecord(
+                    domain=s.domain, content=s.content,
+                    score=round(s.score, 3), metadata=s.metadata,
+                )
+                for s in results
+            ]
+        )
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _wrap(request, data, elapsed)
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Execute tool failed for org=%s repo=%s tool=%s", req.org_id, req.repo, req.tool_name)
+        return _error(request, str(exc), 500, elapsed)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

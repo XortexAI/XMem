@@ -206,6 +206,20 @@ class CodeQueryResponse(BaseModel):
     confidence: float = 0.0
 
 
+class ExecuteToolRequest(BaseModel):
+    """Execute a specific raw code retrieval tool natively."""
+    org_id: str = Field(..., min_length=1, max_length=256)
+    repo: str = Field(..., min_length=1, max_length=256)
+    tool_name: str = Field(..., min_length=1, max_length=128)
+    tool_args: Dict[str, Any] = Field(default_factory=dict)
+    user_id: str = Field(default="", max_length=256)
+    top_k: int = Field(default=10, ge=1, le=50)
+
+
+class ExecuteToolResponse(BaseModel):
+    records: List[SourceRecord] = Field(default_factory=list)
+
+
 class DirectoryNode(BaseModel):
     name: str
     type: str = "file"

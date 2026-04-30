@@ -324,6 +324,93 @@ def _parse_cursor_transcript(text: str) -> List[MessagePair]:
     return pairs
 
 
+def _parse_antigravity_transcript(text: str) -> List[MessagePair]:
+    """Parse an Antigravity-exported markdown transcript into message pairs.
+
+    Antigravity transcripts exported from the Antigravity coding assistant
+    follow this format::
+
+        # Chat Conversation
+
+        Note: _This is purely the output of the chat conversation..._
+
+        ### User Input
+
+        <user message>
+
+        ### Planner Response
+
+        <agent response>
+
+        ### User Input
+
+        ...
+
+    Multiple consecutive ``### Planner Response`` blocks (e.g. when the agent
+    used tools between messages) are concatenated into a single agent response.
+    """
+    pairs: List[MessagePair] = []
+
+    # Normalise line endings
+    text = text.replace("\r\n", "\n")
+
+    # Split into blocks by H3 headings (### ...)
+    # We keep the heading so we know which role each block belongs to.
+    blocks = re.split(r"(?m)^(###\s+.+)$", text)
+
+    current_user_query: str | None = None
+    planner_chunks: List[str] = []
+
+    for i, block in enumerate(blocks):
+        block = block.strip()
+        if not block:
+            continue
+
+        if re.match(r"###\s+User Input", block, re.IGNORECASE):
+            # Flush any pending planner chunks as a completed pair
+            if current_user_query and planner_chunks:
+                pairs.append(MessagePair(
+                    user_query=current_user_query,
+                    agent_response="\n\n".join(planner_chunks).strip(),
+                ))
+                planner_chunks = []
+            # The next block (index i+1) is the content of this user turn
+            current_user_query = None  # will be filled by the content block below
+
+        elif re.match(r"###\s+Planner Response", block, re.IGNORECASE):
+            # The next content block belongs to the agent
+            pass  # content handled in the else branch below
+
+        else:
+            # This is a content block — figure out which role it belongs to by
+            # looking at the previous heading token.
+            if i > 0:
+                prev_heading = blocks[i - 1].strip() if i >= 1 else ""
+                if re.match(r"###\s+User Input", prev_heading, re.IGNORECASE):
+                    # New user turn — flush previous pair first
+                    if current_user_query and planner_chunks:
+                        pairs.append(MessagePair(
+                            user_query=current_user_query,
+                            agent_response="\n\n".join(planner_chunks).strip(),
+                        ))
+                        planner_chunks = []
+                    current_user_query = block
+
+                elif re.match(r"###\s+Planner Response", prev_heading, re.IGNORECASE):
+                    # Accumulate (multiple tool-use steps = multiple planner blocks)
+                    if block:
+                        planner_chunks.append(block)
+
+    # Flush last pair
+    if current_user_query and planner_chunks:
+        pairs.append(MessagePair(
+            user_query=current_user_query,
+            agent_response="\n\n".join(planner_chunks).strip(),
+        ))
+
+    return pairs
+
+
 async def _parse_transcript_with_llm(text: str) -> List[MessagePair]:
     """Use an LLM to parse transcript text when format detection fails."""
     from src.models import get_model
@@ -371,18 +458,19 @@ Transcript:
 
 def _parse_transcript_text(text: str) -> tuple[str, List[MessagePair]]:
     """Parse transcript text and return (format, pairs)."""
-    
+
     # Detect Cursor format
     if "_Exported on" in text and "from Cursor" in text:
         pairs = _parse_cursor_transcript(text)
         if pairs:
             return "cursor", pairs
-    
-    # Add other format detections here in the future
-    # elif "Antigravity" in text:
-    #     pairs = _parse_antigravity_transcript(text)
-    #     return "antigravity", pairs
-    
+
+    # Detect Antigravity format
+    if "# Chat Conversation" in text and ("### User Input" in text or "### Planner Response" in text):
+        pairs = _parse_antigravity_transcript(text)
+        if pairs:
+            return "antigravity", pairs
+
     return "unknown", []
 
 

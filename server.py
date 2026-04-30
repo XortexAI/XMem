@@ -727,6 +727,74 @@ def _parse_cursor_transcript(text: str) -> list[dict[str, str]]:
     return pairs
 
 
+def _parse_antigravity_transcript(text: str) -> list[dict[str, str]]:
+    """Parse an Antigravity-exported markdown transcript into message pairs.
+
+    Antigravity transcripts follow this structure::
+
+        # Chat Conversation
+        Note: _This is purely the output..._
+        ### User Input
+        <user message>
+        ### Planner Response
+        <agent response>
+        ...
+
+    Multiple consecutive ``### Planner Response`` blocks are concatenated into
+    a single agent response (they occur when the agent used tools mid-turn).
+    """
+    pairs: list[dict[str, str]] = []
+
+    text = text.replace("\r\n", "\n")
+
+    # Split on H3 headings, keeping the headings in the token list
+    blocks = re.split(r"(?m)^(###\s+.+)$", text)
+
+    current_user_query: str | None = None
+    planner_chunks: list[str] = []
+
+    for i, block in enumerate(blocks):
+        block = block.strip()
+        if not block:
+            continue
+
+        if re.match(r"###\s+User Input", block, re.IGNORECASE):
+            if current_user_query and planner_chunks:
+                pairs.append({
+                    "user_query": current_user_query,
+                    "agent_response": "\n\n".join(planner_chunks).strip(),
+                })
+                planner_chunks = []
+            current_user_query = None
+
+        elif re.match(r"###\s+Planner Response", block, re.IGNORECASE):
+            pass  # content handled below
+
+        else:
+            if i > 0:
+                prev_heading = blocks[i - 1].strip() if i >= 1 else ""
+                if re.match(r"###\s+User Input", prev_heading, re.IGNORECASE):
+                    if current_user_query and planner_chunks:
+                        pairs.append({
+                            "user_query": current_user_query,
+                            "agent_response": "\n\n".join(planner_chunks).strip(),
+                        })
+                        planner_chunks = []
+                    current_user_query = block
+
+                elif re.match(r"###\s+Planner Response", prev_heading, re.IGNORECASE):
+                    if block:
+                        planner_chunks.append(block)
+
+    if current_user_query and planner_chunks:
+        pairs.append({
+            "user_query": current_user_query,
+            "agent_response": "\n\n".join(planner_chunks).strip(),
+        })
+
+    return pairs
+
+
 async def _parse_transcript_with_llm(text: str) -> list[dict[str, str]]:
     """Use an LLM to parse transcript text when format detection fails."""
     from src.models import get_model
@@ -779,7 +847,13 @@ def _parse_transcript_text(text: str) -> tuple[str, list[dict[str, str]]]:
         pairs = _parse_cursor_transcript(text)
         if pairs:
             return "cursor", pairs
-            
+
+    # Detect Antigravity format
+    if "# Chat Conversation" in text and ("### User Input" in text or "### Planner Response" in text):
+        pairs = _parse_antigravity_transcript(text)
+        if pairs:
+            return "antigravity", pairs
+
     return "unknown", []
 
 

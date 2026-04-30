@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -208,6 +208,73 @@ async def scrape_chat_link(req: ScrapeRequest):
                 "data": {"pairs": pairs},
                 "elapsed_ms": elapsed,
             },
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "status": "error",
+                "data": None,
+                "error": str(exc) or repr(exc),
+                "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+            },
+            status_code=500,
+        )
+
+
+@app.post("/v1/memory/parse_transcript")
+async def parse_transcript(file: UploadFile = File(...)):
+    start = time.perf_counter()
+    
+    try:
+        content_bytes = await file.read()
+        text = content_bytes.decode("utf-8", errors="ignore")
+        
+        if not text.strip():
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "data": None,
+                    "error": "Uploaded file is empty.",
+                    "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+                },
+                status_code=400,
+            )
+            
+        format_detected, pairs = _parse_transcript_text(text)
+        
+        if not pairs:
+            print("[parse_transcript] Format detection failed, trying LLM fallback", flush=True)
+            pairs = await _parse_transcript_with_llm(text)
+            
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        
+        if not pairs:
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "data": None,
+                    "error": "Could not extract message pairs from the transcript.",
+                    "elapsed_ms": elapsed,
+                },
+                status_code=400,
+            )
+            
+        return JSONResponse(
+            {
+                "status": "ok",
+                "data": {"pairs": pairs},
+                "elapsed_ms": elapsed,
+            },
+        )
+    except UnicodeDecodeError:
+        return JSONResponse(
+            {
+                "status": "error",
+                "data": None,
+                "error": "Could not decode file. Please upload a text file.",
+                "elapsed_ms": round((time.perf_counter() - start) * 1000, 2),
+            },
+            status_code=400,
         )
     except Exception as exc:
         return JSONResponse(
@@ -624,6 +691,96 @@ def _extract_chat_pairs(url: str, html: str) -> tuple[str, str, list[dict[str, s
             extraction_method = "fallback"
 
     return provider, extraction_method, pairs
+
+
+def _parse_cursor_transcript(text: str) -> list[dict[str, str]]:
+    """Parse a Cursor-exported markdown transcript into message pairs."""
+    pairs: list[dict[str, str]] = []
+    
+    sections = text.split("---")
+    
+    start_idx = 0
+    if sections and "Exported on" in sections[0]:
+        start_idx = 1
+    
+    current_user_query = None
+    
+    for section in sections[start_idx:]:
+        section = section.strip()
+        if not section:
+            continue
+        
+        if section.startswith("**User**"):
+            content = section.replace("**User**", "", 1).strip()
+            current_user_query = content
+        
+        elif section.startswith("**Cursor**") or section.startswith("**Assistant**"):
+            content = section.replace("**Cursor**", "", 1).replace("**Assistant**", "", 1).strip()
+            
+            if current_user_query:
+                pairs.append({
+                    "user_query": current_user_query,
+                    "agent_response": content,
+                })
+                current_user_query = None
+    
+    return pairs
+
+
+async def _parse_transcript_with_llm(text: str) -> list[dict[str, str]]:
+    """Use an LLM to parse transcript text when format detection fails."""
+    from src.models import get_model
+    
+    max_chars = 50000
+    if len(text) > max_chars:
+        text = text[:max_chars]
+    
+    model = get_model(temperature=0.0)
+    
+    prompt = f"""You are parsing a chat transcript. Extract all user-agent message pairs from the following text.
+
+Return a JSON array of objects with this structure:
+[
+  {{"user_query": "...", "agent_response": "..."}},
+  ...
+]
+
+Only return valid JSON, nothing else.
+
+Transcript:
+{text}
+"""
+    
+    try:
+        response = await model.ainvoke(prompt)
+        content = response.content if hasattr(response, "content") else str(response)
+        
+        json_match = re.search(r'\[.*\]', content, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group(0))
+            pairs = [
+                {
+                    "user_query": item.get("user_query", ""), 
+                    "agent_response": item.get("agent_response", "")
+                }
+                for item in data
+                if isinstance(item, dict)
+            ]
+            return pairs
+    except Exception as exc:
+        print(f"[parse_transcript] LLM parsing failed: {exc}", flush=True)
+    
+    return []
+
+
+def _parse_transcript_text(text: str) -> tuple[str, list[dict[str, str]]]:
+    """Parse transcript text and return (format, pairs)."""
+    if "_Exported on" in text and "from Cursor" in text:
+        pairs = _parse_cursor_transcript(text)
+        if pairs:
+            return "cursor", pairs
+            
+    return "unknown", []
 
 
 async def _scrape_chat_share(url: str) -> dict[str, Any]:

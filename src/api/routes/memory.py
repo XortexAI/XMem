@@ -11,7 +11,7 @@ import logging
 import time
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import JSONResponse
 
 from src.api.dependencies import (
@@ -271,6 +271,121 @@ def _extract_chat_pairs(url: str, html: str) -> tuple[str, str, List[MessagePair
     return provider, extraction_method, pairs
 
 
+def _parse_cursor_transcript(text: str) -> List[MessagePair]:
+    """Parse a Cursor-exported markdown transcript into message pairs.
+    
+    Cursor transcripts have the format:
+    _Exported on ... from Cursor_
+    ---
+    **User**
+    <user message>
+    ---
+    **Cursor**
+    <agent response>
+    ---
+    ...
+    """
+    pairs: List[MessagePair] = []
+    
+    # Split by --- separator
+    sections = text.split("---")
+    
+    # Skip the first section if it's the header (contains "Exported on")
+    start_idx = 0
+    if sections and "Exported on" in sections[0]:
+        start_idx = 1
+    
+    current_user_query = None
+    
+    for section in sections[start_idx:]:
+        section = section.strip()
+        if not section:
+            continue
+        
+        # Check if this is a User message
+        if section.startswith("**User**"):
+            # Extract the user message (remove the **User** header)
+            content = section.replace("**User**", "", 1).strip()
+            current_user_query = content
+        
+        # Check if this is a Cursor/Agent message
+        elif section.startswith("**Cursor**") or section.startswith("**Assistant**"):
+            # Extract the agent response
+            content = section.replace("**Cursor**", "", 1).replace("**Assistant**", "", 1).strip()
+            
+            # If we have a user query, create a pair
+            if current_user_query:
+                pairs.append(MessagePair(
+                    user_query=current_user_query,
+                    agent_response=content,
+                ))
+                current_user_query = None
+    
+    return pairs
+
+
+async def _parse_transcript_with_llm(text: str) -> List[MessagePair]:
+    """Use an LLM to parse transcript text when format detection fails."""
+    from src.models import get_model
+    
+    # Limit text size to avoid token issues
+    max_chars = 50000
+    if len(text) > max_chars:
+        text = text[:max_chars]
+    
+    model = get_model(temperature=0.0)
+    
+    prompt = f"""You are parsing a chat transcript. Extract all user-agent message pairs from the following text.
+
+Return a JSON array of objects with this structure:
+[
+  {{"user_query": "...", "agent_response": "..."}},
+  ...
+]
+
+Only return valid JSON, nothing else.
+
+Transcript:
+{text}
+"""
+    
+    try:
+        response = await model.ainvoke(prompt)
+        content = response.content if hasattr(response, "content") else str(response)
+        
+        # Try to extract JSON from the response
+        json_match = re.search(r'\[.*\]', content, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group(0))
+            pairs = [
+                MessagePair(user_query=item.get("user_query", ""), agent_response=item.get("agent_response", ""))
+                for item in data
+                if isinstance(item, dict)
+            ]
+            return pairs
+    except Exception as exc:
+        logger.warning("LLM transcript parsing failed: %s", exc)
+    
+    return []
+
+
+def _parse_transcript_text(text: str) -> tuple[str, List[MessagePair]]:
+    """Parse transcript text and return (format, pairs)."""
+    
+    # Detect Cursor format
+    if "_Exported on" in text and "from Cursor" in text:
+        pairs = _parse_cursor_transcript(text)
+        if pairs:
+            return "cursor", pairs
+    
+    # Add other format detections here in the future
+    # elif "Antigravity" in text:
+    #     pairs = _parse_antigravity_transcript(text)
+    #     return "antigravity", pairs
+    
+    return "unknown", []
+
+
 async def _scrape_chat_share(url: str) -> Dict[str, Any]:
     html, final_url = await _render_chat_share(url)
     provider, extraction_method, pairs = _extract_chat_pairs(final_url or url, html)
@@ -286,10 +401,7 @@ async def _scrape_chat_share(url: str) -> Dict[str, Any]:
     }
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # POST /v1/memory/ingest
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
 @router.post(
     "/ingest",
     response_model=APIResponse,
@@ -335,10 +447,7 @@ def _safe_classifications(result: Dict[str, Any]) -> list:
     return []
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # POST /v1/memory/retrieve
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
 @router.post(
     "/retrieve",
     response_model=APIResponse,
@@ -374,10 +483,7 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
         return _error(request, str(exc), 500, elapsed)
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # POST /v1/memory/search
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
 @router.post(
     "/search",
     response_model=APIResponse,
@@ -465,10 +571,7 @@ async def _search_summary(pipeline: RetrievalPipeline, query: str, user_id: str,
         return []
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # POST /v1/memory/scrape
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
 @scrape_router.post(
     "/scrape",
     response_model=APIResponse,
@@ -494,3 +597,47 @@ async def scrape_chat_link(req: ScrapeRequest, request: Request):
         logger.exception("Scrape failed for url=%s", url)
         return _error(request, str(exc) or repr(exc), 500, elapsed)
 
+
+
+# POST /v1/memory/parse_transcript
+@scrape_router.post(
+    "/parse_transcript",
+    response_model=APIResponse,
+    summary="Parse an uploaded chat transcript file into message pairs",
+)
+async def parse_transcript(
+    request: Request,
+    file: UploadFile = File(..., description="Chat transcript file (.txt, .md, .json)")
+):
+    start = time.perf_counter()
+    
+    try:
+        # Read file content
+        content_bytes = await file.read()
+        text = content_bytes.decode("utf-8", errors="ignore")
+        
+        if not text.strip():
+            return _error(request, "Uploaded file is empty.", 400)
+        
+        # Try to parse the transcript
+        format_detected, pairs = _parse_transcript_text(text)
+        
+        # If no pairs found, try LLM fallback
+        if not pairs:
+            logger.info("Format detection failed, trying LLM fallback")
+            pairs = await _parse_transcript_with_llm(text)
+        
+        if not pairs:
+            return _error(request, "Could not extract message pairs from the transcript.", 400)
+        
+        data = ScrapeResponse(pairs=pairs)
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _wrap(request, data, elapsed)
+    
+    except UnicodeDecodeError:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _error(request, "Could not decode file. Please upload a text file.", 400, elapsed)
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Transcript parsing failed for file=%s", file.filename)
+        return _error(request, str(exc) or repr(exc), 500, elapsed)

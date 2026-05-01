@@ -1,7 +1,9 @@
 """Authentication routes for Google OAuth and JWT management."""
 
+import secrets
+import string
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
@@ -10,14 +12,68 @@ from google.oauth2 import id_token
 from jose import JWTError, jwt
 from pydantic import BaseModel
 
-from src.api.dependencies import get_current_user, require_api_key
+from src.api.dependencies import get_current_user, require_api_key, require_user
 from src.config import settings
 from src.database.user_store import UserStore
+from src.database.api_key_store import APIKeyStore
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-# Initialize user store
+# Initialize stores
 user_store = UserStore()
+api_key_store = APIKeyStore()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MCP OAuth Temp Token Store (in-memory with TTL)
+# ═══════════════════════════════════════════════════════════════════════════
+_mcp_temp_tokens: Dict[str, Dict[str, Any]] = {}
+TEMP_TOKEN_PREFIX = "xm-temp-"
+TEMP_TOKEN_TTL_MINUTES = 10
+TEMP_TOKEN_LENGTH = 32
+
+
+def _generate_mcp_temp_token() -> str:
+    """Generate a temporary token for MCP OAuth flow."""
+    alphabet = string.ascii_letters + string.digits
+    random_part = "".join(secrets.choice(alphabet) for _ in range(TEMP_TOKEN_LENGTH))
+    return f"{TEMP_TOKEN_PREFIX}{random_part}"
+
+
+def _create_mcp_temp_token(user_id: str) -> str:
+    """Create and store a temporary token for the user."""
+    token = _generate_mcp_temp_token()
+    expires_at = datetime.utcnow() + timedelta(minutes=TEMP_TOKEN_TTL_MINUTES)
+
+    _mcp_temp_tokens[token] = {
+        "user_id": user_id,
+        "created_at": datetime.utcnow(),
+        "expires_at": expires_at,
+        "exchanged": False,
+    }
+
+    return token
+
+
+def _get_and_invalidate_mcp_token(token: str) -> Optional[str]:
+    """Validate temp token and return user_id if valid, None otherwise."""
+    if token not in _mcp_temp_tokens:
+        return None
+
+    token_data = _mcp_temp_tokens[token]
+
+    # Check expiry
+    if datetime.utcnow() > token_data["expires_at"]:
+        del _mcp_temp_tokens[token]
+        return None
+
+    # Check if already exchanged
+    if token_data["exchanged"]:
+        return None
+
+    # Mark as exchanged and return user_id
+    user_id = token_data["user_id"]
+    del _mcp_temp_tokens[token]  # Single-use token
+    return user_id
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -60,6 +116,30 @@ class UsernameCheckResponse(BaseModel):
 class RefreshRequest(BaseModel):
     """Request model for token refresh."""
     refresh_token: str
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MCP OAuth Models
+# ═══════════════════════════════════════════════════════════════════════════
+
+class MCPTempTokenResponse(BaseModel):
+    """Response model for MCP temp token generation."""
+    temp_token: str
+    expires_in: int  # seconds
+    expires_at: datetime
+
+
+class MCPExchangeRequest(BaseModel):
+    """Request model for exchanging temp token for API key."""
+    temp_token: str
+    client_type: str = "mcp"  # For future extensibility
+
+
+class MCPExchangeResponse(BaseModel):
+    """Response model for successful MCP authentication."""
+    status: str = "success"
+    api_key: str
+    user: dict
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -316,3 +396,82 @@ async def set_username(req: SetUsernameRequest, current_user: dict = Depends(get
 async def verify_key(user: dict = Depends(require_api_key)):
     """Verify an API key and return the associated user information."""
     return UserResponse(**user)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MCP OAuth Routes
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/mcp-token", response_model=MCPTempTokenResponse)
+async def generate_mcp_temp_token(current_user: dict = Depends(require_user)):
+    """
+    Generate a temporary token for MCP OAuth authentication.
+
+    This endpoint is called from the XMem web UI when a user wants to
+    connect their account to an MCP client (Claude Desktop, ChatGPT, etc.)
+    that doesn't support environment variable configuration.
+
+    The temp token is valid for 10 minutes and can only be exchanged once.
+    """
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+
+    user_id = str(current_user.get("id"))
+    temp_token = _create_mcp_temp_token(user_id)
+
+    return MCPTempTokenResponse(
+        temp_token=temp_token,
+        expires_in=TEMP_TOKEN_TTL_MINUTES * 60,
+        expires_at=_mcp_temp_tokens[temp_token]["expires_at"]
+    )
+
+
+@router.post("/mcp-exchange", response_model=MCPExchangeResponse)
+async def exchange_mcp_token(request: MCPExchangeRequest):
+    """
+    Exchange a temporary MCP token for a permanent API key.
+
+    This endpoint is called by the MCP server to exchange the temporary
+    token (provided by the user) for a long-lived API key.
+
+    The temp token is single-use and invalidated after exchange.
+    """
+    # Validate and consume the temp token
+    user_id = _get_and_invalidate_mcp_token(request.temp_token)
+
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token"
+        )
+
+    # Get user details
+    user = user_store.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Create a new API key for this user
+    key_result = api_key_store.create_api_key(
+        user_id=user_id,
+        name=f"MCP Client - {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+    )
+
+    # Prepare user response
+    user_response = {
+        "id": str(user["_id"]),
+        "email": user.get("email"),
+        "name": user.get("name"),
+        "username": user.get("username"),
+    }
+
+    return MCPExchangeResponse(
+        status="success",
+        api_key=key_result["key"],
+        user=user_response
+    )

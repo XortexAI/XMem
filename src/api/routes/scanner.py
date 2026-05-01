@@ -75,7 +75,10 @@ class ValidateUrlRequest(BaseModel):
 
 class ScanRequest(BaseModel):
     github_url: str = Field(..., min_length=1)
-    username: str = Field(..., min_length=1)
+    username: str = Field(
+        default="",
+        description="Deprecated and ignored; the username is derived from authentication.",
+    )
     pat: str = Field(default="")
     branch: str = Field(default="main")
     force_full: bool = Field(default=True)
@@ -753,7 +756,7 @@ async def resume_scan(req: ResumeScanRequest, user: dict = Depends(require_api_k
 
 
 @router.post("/scan", summary="Start scanning a GitHub repository")
-async def start_scan(req: ScanRequest):
+async def start_scan(req: ScanRequest, user: dict = Depends(require_api_key)):
     try:
         org, repo = _parse_github_url(req.github_url)
     except ValueError as e:
@@ -761,7 +764,7 @@ async def start_scan(req: ScanRequest):
             {"status": "error", "error": str(e)}, status_code=400,
         )
 
-    username = req.username
+    username = user.get("username") or user.get("name") or user["id"]
     job_id = f"{username}:{org}:{repo}"
     store = _get_code_store()
 

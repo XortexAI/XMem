@@ -72,6 +72,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
       <span>Users</span>
     </div>
+    <div class="nav-item" data-page="scanner" onclick="navigate('scanner')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      <span>Scanner</span>
+    </div>
 
     <div class="sidebar-footer">
       <div class="server-status" id="sidebar-status">
@@ -361,6 +365,103 @@
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scanner Analytics Page -->
+    <div id="page-scanner" class="page">
+      <div class="cards">
+        <div class="card card-glow-blue">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg></div>
+          <div class="card-content"><div class="label">Total Jobs</div><div class="value" id="scanner-jobs-total">—</div></div>
+        </div>
+        <div class="card card-glow-green">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></div>
+          <div class="card-content"><div class="label">User Repos</div><div class="value" id="scanner-repos-total">—</div></div>
+        </div>
+        <div class="card card-glow-purple">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2v20M2 12h20"/></svg></div>
+          <div class="card-content"><div class="label">Scan Runs</div><div class="value" id="scanner-runs-total">—</div></div>
+        </div>
+        <div class="card card-glow-amber">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg></div>
+          <div class="card-content"><div class="label">Community Stars</div><div class="value" id="scanner-stars-total">—</div></div>
+        </div>
+      </div>
+
+      <!-- Second row of cards -->
+      <div class="cards">
+        <div class="card card-glow-blue">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></div>
+          <div class="card-content"><div class="label">Index Visibility</div><div class="value" id="scanner-visibility-total">—</div></div>
+        </div>
+        <div class="card card-glow-green">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></div>
+          <div class="card-content"><div class="label">Unique Stargazers</div><div class="value" id="scanner-stargazers">—</div></div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="panel">
+          <div class="panel-header"><h3>Recent Scanner Jobs</h3></div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead><tr><th>Job ID</th><th>User</th><th>Org/Repo</th><th>Phase 1</th><th>Phase 2</th><th>Updated</th></tr></thead>
+              <tbody id="scanner-jobs-body"><tr><td colspan="6" class="empty-state">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h3>Recent Scan Runs</h3></div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead><tr><th>Org</th><th>Repo</th><th>Status</th><th>Last Scanned</th></tr></thead>
+              <tbody id="scanner-runs-body"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="panel">
+          <div class="panel-header"><h3>Top Starred Repositories</h3></div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead><tr><th>Organization</th><th>Repository</th><th>Stars</th></tr></thead>
+              <tbody id="scanner-stars-body"><tr><td colspan="3" class="empty-state">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h3>Repos Per User (Top 10)</h3></div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead><tr><th>User</th><th>Repo Count</th></tr></thead>
+              <tbody id="scanner-repos-per-user-body"><tr><td colspan="2" class="empty-state">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="panel">
+          <div class="panel-header"><h3>Recent User Repos</h3></div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead><tr><th>User</th><th>Organization</th><th>Repository</th><th>Branch</th></tr></thead>
+              <tbody id="scanner-recent-repos-body"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h3>Job Status Breakdown</h3></div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead><tr><th>Phase 1 Status</th><th>Phase 2 Status</th><th>Count</th></tr></thead>
+              <tbody id="scanner-job-status-body"><tr><td colspan="3" class="empty-state">Loading...</td></tr></tbody>
+            </table>
           </div>
         </div>
       </div>

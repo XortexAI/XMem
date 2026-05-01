@@ -49,7 +49,7 @@ function navigate(page) {
   if (nav) nav.classList.add('active');
 
   // Update page title
-  const titles = { overview:'Overview', logs:'Live Terminal', llm:'LLM & Costs', github:'GitHub Traffic', users:'Users' };
+  const titles = { overview:'Overview', logs:'Live Terminal', llm:'LLM & Costs', github:'GitHub Traffic', users:'Users', scanner:'Scanner Analytics' };
   const titleEl = document.getElementById('page-title');
   if (titleEl) titleEl.textContent = titles[page] || page;
 
@@ -57,6 +57,7 @@ function navigate(page) {
   if (page === 'llm') loadLLM();
   if (page === 'github') loadGitHub();
   if (page === 'users') loadUsers();
+  if (page === 'scanner') loadScanner();
   if (page === 'logs' && !_sseSource) connectSystemLogs();
 }
 
@@ -75,11 +76,13 @@ async function loadAll() {
   loadOverview();
   loadLLM();
   loadGitHub();
+  loadScanner();
   // Auto-refresh every 30s
   setInterval(() => {
     if (currentPage === 'overview') loadOverview();
     if (currentPage === 'llm') loadLLM();
     if (currentPage === 'users') loadUsers();
+    if (currentPage === 'scanner') loadScanner();
   }, 30000);
 }
 
@@ -360,6 +363,100 @@ async function loadGitHub() {
     `<tr><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.path||''}</td><td>${r.count||0}</td><td>${r.uniques||0}</td></tr>`
   ).join('');
   document.getElementById('gh-paths-body').innerHTML = pathRows || '<tr><td colspan="3" style="color:var(--text2)">No data</td></tr>';
+}
+
+// ── Scanner page ──────────────────────────────────────────────────
+async function loadScanner() {
+  const data = await apiFetch('/scanner/analytics');
+  if (!data) return;
+
+  if (data.error) {
+    console.error('Scanner analytics error:', data.error);
+    return;
+  }
+
+  // Update summary cards
+  const jobs = data.scanner_jobs || {};
+  const repos = data.user_repos || {};
+  const runs = data.scan_runs || {};
+  const stars = data.community_stars || {};
+  const visibility = data.index_visibility || {};
+
+  document.getElementById('scanner-jobs-total').textContent = formatNum(jobs.total || 0);
+  document.getElementById('scanner-repos-total').textContent = formatNum(repos.total || 0);
+  document.getElementById('scanner-runs-total').textContent = formatNum(runs.total || 0);
+  document.getElementById('scanner-stars-total').textContent = formatNum(stars.total_stars || 0);
+  document.getElementById('scanner-visibility-total').textContent = formatNum(visibility.total || 0);
+  document.getElementById('scanner-stargazers').textContent = formatNum(stars.unique_users || 0);
+
+  // Recent scanner jobs table
+  const jobsRows = (jobs.recent || []).map(j => {
+    const statusBadge = (status) => {
+      const color = status === 'complete' ? 'var(--green)' : status === 'failed' ? 'var(--red)' : status === 'running' ? 'var(--amber)' : 'var(--text2)';
+      return `<span style="color:${color};font-weight:600">${status || 'N/A'}</span>`;
+    };
+    const updated = j.updated_at ? formatDateShort(j.updated_at) : '—';
+    return `<tr>
+      <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${escHtml(j.job_id || 'N/A')}</td>
+      <td>${escHtml(j.username || 'N/A')}</td>
+      <td>${escHtml(j.org || '')}/${escHtml(j.repo || '')}</td>
+      <td>${statusBadge(j.phase1_status)}</td>
+      <td>${statusBadge(j.phase2_status)}</td>
+      <td>${updated}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('scanner-jobs-body').innerHTML = jobsRows || '<tr><td colspan="6" style="color:var(--text2)">No scanner jobs found</td></tr>';
+
+  // Recent scan runs table
+  const runsRows = (runs.latest || []).map(r => {
+    const status = r.status || 'unknown';
+    const statusColor = status === 'success' ? 'var(--green)' : status === 'failed' ? 'var(--red)' : 'var(--text2)';
+    const scanned = r.last_scanned_at ? formatDateShort(r.last_scanned_at) : '—';
+    return `<tr>
+      <td>${escHtml(r.org_id || 'N/A')}</td>
+      <td>${escHtml(r.repo || 'N/A')}</td>
+      <td style="color:${statusColor};font-weight:600">${status}</td>
+      <td>${scanned}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('scanner-runs-body').innerHTML = runsRows || '<tr><td colspan="4" style="color:var(--text2)">No scan runs found</td></tr>';
+
+  // Top starred repos table
+  const starsRows = (stars.top_repos || []).map(s => {
+    const org = (s._id && s._id.org) || 'N/A';
+    const repo = (s._id && s._id.repo) || 'N/A';
+    return `<tr>
+      <td>${escHtml(org)}</td>
+      <td>${escHtml(repo)}</td>
+      <td style="color:#fbbf24;font-weight:600">${s.star_count || 0}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('scanner-stars-body').innerHTML = starsRows || '<tr><td colspan="3" style="color:var(--text2)">No stars data found</td></tr>';
+
+  // Repos per user table
+  const reposPerUserRows = (repos.per_user || []).map(u =>
+    `<tr><td>${escHtml(u._id || 'N/A')}</td><td>${u.repo_count || 0}</td></tr>`
+  ).join('');
+  document.getElementById('scanner-repos-per-user-body').innerHTML = reposPerUserRows || '<tr><td colspan="2" style="color:var(--text2)">No user repos found</td></tr>';
+
+  // Recent user repos table
+  const recentReposRows = (repos.recent || []).map(r =>
+    `<tr>
+      <td>${escHtml(r.username || 'N/A')}</td>
+      <td>${escHtml(r.github_org || 'N/A')}</td>
+      <td>${escHtml(r.repo || 'N/A')}</td>
+      <td>${escHtml(r.branch || 'main')}</td>
+    </tr>`
+  ).join('');
+  document.getElementById('scanner-recent-repos-body').innerHTML = recentReposRows || '<tr><td colspan="4" style="color:var(--text2)">No recent repos found</td></tr>';
+
+  // Job status breakdown table
+  const statusRows = (jobs.by_status || []).map(s => {
+    const p1 = (s._id && s._id.phase1) || 'N/A';
+    const p2 = (s._id && s._id.phase2) || 'N/A';
+    return `<tr><td>${escHtml(p1)}</td><td>${escHtml(p2)}</td><td>${s.count || 0}</td></tr>`;
+  }).join('');
+  document.getElementById('scanner-job-status-body').innerHTML = statusRows || '<tr><td colspan="3" style="color:var(--text2)">No status data found</td></tr>';
 }
 
 

@@ -673,6 +673,103 @@ async def test_llm_track(request: Request, user: dict = Depends(_verify_admin_to
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Scanner analytics endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/scanner/analytics")
+async def scanner_analytics(request: Request, user: dict = Depends(_verify_admin_token)):
+    """Return scanner analytics from all scanner collections."""
+    try:
+        from pymongo import MongoClient
+        client = MongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=3000)
+        db = client[settings.mongodb_database]
+
+        # Collection references
+        scan_runs = db["scan_runs"]
+        scanner_jobs = db["scanner_jobs"]
+        scanner_user_repos = db["scanner_user_repos"]
+        scanner_index_visibility = db["scanner_index_visibility"]
+        scanner_community_stars = db["scanner_community_stars"]
+
+        # 1. Scan Runs stats
+        scan_runs_count = scan_runs.count_documents({})
+        scan_runs_latest = list(scan_runs.find({}, {"_id": 0, "org_id": 1, "repo": 1, "last_sha": 1, "last_scanned_at": 1, "status": 1})
+                                     .sort("last_scanned_at", -1)
+                                     .limit(10))
+
+        # 2. Scanner Jobs stats
+        scanner_jobs_count = scanner_jobs.count_documents({})
+        jobs_by_status = list(scanner_jobs.aggregate([
+            {"$group": {"_id": {"phase1": "$phase1_status", "phase2": "$phase2_status"}, "count": {"$sum": 1}}}
+        ]))
+
+        recent_jobs = list(scanner_jobs.find(
+            {},
+            {"_id": 0, "job_id": 1, "username": 1, "org": 1, "repo": 1, "branch": 1,
+             "phase1_status": 1, "phase2_status": 1, "updated_at": 1, "error": 1}
+        ).sort("updated_at", -1).limit(20))
+
+        # 3. User Repos stats
+        user_repos_count = scanner_user_repos.count_documents({})
+        repos_per_user = list(scanner_user_repos.aggregate([
+            {"$group": {"_id": "$username", "repo_count": {"$sum": 1}}},
+            {"$sort": {"repo_count": -1}},
+            {"$limit": 10}
+        ]))
+
+        recent_repos = list(scanner_user_repos.find(
+            {},
+            {"_id": 0, "username": 1, "github_org": 1, "repo": 1, "branch": 1, "last_seen_commit": 1}
+        ).sort("_id", -1).limit(20))
+
+        # 4. Index Visibility stats
+        visibility_count = scanner_index_visibility.count_documents({})
+        visibility_breakdown = list(scanner_index_visibility.aggregate([
+            {"$group": {"_id": "$is_visible", "count": {"$sum": 1}}}
+        ]))
+
+        # 5. Community Stars stats
+        stars_count = scanner_community_stars.count_documents({})
+        top_starred_repos = list(scanner_community_stars.aggregate([
+            {"$group": {"_id": {"org": "$org_id", "repo": "$repo"}, "star_count": {"$sum": 1}}},
+            {"$sort": {"star_count": -1}},
+            {"$limit": 10}
+        ]))
+
+        # Unique users who starred
+        unique_stargazers = scanner_community_stars.distinct("username")
+
+        return JSONResponse({
+            "scan_runs": {
+                "total": scan_runs_count,
+                "latest": _bson_safe(scan_runs_latest),
+            },
+            "scanner_jobs": {
+                "total": scanner_jobs_count,
+                "by_status": _bson_safe(jobs_by_status),
+                "recent": _bson_safe(recent_jobs),
+            },
+            "user_repos": {
+                "total": user_repos_count,
+                "per_user": _bson_safe(repos_per_user),
+                "recent": _bson_safe(recent_repos),
+            },
+            "index_visibility": {
+                "total": visibility_count,
+                "breakdown": _bson_safe(visibility_breakdown),
+            },
+            "community_stars": {
+                "total_stars": stars_count,
+                "unique_users": len(unique_stargazers),
+                "top_repos": _bson_safe(top_starred_repos),
+            },
+        })
+    except Exception as exc:
+        logger.exception("Scanner analytics failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Users management endpoints
 # ═══════════════════════════════════════════════════════════════════════════
 

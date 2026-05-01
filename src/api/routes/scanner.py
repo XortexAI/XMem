@@ -1000,8 +1000,9 @@ async def community_star(req: CommunityStarRequest):
     )
 
 
-@router.get("/repos", summary="List scanned repositories for a user")
-async def list_repos(username: str = Query(...)):
+@router.get("/repos", summary="List scanned repositories for the authenticated user")
+async def list_repos(user: dict = Depends(require_api_key)):
+    username = user.get("username") or user.get("name") or user["id"]
     store = _get_code_store()
     jobs = store.list_scanner_jobs_for_user(username)
     seen: set[tuple[str, str]] = set()

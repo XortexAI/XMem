@@ -121,74 +121,109 @@ async def _render_chat_share(url: str) -> tuple[str, str]:
     return await asyncio.to_thread(_render_chat_share_sync, url)
 
 
-def _render_chat_share_sync(url: str) -> tuple[str, str]:
-    html = ""
-    final_url = url
+# ── Warm browser pool ──────────────────────────────────────────────────────
+# Launching Chromium from cold takes 3-5s. We keep a singleton alive and
+# reuse it across scrape requests. The browser is thread-safe when each
+# request uses its own BrowserContext.
 
-    with sync_playwright() as p:
-        browser = None
+import threading
+
+_browser_lock = threading.Lock()
+_pw_instance = None
+_browser_instance = None
+
+
+def _get_or_create_browser():
+    """Return a long-lived Playwright browser, launching one if needed."""
+    global _pw_instance, _browser_instance
+
+    with _browser_lock:
+        # If the browser is still alive, reuse it
+        if _browser_instance is not None and _browser_instance.is_connected():
+            return _browser_instance
+
+        # Tear down stale Playwright context if any
+        if _pw_instance is not None:
+            try:
+                _pw_instance.stop()
+            except Exception:
+                pass
+
+        _pw_instance = sync_playwright().start()
+
         launch_errors = []
         for channel in (None, "msedge", "chrome"):
             try:
                 kwargs = {"headless": True}
                 if channel:
                     kwargs["channel"] = channel
-                browser = p.chromium.launch(**kwargs)
-                break
+                _browser_instance = _pw_instance.chromium.launch(**kwargs)
+                logger.info("[scrape] Playwright browser launched (channel=%s)", channel or "bundled")
+                return _browser_instance
             except Exception as exc:
                 launch_errors.append(f"{channel or 'bundled chromium'}: {exc}")
 
-        if browser is None:
-            raise RuntimeError(
-                "Could not launch Playwright browser. Tried bundled Chromium, "
-                f"Edge, and Chrome. Errors: {' | '.join(launch_errors)}"
-            )
-
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/123.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 800},
-            ignore_https_errors=True,
+        raise RuntimeError(
+            "Could not launch Playwright browser. Tried bundled Chromium, "
+            f"Edge, and Chrome. Errors: {' | '.join(launch_errors)}"
         )
 
+
+def _render_chat_share_sync(url: str) -> tuple[str, str]:
+    html = ""
+    final_url = url
+
+    browser = _get_or_create_browser()
+
+    context = browser.new_context(
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        ),
+        viewport={"width": 1280, "height": 800},
+        ignore_https_errors=True,
+    )
+
+    try:
+        page = context.new_page()
+
+        def _block_heavy_assets(route):
+            rtype = route.request.resource_type
+            if rtype in {"image", "media", "font", "stylesheet"}:
+                route.abort()
+                return
+            route.continue_()
+
+        page.route("**/*", _block_heavy_assets)
+
         try:
-            page = context.new_page()
+            # domcontentloaded is much faster than networkidle — we don't
+            # need to wait for analytics / tracking pixels to finish.
+            page.goto(url, wait_until="domcontentloaded", timeout=15000)
+        except Exception as exc:
+            logger.warning("Timeout or error during navigation: %s", exc)
 
-            def _block_heavy_assets(route):
-                if route.request.resource_type in {"image", "media", "font"}:
-                    route.abort()
-                    return
-                route.continue_()
-
-            page.route("**/*", _block_heavy_assets)
-
+        provider = _detect_chat_provider(page.url or url)
+        selector = {
+            "chatgpt": "div[data-message-author-role]",
+            "claude": "script",
+            "gemini": "message-content, div.user-query, div.model-response",
+        }.get(provider)
+        if selector:
             try:
-                # Navigate and wait for network to become idle so JS can load messages.
-                page.goto(url, wait_until="networkidle", timeout=20000)
+                page.wait_for_selector(selector, timeout=8000)
             except Exception as exc:
-                logger.warning("Timeout or error waiting for networkidle: %s", exc)
+                logger.warning("Timed out waiting for %s content: %s", provider, exc)
 
-            provider = _detect_chat_provider(page.url or url)
-            selector = {
-                "chatgpt": "div[data-message-author-role]",
-                "claude": "script",
-                "gemini": "message-content, div.user-query, div.model-response",
-            }.get(provider)
-            if selector:
-                try:
-                    page.wait_for_selector(selector, timeout=12000)
-                except Exception as exc:
-                    logger.warning("Timed out waiting for %s content: %s", provider, exc)
+        # No hardcoded sleep — the selector wait above already guarantees
+        # the chat content DOM nodes are present.
 
-            page.wait_for_timeout(2000)
-            final_url = page.url
-            html = page.content()
-        finally:
-            context.close()
-            browser.close()
+        final_url = page.url
+        html = page.content()
+    finally:
+        context.close()
+        # NOTE: we intentionally do NOT close the browser — it's pooled.
 
     return html, final_url
 

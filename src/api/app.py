@@ -106,6 +106,15 @@ def create_app() -> FastAPI:
             _ingest_pipeline.close()
         if _retrieval_pipeline:
             _retrieval_pipeline.close()
+        # Shut down the warm Playwright browser pool
+        try:
+            from src.api.routes.memory import _browser_instance, _pw_instance
+            if _browser_instance:
+                _browser_instance.close()
+            if _pw_instance:
+                _pw_instance.stop()
+        except Exception:
+            pass
         # Stop analytics flush thread
         if settings.enable_analytics:
             from src.config.analytics import analytics as _analytics

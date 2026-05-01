@@ -47,6 +47,8 @@ from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger("xmem.api.routes.memory")
 
+_ingest_semaphore = asyncio.Semaphore(5)
+
 router = APIRouter(
     prefix="/v1/memory",
     tags=["memory"],
@@ -60,10 +62,7 @@ scrape_router = APIRouter(
 )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Helpers
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
 def _model_name(model: Any) -> str:
     return getattr(model, "model", getattr(model, "model_name", "unknown"))
 
@@ -503,14 +502,18 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
     user_id = user.get("username") or user.get("name") or user["id"]
 
     try:
-        result = await pipeline.run(
-            user_query=req.user_query,
-            agent_response=req.agent_response or "Acknowledged.",
-            user_id=user_id,
-            session_datetime=req.session_datetime,
-            image_url=req.image_url,
-            effort_level=req.effort_level,
-        )
+        async with _ingest_semaphore:
+            result = await asyncio.wait_for(
+                pipeline.run(
+                    user_query=req.user_query,
+                    agent_response=req.agent_response or "Acknowledged.",
+                    user_id=user_id,
+                    session_datetime=req.session_datetime,
+                    image_url=req.image_url,
+                    effort_level=req.effort_level,
+                ),
+                timeout=120.0
+            )
         data = IngestResponse(
             model=_model_name(pipeline.model),
             classification=_safe_classifications(result),

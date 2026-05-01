@@ -32,8 +32,9 @@ class BaseAgent(ABC):
         return messages
 
     async def _call_model(self, messages: list) -> str:
+        import asyncio
         start = time.perf_counter()
-        response = await self.model.ainvoke(messages)
+        response = await asyncio.wait_for(self.model.ainvoke(messages), timeout=45.0)
         elapsed = time.perf_counter() - start
 
         content = response.content

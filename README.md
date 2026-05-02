@@ -7,7 +7,6 @@
 
   <a href="#quickstart"><strong>Quickstart</strong></a> · <a href="#benchmarks">Benchmarks</a> · <a href="#architecture">Architecture</a> · <a href="#sdks">SDKs</a> · <a href="docs/api-reference.md">API Docs</a>
 
-  <br/><br/>
 
   <img src="https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white" alt="Python 3.11+"/>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License"/>

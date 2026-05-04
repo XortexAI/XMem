@@ -102,6 +102,19 @@ class IngestResponse(BaseModel):
     image: Optional[DomainResult] = None
 
 
+class BatchIngestRequest(BaseModel):
+    """Store multiple new memories in a single batch."""
+    items: List[IngestRequest] = Field(
+        ..., min_length=1, max_length=100,
+        description="List of conversation turns to ingest"
+    )
+
+class BatchIngestResponse(BaseModel):
+    """Response for a batch ingest operation."""
+    results: List[IngestResponse] = Field(default_factory=list)
+
+
+
 # ── Retrieve (answer a question from memory) ──────────────────────────────
 
 class RetrieveRequest(BaseModel):

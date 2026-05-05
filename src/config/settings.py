@@ -175,6 +175,18 @@ class Settings(BaseSettings):
         ...,
         description="Neo4j password (required)"
     )
+    neo4j_database: Optional[str] = Field(
+        default=None,
+        description="Neo4j database name for Query API transport (NEO4J_DATABASE)",
+    )
+    neo4j_transport: str = Field(
+        default="auto",
+        description="Neo4j transport: auto, bolt, or query_api (NEO4J_TRANSPORT)",
+    )
+    neo4j_ssl_verify: bool = Field(
+        default=True,
+        description="Verify TLS for Neo4j Query API HTTPS requests (NEO4J_SSL_VERIFY)",
+    )
     neo4j_connection_timeout: float = Field(
         default=60.0,
         description="Neo4j driver TCP+handshake timeout in seconds (NEO4J_CONNECTION_TIMEOUT)",
@@ -294,6 +306,22 @@ class Settings(BaseSettings):
     github_repo_name: str = Field(
         default="XMem",
         description="GitHub repo name"
+    )
+
+    # =============================================================================
+    # Outreach (GitHub email scraper + Gmail SMTP sender)
+    # =============================================================================
+    gmail_app_password: Optional[str] = Field(
+        default=None,
+        description="Gmail App Password for sending outreach emails from xmemlabs@gmail.com"
+    )
+    gmail_sender_email: str = Field(
+        default="xmemlabs@gmail.com",
+        description="Gmail sender address for outreach"
+    )
+    xmem_server_url: str = Field(
+        default="https://api.xmem.in",
+        description="Public-facing server URL for tracking pixel/link redirects"
     )
 
     # =============================================================================

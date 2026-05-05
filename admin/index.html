@@ -77,6 +77,12 @@
       <span>Scanner</span>
     </div>
 
+    <div class="nav-section-label">OUTREACH</div>
+    <div class="nav-item" data-page="outreach" onclick="navigate('outreach')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 2L11 13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      <span>Outreach</span>
+    </div>
+
     <div class="sidebar-footer">
       <div class="server-status" id="sidebar-status">
         <div class="status-dot"></div>
@@ -368,6 +374,173 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Outreach Page -->
+    <div id="page-outreach" class="page">
+
+      <!-- Sub-tabs -->
+      <div class="outreach-tabs">
+        <button class="outreach-tab active" data-otab="pats" onclick="switchOutreachTab('pats')">GitHub PATs</button>
+        <button class="outreach-tab" data-otab="scraper" onclick="switchOutreachTab('scraper')">Email Scraper</button>
+        <button class="outreach-tab" data-otab="send" onclick="switchOutreachTab('send')">Send Emails</button>
+        <button class="outreach-tab" data-otab="analytics" onclick="switchOutreachTab('analytics')">Analytics</button>
+      </div>
+
+      <!-- PATs Sub-tab -->
+      <div id="otab-pats" class="outreach-subtab active">
+        <div class="panel">
+          <div class="panel-header"><h3>GitHub Personal Access Tokens</h3></div>
+          <div class="outreach-form-row">
+            <input type="text" id="pat-token-input" placeholder="ghp_xxxxxxxxxxxx" class="outreach-input" style="flex:2">
+            <input type="text" id="pat-label-input" placeholder="Label (optional)" class="outreach-input" style="flex:1">
+            <button class="outreach-btn outreach-btn-primary" onclick="addPAT()">Add PAT</button>
+          </div>
+          <div id="pat-error" class="outreach-error"></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px">
+            <span style="font-size:12px;color:var(--text3)">Inactive PATs (marked red) had bad credentials and won't be used.</span>
+            <button class="outreach-btn outreach-btn-danger" style="padding:4px 12px;font-size:11px" onclick="deleteAllPATs()">Delete All PATs</button>
+          </div>
+          <div class="table-wrap" style="margin-top:8px">
+            <table class="tbl">
+              <thead><tr><th>Label</th><th>Token</th><th>Remaining</th><th>Reset At</th><th>Added</th><th>Actions</th></tr></thead>
+              <tbody id="pats-table-body"><tr><td colspan="6" class="empty-state">No PATs added yet</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scraper Sub-tab -->
+      <div id="otab-scraper" class="outreach-subtab">
+        <div class="panel">
+          <div class="panel-header"><h3>Scrape Stargazer Emails</h3></div>
+          <div class="outreach-form-row">
+            <input type="text" id="scraper-repo-input" placeholder="https://github.com/owner/repo" class="outreach-input" style="flex:2">
+            <input type="number" id="scraper-target-input" placeholder="500" value="500" class="outreach-input" style="flex:0.5;min-width:80px">
+            <button class="outreach-btn outreach-btn-primary" id="btn-start-scrape" onclick="startScrapeJob()">Start</button>
+          </div>
+          <div id="scraper-error" class="outreach-error"></div>
+        </div>
+
+        <!-- Jobs List -->
+        <div class="panel" style="margin-top:16px">
+          <div class="panel-header"><h3>Scraping Jobs</h3><button class="outreach-btn" onclick="loadOutreachJobs()">Refresh</button></div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead><tr><th>Repo</th><th>Status</th><th>Emails Found</th><th>Processed</th><th>Target</th><th>Actions</th></tr></thead>
+              <tbody id="jobs-table-body"><tr><td colspan="6" class="empty-state">No jobs yet</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Live Emails for selected job -->
+        <div class="panel" id="panel-job-emails" style="margin-top:16px;display:none">
+          <div class="panel-header"><h3 id="job-emails-title">Collected Emails</h3><span class="panel-badge" id="job-emails-count">0</span></div>
+          <div id="scraper-progress-wrap" style="margin-bottom:16px;display:none">
+            <div class="outreach-progress-bar"><div class="outreach-progress-fill" id="scraper-progress-fill"></div></div>
+            <div class="outreach-progress-text" id="scraper-progress-text">0 / 0</div>
+          </div>
+          <div class="table-wrap" style="max-height:400px;overflow-y:auto">
+            <table class="tbl">
+              <thead><tr><th>Username</th><th>Email</th><th>Found At</th><th>Sent</th></tr></thead>
+              <tbody id="job-emails-body"><tr><td colspan="4" class="empty-state">Select a job to view emails</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Send Emails Sub-tab -->
+      <div id="otab-send" class="outreach-subtab">
+        <div class="panel">
+          <div class="panel-header"><h3>Email Draft</h3></div>
+          <p style="color:var(--text3);font-size:12px;margin-bottom:12px">Use <code style="color:var(--accent)">{{username}}</code> as a placeholder for the GitHub username.</p>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <input type="text" id="draft-subject" placeholder="Email subject..." class="outreach-input">
+            <textarea id="draft-body" rows="12" placeholder="HTML email body..." class="outreach-input outreach-textarea"></textarea>
+            <div style="display:flex;gap:12px;align-items:center">
+              <button class="outreach-btn outreach-btn-primary" onclick="saveDraft()">Save Draft</button>
+              <button class="outreach-btn" onclick="previewDraft()">Preview</button>
+              <span id="draft-status" style="color:var(--text3);font-size:12px"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Preview -->
+        <div class="panel" id="panel-draft-preview" style="margin-top:16px;display:none">
+          <div class="panel-header"><h3>Preview</h3><button class="modal-close" onclick="document.getElementById('panel-draft-preview').style.display='none'">&times;</button></div>
+          <div id="draft-preview-content" style="background:var(--bg);padding:20px;border-radius:var(--radius-sm);border:1px solid var(--border)"></div>
+        </div>
+
+        <!-- Send Controls -->
+        <div class="panel" style="margin-top:16px">
+          <div class="panel-header"><h3>Send Emails</h3></div>
+          <div class="outreach-form-row">
+            <select id="send-job-select" class="outreach-input" style="flex:2">
+              <option value="">Select a scraping job...</option>
+            </select>
+            <button class="outreach-btn outreach-btn-send" onclick="sendOutreachEmails()">Send to All Unsent</button>
+          </div>
+          <div id="send-error" class="outreach-error"></div>
+          <div id="send-result" style="margin-top:12px;display:none" class="outreach-result"></div>
+        </div>
+      </div>
+
+      <!-- Analytics Sub-tab -->
+      <div id="otab-analytics" class="outreach-subtab">
+        <div class="outreach-form-row" style="margin-bottom:20px">
+          <select id="analytics-job-select" class="outreach-input" style="flex:2" onchange="loadOutreachAnalytics()">
+            <option value="">Select a job for analytics...</option>
+          </select>
+        </div>
+
+        <div class="cards">
+          <div class="card card-glow-blue">
+            <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></div>
+            <div class="card-content"><div class="label">Total Sent</div><div class="value" id="oa-sent">—</div></div>
+          </div>
+          <div class="card card-glow-green">
+            <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></div>
+            <div class="card-content"><div class="label">Opens</div><div class="value" id="oa-opens">—</div></div>
+          </div>
+          <div class="card card-glow-purple">
+            <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></div>
+            <div class="card-content"><div class="label">Clicks</div><div class="value" id="oa-clicks">—</div></div>
+          </div>
+          <div class="card card-glow-amber">
+            <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></div>
+            <div class="card-content"><div class="label">Total Collected</div><div class="value" id="oa-total">—</div></div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="panel">
+            <div class="panel-header"><h3>Open Rate</h3></div>
+            <div style="text-align:center;padding:20px">
+              <div style="font-size:48px;font-weight:600;color:var(--green);font-family:var(--mono)" id="oa-open-rate">0%</div>
+              <div style="color:var(--text3);font-size:12px;margin-top:8px">of sent emails opened</div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><h3>Click Rate</h3></div>
+            <div style="text-align:center;padding:20px">
+              <div style="font-size:48px;font-weight:600;color:var(--purple);font-family:var(--mono)" id="oa-click-rate">0%</div>
+              <div style="color:var(--text3);font-size:12px;margin-top:8px">of sent emails clicked</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Per-email status table -->
+        <div class="panel" style="margin-top:16px">
+          <div class="panel-header"><h3>Email Status</h3></div>
+          <div class="table-wrap" style="max-height:400px;overflow-y:auto">
+            <table class="tbl">
+              <thead><tr><th>Username</th><th>Email</th><th>Sent</th><th>Opened</th><th>Clicked</th></tr></thead>
+              <tbody id="oa-emails-body"><tr><td colspan="5" class="empty-state">Select a job above</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
     </div>
 
     <!-- Scanner Analytics Page -->

@@ -48,8 +48,7 @@ function navigate(page) {
   const nav = document.querySelector(`[data-page="${page}"]`);
   if (nav) nav.classList.add('active');
 
-  // Update page title
-  const titles = { overview:'Overview', logs:'Live Terminal', llm:'LLM & Costs', github:'GitHub Traffic', users:'Users', scanner:'Scanner Analytics' };
+  const titles = { overview:'Overview', logs:'Live Terminal', llm:'LLM & Costs', github:'GitHub Traffic', users:'Users', scanner:'Scanner Analytics', outreach:'Outreach' };
   const titleEl = document.getElementById('page-title');
   if (titleEl) titleEl.textContent = titles[page] || page;
 
@@ -58,6 +57,7 @@ function navigate(page) {
   if (page === 'github') loadGitHub();
   if (page === 'users') loadUsers();
   if (page === 'scanner') loadScanner();
+  if (page === 'outreach') loadOutreach();
   if (page === 'logs' && !_sseSource) connectSystemLogs();
 }
 
@@ -83,6 +83,7 @@ async function loadAll() {
     if (currentPage === 'llm') loadLLM();
     if (currentPage === 'users') loadUsers();
     if (currentPage === 'scanner') loadScanner();
+    if (currentPage === 'outreach') loadOutreachJobs();
   }, 30000);
 }
 
@@ -457,6 +458,507 @@ async function loadScanner() {
     return `<tr><td>${escHtml(p1)}</td><td>${escHtml(p2)}</td><td>${s.count || 0}</td></tr>`;
   }).join('');
   document.getElementById('scanner-job-status-body').innerHTML = statusRows || '<tr><td colspan="3" style="color:var(--text2)">No status data found</td></tr>';
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+// Outreach — GitHub Email Scraper + Email Sender
+// ═════════════════════════════════════════════════════════════════
+
+let _outreachJobsData = [];
+let _outreachSelectedJobId = null;
+let _outreachSSE = null;
+
+async function apiPost(path, body) {
+  const r = await fetch(`${API}${path}`, {
+    method: 'POST',
+    headers: {'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json'},
+    credentials: 'include',
+    body: JSON.stringify(body),
+  });
+  if (r.status === 401) { logout(); return null; }
+  return await r.json();
+}
+
+async function apiDelete(path) {
+  const r = await fetch(`${API}${path}`, {
+    method: 'DELETE',
+    headers: {'Authorization': `Bearer ${token}`},
+    credentials: 'include',
+  });
+  if (r.status === 401) { logout(); return null; }
+  return await r.json();
+}
+
+function switchOutreachTab(tab) {
+  document.querySelectorAll('.outreach-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.outreach-subtab').forEach(t => t.classList.remove('active'));
+  const tabBtn = document.querySelector(`[data-otab="${tab}"]`);
+  if (tabBtn) tabBtn.classList.add('active');
+  const panel = document.getElementById('otab-' + tab);
+  if (panel) panel.classList.add('active');
+
+  if (tab === 'scraper') loadOutreachJobs();
+  if (tab === 'send') { loadOutreachDraft(); populateJobSelects(); }
+  if (tab === 'analytics') populateJobSelects();
+}
+
+async function loadOutreach() {
+  loadOutreachPATs();
+  loadOutreachJobs();
+  loadOutreachDraft();
+  populateJobSelects();
+}
+
+// ── PATs ──────────────────────────────────────────────────────────
+
+async function loadOutreachPATs() {
+  const data = await apiFetch('/outreach/pats');
+  if (!data) return;
+  const pats = data.pats || [];
+  const tbody = document.getElementById('pats-table-body');
+  if (pats.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No PATs added yet. Add a GitHub Personal Access Token above.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = pats.map(p => {
+    const resetAt = p.reset_at ? new Date(p.reset_at).toLocaleString() : '—';
+    const added = p.added_at ? formatDateShort(p.added_at) : '—';
+    const remaining = p.remaining != null ? p.remaining : '?';
+    const isActive = p.active !== false;
+    const remainingColor = !isActive ? 'var(--red)' : remaining > 1000 ? 'var(--green)' : remaining > 100 ? 'var(--amber)' : 'var(--red)';
+    const statusBadge = isActive
+      ? `<span style="color:var(--green);font-size:11px">Active</span>`
+      : `<span style="color:var(--red);font-size:11px">Invalid</span>`;
+    return `<tr>
+      <td>${escHtml(p.label || '')} ${statusBadge}</td>
+      <td style="font-family:var(--mono);font-size:11px;color:var(--text3)">${escHtml(p.token_masked || '')}</td>
+      <td style="color:${remainingColor};font-weight:600">${isActive ? remaining : 'N/A'}</td>
+      <td style="font-size:12px">${resetAt}</td>
+      <td>${added}</td>
+      <td><button class="outreach-btn outreach-btn-danger" style="padding:4px 10px;font-size:11px" onclick="deletePAT('${p._id}')">Remove</button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function addPAT() {
+  const tokenVal = document.getElementById('pat-token-input').value.trim();
+  const label = document.getElementById('pat-label-input').value.trim();
+  const errEl = document.getElementById('pat-error');
+  errEl.textContent = '';
+  errEl.style.color = '';
+
+  if (!tokenVal) { errEl.textContent = 'Token is required'; errEl.style.color = 'var(--red)'; return; }
+
+  const data = await apiPost('/outreach/pats', { token: tokenVal, label });
+  if (data && data.error) {
+    errEl.textContent = data.detail || data.error || 'Failed to add PAT';
+    errEl.style.color = 'var(--red)';
+    return;
+  }
+  if (data && data.detail) {
+    errEl.textContent = data.detail;
+    errEl.style.color = 'var(--red)';
+    return;
+  }
+
+  errEl.textContent = 'PAT validated and added successfully (user + repo access confirmed)';
+  errEl.style.color = '#00cc66';
+  document.getElementById('pat-token-input').value = '';
+  document.getElementById('pat-label-input').value = '';
+  loadOutreachPATs();
+}
+
+async function deletePAT(patId) {
+  if (!confirm('Remove this PAT?')) return;
+  await apiDelete(`/outreach/pats/${patId}`);
+  loadOutreachPATs();
+}
+
+async function deleteAllPATs() {
+  if (!confirm('Delete ALL PATs? You will need to add fresh ones.')) return;
+  await apiDelete('/outreach/pats/all');
+  loadOutreachPATs();
+}
+
+// ── Jobs ──────────────────────────────────────────────────────────
+
+async function loadOutreachJobs() {
+  const data = await apiFetch('/outreach/jobs');
+  if (!data) return;
+  _outreachJobsData = data.jobs || [];
+  renderJobsTable();
+  populateJobSelects();
+}
+
+function renderJobsTable() {
+  const tbody = document.getElementById('jobs-table-body');
+  if (_outreachJobsData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No scraping jobs yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = _outreachJobsData.map(j => {
+    const statusColor = j.status === 'running' ? 'var(--amber)' : j.status === 'completed' ? 'var(--green)' : j.status === 'error' ? 'var(--red)' : 'var(--text3)';
+    const isRunning = j.is_running || j.status === 'running';
+    const actions = isRunning
+      ? `<button class="outreach-btn outreach-btn-danger" style="padding:4px 10px;font-size:11px" onclick="event.stopPropagation();stopJob('${j._id}')">Stop</button>`
+      : `<button class="outreach-btn" style="padding:4px 10px;font-size:11px" onclick="event.stopPropagation();resumeJob('${j._id}')">Resume</button>`;
+    const errorRow = j.error ? `<div style="color:var(--red);font-size:11px;margin-top:4px">${escHtml(j.error)}</div>` : '';
+
+    return `<tr onclick="selectJob('${j._id}')" style="cursor:pointer">
+      <td style="font-size:12px">${escHtml(j.repo_slug || j.repo_url || '')}</td>
+      <td><span style="color:${statusColor};font-weight:600">${j.status || 'unknown'}</span>${errorRow}</td>
+      <td style="font-weight:600;color:var(--accent)">${j.emails_found || 0}</td>
+      <td>${j.processed_index || 0} / ${j.total_stargazers_fetched || 0}</td>
+      <td>${j.target_email_count || 0}</td>
+      <td>${actions} <button class="outreach-btn" style="padding:4px 10px;font-size:11px;margin-left:4px" onclick="event.stopPropagation();selectJob('${j._id}')">View Emails</button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function startScrapeJob() {
+  const repo = document.getElementById('scraper-repo-input').value.trim();
+  const target = parseInt(document.getElementById('scraper-target-input').value) || 500;
+  const errEl = document.getElementById('scraper-error');
+  errEl.textContent = '';
+
+  if (!repo) { errEl.textContent = 'Repository URL is required'; return; }
+
+  const data = await apiPost('/outreach/jobs/start', { repo_url: repo, target_email_count: target });
+  if (data && (data.detail || data.error)) {
+    errEl.textContent = data.detail || data.error;
+    return;
+  }
+
+  loadOutreachJobs();
+  if (data && data._id) {
+    selectJob(data._id);
+    connectJobSSE(data._id);
+  }
+}
+
+async function stopJob(jobId) {
+  await apiPost(`/outreach/jobs/${jobId}/stop`, {});
+  if (_outreachSSE) { _outreachSSE.close(); _outreachSSE = null; }
+  setTimeout(loadOutreachJobs, 500);
+}
+
+async function resumeJob(jobId) {
+  const data = await apiPost(`/outreach/jobs/${jobId}/resume`, {});
+  if (data && (data.detail || data.error)) {
+    document.getElementById('scraper-error').textContent = data.detail || data.error;
+    return;
+  }
+  loadOutreachJobs();
+  selectJob(jobId);
+  connectJobSSE(jobId);
+}
+
+async function selectJob(jobId) {
+  _outreachSelectedJobId = jobId;
+  const panel = document.getElementById('panel-job-emails');
+  panel.style.display = '';
+
+  const job = _outreachJobsData.find(j => j._id === jobId);
+  if (job) {
+    document.getElementById('job-emails-title').textContent = `Emails: ${job.repo_slug || ''}`;
+    const progressWrap = document.getElementById('scraper-progress-wrap');
+    progressWrap.style.display = '';
+    const pct = job.target_email_count > 0 ? Math.min(100, ((job.emails_found || 0) / job.target_email_count) * 100) : 0;
+    document.getElementById('scraper-progress-fill').style.width = pct + '%';
+    document.getElementById('scraper-progress-text').textContent = `${job.emails_found || 0} / ${job.target_email_count} emails found | ${job.processed_index || 0} users scanned`;
+
+    if (job.error) {
+      showScraperStatus(job.error, 'error');
+    } else if (job.status === 'running') {
+      showScraperStatus('Scraping in progress...', 'status');
+    } else if (job.status === 'completed') {
+      showScraperStatus(`Completed. Found ${job.emails_found || 0} emails.`, 'done');
+    } else {
+      showScraperStatus('', 'status');
+    }
+  }
+
+  const data = await apiFetch(`/outreach/jobs/${jobId}/emails`);
+  if (!data) return;
+  const emails = data.emails || [];
+  document.getElementById('job-emails-count').textContent = emails.length;
+
+  const tbody = document.getElementById('job-emails-body');
+  if (emails.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No emails collected yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = emails.map(e => {
+    const foundAt = e.scraped_at ? new Date(e.scraped_at).toLocaleString() : '—';
+    const sentBadge = e.sent
+      ? '<span style="color:var(--green);font-weight:600">Yes</span>'
+      : '<span style="color:var(--text3)">No</span>';
+    return `<tr>
+      <td>${escHtml(e.username || '')}</td>
+      <td style="font-family:var(--mono);font-size:12px">${escHtml(e.email || '')}</td>
+      <td style="font-size:12px">${foundAt}</td>
+      <td>${sentBadge}</td>
+    </tr>`;
+  }).join('');
+
+  if (job && (job.is_running || job.status === 'running')) {
+    connectJobSSE(jobId);
+  }
+}
+
+function connectJobSSE(jobId) {
+  if (_outreachSSE) { _outreachSSE.close(); _outreachSSE = null; }
+
+  const url = `${API}/outreach/jobs/${jobId}/stream`;
+  const controller = new AbortController();
+  _outreachSSE = { close: () => controller.abort() };
+
+  fetch(url, {
+    headers: { 'Authorization': `Bearer ${token}` },
+    credentials: 'include',
+    signal: controller.signal,
+  }).then(response => {
+    if (!response.ok) return;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let nextEventType = null;
+
+    function readChunk() {
+      reader.read().then(({ done, value }) => {
+        if (done) { _outreachSSE = null; loadOutreachJobs(); return; }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            nextEventType = line.substring(7).trim();
+          } else if (line.startsWith('data: ')) {
+            const dataStr = line.substring(6);
+            try {
+              const parsed = JSON.parse(dataStr);
+
+              if (nextEventType === 'done' || nextEventType === 'error') {
+                const msg = parsed.message || parsed.error || `Job ${parsed.status || 'finished'}`;
+                showScraperStatus(msg, nextEventType === 'error' ? 'error' : 'done');
+                _outreachSSE = null;
+                loadOutreachJobs();
+                nextEventType = null;
+                return;
+              } else if (nextEventType === 'status') {
+                showScraperStatus(parsed.message || '', parsed._type || 'status');
+              } else {
+                if (parsed._type && parsed._type !== 'email') {
+                  showScraperStatus(parsed.message || '', parsed._type);
+                } else {
+                  appendEmailRow(parsed);
+                  updateJobProgress();
+                }
+              }
+            } catch(e) {}
+            nextEventType = null;
+          }
+        }
+        readChunk();
+      }).catch(() => { _outreachSSE = null; });
+    }
+    readChunk();
+  }).catch(() => { _outreachSSE = null; });
+}
+
+function showScraperStatus(message, type) {
+  const errEl = document.getElementById('scraper-error');
+  if (!errEl) return;
+  if (!message) { errEl.style.display = 'none'; errEl.textContent = ''; return; }
+  errEl.style.display = 'block';
+  errEl.style.padding = '10px 14px';
+  errEl.style.borderRadius = '6px';
+  errEl.style.marginTop = '10px';
+  errEl.style.fontSize = '13px';
+  errEl.style.fontWeight = '500';
+  if (type === 'error') {
+    errEl.style.color = '#ff4444';
+    errEl.style.background = 'rgba(255,68,68,0.08)';
+    errEl.style.border = '1px solid rgba(255,68,68,0.3)';
+    errEl.textContent = '⚠ ' + message;
+  } else if (type === 'warning') {
+    errEl.style.color = '#ffaa00';
+    errEl.style.background = 'rgba(255,170,0,0.08)';
+    errEl.style.border = '1px solid rgba(255,170,0,0.3)';
+    errEl.textContent = message;
+  } else if (type === 'done') {
+    errEl.style.color = '#00cc66';
+    errEl.style.background = 'rgba(0,204,102,0.08)';
+    errEl.style.border = '1px solid rgba(0,204,102,0.3)';
+    errEl.textContent = message;
+  } else {
+    errEl.style.color = 'var(--text2)';
+    errEl.style.background = 'rgba(255,255,255,0.03)';
+    errEl.style.border = '1px solid rgba(255,255,255,0.1)';
+    errEl.textContent = message;
+  }
+}
+
+function appendEmailRow(emailDoc) {
+  const tbody = document.getElementById('job-emails-body');
+  if (!tbody) return;
+  if (tbody.querySelector('.empty-state')) tbody.innerHTML = '';
+
+  const tr = document.createElement('tr');
+  const foundAt = emailDoc.scraped_at ? new Date(emailDoc.scraped_at).toLocaleString() : 'Now';
+  tr.innerHTML = `
+    <td>${escHtml(emailDoc.username || '')}</td>
+    <td style="font-family:var(--mono);font-size:12px">${escHtml(emailDoc.email || '')}</td>
+    <td style="font-size:12px">${foundAt}</td>
+    <td><span style="color:var(--text3)">No</span></td>
+  `;
+  tbody.prepend(tr);
+
+  const countEl = document.getElementById('job-emails-count');
+  if (countEl) {
+    const current = parseInt(countEl.textContent) || 0;
+    countEl.textContent = current + 1;
+  }
+}
+
+function updateJobProgress() {
+  const countEl = document.getElementById('job-emails-count');
+  const count = parseInt(countEl?.textContent) || 0;
+  const job = _outreachJobsData.find(j => j._id === _outreachSelectedJobId);
+  const target = job ? job.target_email_count : 500;
+  const pct = target > 0 ? Math.min(100, (count / target) * 100) : 0;
+  const fill = document.getElementById('scraper-progress-fill');
+  const text = document.getElementById('scraper-progress-text');
+  if (fill) fill.style.width = pct + '%';
+  if (text) text.textContent = `${count} / ${target}`;
+  document.getElementById('scraper-progress-wrap').style.display = '';
+}
+
+// ── Draft & Send ──────────────────────────────────────────────────
+
+async function loadOutreachDraft() {
+  const data = await apiFetch('/outreach/drafts');
+  if (!data) return;
+  if (data.subject) document.getElementById('draft-subject').value = data.subject;
+  if (data.body_html) document.getElementById('draft-body').value = data.body_html;
+}
+
+async function saveDraft() {
+  const subject = document.getElementById('draft-subject').value;
+  const body_html = document.getElementById('draft-body').value;
+  const statusEl = document.getElementById('draft-status');
+  statusEl.textContent = 'Saving...';
+  const data = await apiPost('/outreach/drafts', { subject, body_html });
+  statusEl.textContent = data && !data.error ? 'Saved!' : 'Failed to save';
+  setTimeout(() => { statusEl.textContent = ''; }, 3000);
+}
+
+function previewDraft() {
+  const subject = document.getElementById('draft-subject').value;
+  const body = document.getElementById('draft-body').value;
+  const preview = document.getElementById('panel-draft-preview');
+  preview.style.display = '';
+  const rendered = body.replace(/\{\{username\}\}/g, '<strong>@example_user</strong>');
+  document.getElementById('draft-preview-content').innerHTML = `
+    <div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+      <strong style="color:var(--text)">Subject:</strong>
+      <span style="color:var(--text2);margin-left:8px">${escHtml(subject).replace(/\{\{username\}\}/g, '<strong style="color:var(--accent)">@example_user</strong>')}</span>
+    </div>
+    <div>${rendered}</div>
+  `;
+}
+
+function populateJobSelects() {
+  const selects = ['send-job-select', 'analytics-job-select'];
+  for (const id of selects) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const current = el.value;
+    el.innerHTML = '<option value="">Select a scraping job...</option>';
+    for (const j of _outreachJobsData) {
+      const opt = document.createElement('option');
+      opt.value = j._id;
+      opt.textContent = `${j.repo_slug || j.repo_url} (${j.emails_found || 0} emails)`;
+      el.appendChild(opt);
+    }
+    if (current) el.value = current;
+  }
+}
+
+async function sendOutreachEmails() {
+  const jobId = document.getElementById('send-job-select').value;
+  const errEl = document.getElementById('send-error');
+  const resultEl = document.getElementById('send-result');
+  errEl.textContent = '';
+  resultEl.style.display = 'none';
+
+  if (!jobId) { errEl.textContent = 'Select a scraping job first'; return; }
+  if (!confirm('Send emails to ALL unsent recipients in this job?')) return;
+
+  errEl.textContent = 'Sending... this may take a while';
+  const data = await apiPost('/outreach/send', { job_id: jobId });
+  errEl.textContent = '';
+
+  if (data && (data.detail || data.error)) {
+    errEl.textContent = data.detail || data.error;
+    return;
+  }
+
+  if (data) {
+    resultEl.style.display = '';
+    resultEl.textContent = `Sent ${data.sent || 0} of ${data.total_attempted || 0} emails.` +
+      (data.errors && data.errors.length > 0 ? ` ${data.errors.length} errors.` : '');
+  }
+}
+
+// ── Analytics ─────────────────────────────────────────────────────
+
+async function loadOutreachAnalytics() {
+  const jobId = document.getElementById('analytics-job-select').value;
+  if (!jobId) return;
+
+  const [analyticsData, emailsData] = await Promise.all([
+    apiFetch(`/outreach/analytics/${jobId}`),
+    apiFetch(`/outreach/jobs/${jobId}/emails`),
+  ]);
+
+  if (analyticsData) {
+    document.getElementById('oa-sent').textContent = analyticsData.sent || 0;
+    document.getElementById('oa-opens').textContent = analyticsData.opened || 0;
+    document.getElementById('oa-clicks').textContent = analyticsData.clicked || 0;
+    document.getElementById('oa-total').textContent = analyticsData.total_emails || 0;
+    document.getElementById('oa-open-rate').textContent = (analyticsData.open_rate || 0) + '%';
+    document.getElementById('oa-click-rate').textContent = (analyticsData.click_rate || 0) + '%';
+  }
+
+  if (emailsData) {
+    const emails = emailsData.emails || [];
+    const tbody = document.getElementById('oa-emails-body');
+    if (emails.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No emails for this job</td></tr>';
+      return;
+    }
+    tbody.innerHTML = emails.map(e => {
+      const sentBadge = e.sent
+        ? `<span style="color:var(--green)">Yes</span>`
+        : `<span style="color:var(--text3)">No</span>`;
+      const openBadge = e.opened
+        ? `<span style="color:var(--green)">Yes</span>`
+        : `<span style="color:var(--text3)">No</span>`;
+      const clickBadge = e.clicked
+        ? `<span style="color:var(--green)">Yes</span>`
+        : `<span style="color:var(--text3)">No</span>`;
+      return `<tr>
+        <td>${escHtml(e.username || '')}</td>
+        <td style="font-family:var(--mono);font-size:12px">${escHtml(e.email || '')}</td>
+        <td>${sentBadge}</td>
+        <td>${openBadge}</td>
+        <td>${clickBadge}</td>
+      </tr>`;
+    }).join('');
+  }
 }
 
 

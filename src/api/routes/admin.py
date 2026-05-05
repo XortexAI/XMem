@@ -1069,12 +1069,16 @@ def _get_best_pat(db) -> Optional[Dict]:
     for p in pats:
         if p.get("remaining", 0) > 0:
             return p
-        if p.get("reset_at") and p["reset_at"] <= now:
-            db["outreach_pats"].update_one(
-                {"_id": p["_id"]}, {"$set": {"remaining": 5000}}
-            )
-            p["remaining"] = 5000
-            return p
+        if p.get("reset_at"):
+            reset_dt = p["reset_at"]
+            if reset_dt.tzinfo is None:
+                reset_dt = reset_dt.replace(tzinfo=timezone.utc)
+            if reset_dt <= now:
+                db["outreach_pats"].update_one(
+                    {"_id": p["_id"]}, {"$set": {"remaining": 5000}}
+                )
+                p["remaining"] = 5000
+                return p
     # All PATs have 0 remaining but no reset_at — force a recheck
     for p in pats:
         if not p.get("reset_at"):

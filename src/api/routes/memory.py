@@ -23,6 +23,8 @@ from src.api.dependencies import (
 )
 from src.api.schemas import (
     APIResponse,
+    BatchIngestRequest,
+    BatchIngestResponse,
     DomainResult,
     IngestRequest,
     IngestResponse,
@@ -571,6 +573,49 @@ def _safe_classifications(result: Dict[str, Any]) -> list:
     if cr and getattr(cr, "classifications", None):
         return cr.classifications
     return []
+
+
+# POST /v1/memory/batch-ingest
+@router.post(
+    "/batch-ingest",
+    response_model=APIResponse,
+    summary="Ingest multiple conversation turns into long-term memory sequentially",
+)
+async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: dict = Depends(require_api_key)):
+    start = time.perf_counter()
+    pipeline = get_ingest_pipeline()
+    user_id = user.get("username") or user.get("name") or user["id"]
+
+    results = []
+
+    for item in req.items:
+        result = await asyncio.wait_for(
+            pipeline.run(
+                user_query=item.user_query,
+                agent_response=item.agent_response or "Acknowledged.",
+                user_id=user_id,
+                session_datetime=item.session_datetime,
+                image_url=item.image_url,
+                effort_level=item.effort_level,
+            ),
+            timeout=120.0
+        )
+        
+        data = IngestResponse(
+            model=_model_name(pipeline.model),
+            classification=_safe_classifications(result),
+            profile=_build_domain_result(result.get("profile_judge"), result.get("profile_weaver")),
+            temporal=_build_domain_result(result.get("temporal_judge"), result.get("temporal_weaver")),
+            summary=_build_domain_result(result.get("summary_judge"), result.get("summary_weaver")),
+            image=_build_domain_result(result.get("image_judge"), result.get("image_weaver")),
+        )
+        results.append(data)
+
+    response_data = BatchIngestResponse(results=results)
+    
+    elapsed = round((time.perf_counter() - start) * 1000, 2)
+    return _wrap(request, response_data, elapsed)
+
 
 
 # POST /v1/memory/retrieve

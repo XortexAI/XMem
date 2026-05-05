@@ -1299,8 +1299,9 @@ def _scrape_worker(job_id: str, repo_slug: str, target: int, resume_page: int, r
         _push_status(queue, "status",
                      f"Found {len(stargazers)} stargazers. Now scanning for emails (target: {target})...")
 
+        scanned_coll = db["outreach_scanned_users"]
         existing_usernames = set(
-            doc["username"] for doc in emails_coll.find({"job_id": job_id}, {"username": 1})
+            doc["username"] for doc in scanned_coll.find({"repo_slug": repo_slug}, {"username": 1})
         )
 
         found_count = emails_coll.count_documents({"job_id": job_id})
@@ -1314,6 +1315,10 @@ def _scrape_worker(job_id: str, repo_slug: str, target: int, resume_page: int, r
                 break
             if username in existing_usernames:
                 continue
+            
+            # Mark as scanned immediately
+            existing_usernames.add(username)
+            scanned_coll.insert_one({"username": username, "repo_slug": repo_slug, "scanned_at": datetime.now(timezone.utc)})
 
             pat = _get_best_pat(db)
             if pat is None:
@@ -1353,7 +1358,6 @@ def _scrape_worker(job_id: str, repo_slug: str, target: int, resume_page: int, r
                 }
                 emails_coll.insert_one(email_doc)
                 email_doc["_id"] = str(email_doc["_id"])
-                existing_usernames.add(username)
                 found_count += 1
 
                 jobs_coll.update_one(
@@ -1401,13 +1405,20 @@ async def start_scrape_job(req: StartJobRequest, user: dict = Depends(_verify_ad
     if active_pats == 0:
         raise HTTPException(status_code=400, detail="No active GitHub PATs available. Delete old/invalid ones and add fresh PATs first.")
 
+    last_job = db["outreach_jobs"].find_one({"repo_slug": slug}, sort=[("created_at", -1)])
+    start_page = 1
+    start_index = 0
+    if last_job:
+        start_page = last_job.get("last_stargazer_page", 1)
+        start_index = last_job.get("processed_index", 0)
+
     job = {
         "repo_url": req.repo_url,
         "repo_slug": slug,
         "status": "running",
-        "total_stargazers_fetched": 0,
-        "last_stargazer_page": 1,
-        "processed_index": 0,
+        "total_stargazers_fetched": start_index,
+        "last_stargazer_page": start_page,
+        "processed_index": start_index,
         "target_email_count": req.target_email_count,
         "emails_found": 0,
         "created_at": datetime.now(timezone.utc),
@@ -1422,7 +1433,7 @@ async def start_scrape_job(req: StartJobRequest, user: dict = Depends(_verify_ad
 
     t = threading.Thread(
         target=_scrape_worker,
-        args=(job_id, slug, req.target_email_count, 1, 0),
+        args=(job_id, slug, req.target_email_count, start_page, start_index),
         daemon=True,
     )
     _scrape_threads[job_id] = t

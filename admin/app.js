@@ -895,22 +895,52 @@ async function sendOutreachEmails() {
   resultEl.style.display = 'none';
 
   if (!jobId) { errEl.textContent = 'Select a scraping job first'; return; }
-  if (!confirm('Send emails to ALL unsent recipients in this job?')) return;
 
-  errEl.textContent = 'Sending... this may take a while';
-  const data = await apiPost('/outreach/send', { job_id: jobId });
+  errEl.textContent = 'Fetching unsent emails...';
+  const emailsData = await apiFetch(`/outreach/jobs/${jobId}/emails`);
   errEl.textContent = '';
+  if (!emailsData || !emailsData.emails) { errEl.textContent = 'Failed to fetch emails'; return; }
 
-  if (data && (data.detail || data.error)) {
-    errEl.textContent = data.detail || data.error;
+  const unsent = emailsData.emails.filter(e => !e.sent);
+  if (unsent.length === 0) {
+    resultEl.style.display = '';
+    resultEl.innerHTML = '<span style="color:var(--text3)">No unsent emails found in this job.</span>';
     return;
   }
 
-  if (data) {
-    resultEl.style.display = '';
-    resultEl.textContent = `Sent ${data.sent || 0} of ${data.total_attempted || 0} emails.` +
-      (data.errors && data.errors.length > 0 ? ` ${data.errors.length} errors.` : '');
+  if (!confirm(`Found ${unsent.length} unsent emails. Send to all?`)) return;
+
+  resultEl.style.display = '';
+  resultEl.innerHTML = `
+    <div style="margin-bottom:8px;font-size:13px;color:var(--text2)" id="send-status-text">Sending 0 of ${unsent.length}...</div>
+    <div class="outreach-progress-bar" style="background:var(--surface2);height:8px;border-radius:4px;overflow:hidden">
+      <div class="outreach-progress-fill" id="send-progress-fill" style="width:0%;height:100%;background:var(--accent);transition:width 0.3s"></div>
+    </div>
+  `;
+
+  const fillEl = document.getElementById('send-progress-fill');
+  const statusEl = document.getElementById('send-status-text');
+
+  let sentCount = 0;
+  let errorCount = 0;
+
+  for (let i = 0; i < unsent.length; i++) {
+    const e = unsent[i];
+    statusEl.textContent = `Sending ${i+1} of ${unsent.length} (${e.email})...`;
+
+    const data = await apiPost('/outreach/send', { job_id: jobId, email_ids: [e._id] });
+    if (data && data.sent > 0) {
+      sentCount++;
+    } else {
+      errorCount++;
+    }
+
+    const pct = ((i + 1) / unsent.length) * 100;
+    fillEl.style.width = pct + '%';
   }
+
+  statusEl.textContent = `Finished! Sent ${sentCount} of ${unsent.length} emails. ${errorCount > 0 ? errorCount + ' errors.' : ''}`;
+  statusEl.style.color = errorCount > 0 ? 'var(--amber)' : 'var(--green)';
 }
 
 // ── Analytics ─────────────────────────────────────────────────────

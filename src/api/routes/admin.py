@@ -1164,7 +1164,7 @@ def _get_email_for_user(username: str, pat_doc: Dict, db) -> Optional[str]:
     if resp and resp.status_code == 200:
         data = resp.json()
         email = data.get("email")
-        if email and "noreply" not in email:
+        if email and "noreply" not in email and email.lower().endswith("@gmail.com"):
             return email
 
     resp = _gh_get(
@@ -1176,7 +1176,7 @@ def _get_email_for_user(username: str, pat_doc: Dict, db) -> Optional[str]:
             if event.get("type") == "PushEvent":
                 for commit in event.get("payload", {}).get("commits", []):
                     email = commit.get("author", {}).get("email")
-                    if email and "noreply" not in email:
+                    if email and "noreply" not in email and email.lower().endswith("@gmail.com"):
                         return email
 
     resp = _gh_get(
@@ -1196,7 +1196,7 @@ def _get_email_for_user(username: str, pat_doc: Dict, db) -> Optional[str]:
                     commits = c_resp.json()
                     if isinstance(commits, list) and commits:
                         email = commits[0].get("commit", {}).get("author", {}).get("email")
-                        if email and "noreply" not in email:
+                        if email and "noreply" not in email and email.lower().endswith("@gmail.com"):
                             return email
     return None
 

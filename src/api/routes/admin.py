@@ -1228,8 +1228,9 @@ def _scrape_worker(job_id: str, repo_slug: str, target: int, resume_page: int, r
 
     try:
         stargazers = []
-        page = resume_page
         per_page = 100
+        page = (resume_index // per_page) + 1
+        page_offset = resume_index % per_page
 
         _push_status(queue, "status", f"Fetching stargazers for {repo_slug}...")
 
@@ -1274,6 +1275,11 @@ def _scrape_worker(job_id: str, repo_slug: str, target: int, resume_page: int, r
             users = resp.json()
             if not users:
                 break
+            
+            # If this is the first page we are fetching, skip the users we already processed
+            if page == (resume_index // per_page) + 1 and page_offset > 0:
+                users = users[page_offset:]
+                
             for u in users:
                 login = u.get("login")
                 if login:
@@ -1406,10 +1412,8 @@ async def start_scrape_job(req: StartJobRequest, user: dict = Depends(_verify_ad
         raise HTTPException(status_code=400, detail="No active GitHub PATs available. Delete old/invalid ones and add fresh PATs first.")
 
     last_job = db["outreach_jobs"].find_one({"repo_slug": slug}, sort=[("created_at", -1)])
-    start_page = 1
     start_index = 0
     if last_job:
-        start_page = last_job.get("last_stargazer_page", 1)
         start_index = last_job.get("processed_index", 0)
 
     job = {
@@ -1417,7 +1421,6 @@ async def start_scrape_job(req: StartJobRequest, user: dict = Depends(_verify_ad
         "repo_slug": slug,
         "status": "running",
         "total_stargazers_fetched": start_index,
-        "last_stargazer_page": start_page,
         "processed_index": start_index,
         "target_email_count": req.target_email_count,
         "emails_found": 0,
@@ -1433,7 +1436,7 @@ async def start_scrape_job(req: StartJobRequest, user: dict = Depends(_verify_ad
 
     t = threading.Thread(
         target=_scrape_worker,
-        args=(job_id, slug, req.target_email_count, start_page, start_index),
+        args=(job_id, slug, req.target_email_count, 1, start_index),
         daemon=True,
     )
     _scrape_threads[job_id] = t

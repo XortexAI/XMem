@@ -59,52 +59,6 @@ Install the project with development dependencies:
 pip install -e ".[dev]"
 ```
 
-Create a local environment file:
-
-```powershell
-copy .env.example .env
-```
-
-On macOS or Linux, use:
-
-```bash
-cp .env.example .env
-```
-
-Fill in only the keys needed for your work. For unit tests that do not call real
-services, dummy values are often enough.
-
-## Running Locally
-
-Start the API server:
-
-```bash
-uvicorn src.api.app:create_app --factory --host 0.0.0.0 --port 8000
-```
-
-If you need the full local stack, use the Docker Compose files in `docker/`.
-
-## Testing
-
-Run the test suite:
-
-```bash
-pytest
-```
-
-Run a specific test file:
-
-```bash
-pytest tests/test_deterministic_memory_layer.py
-```
-
-The project config enables coverage by default. If your local environment does
-not have `pytest-cov`, install the dev dependencies again:
-
-```bash
-pip install -e ".[dev]"
-```
-
 ## Linting and Formatting
 
 Run Ruff before opening a PR:
@@ -161,11 +115,3 @@ Suggested PR description:
 ## Notes
 - ...
 ```
-
-## Review Process
-
-Maintainers may ask for changes to scope, tests, naming, or compatibility. Please
-respond in the PR thread and push follow-up commits to the same branch.
-
-For security issues, do not open a public issue with exploit details. Contact the
-maintainers privately first.

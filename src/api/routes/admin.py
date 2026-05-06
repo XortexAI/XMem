@@ -1039,7 +1039,7 @@ async def list_pats(user: dict = Depends(_verify_admin_token)):
             reset_dt = p["reset_at"]
             if reset_dt.tzinfo is None:
                 reset_dt = reset_dt.replace(tzinfo=timezone.utc)
-            if reset_dt <= now and p.get("remaining", 0) <= 0:
+            if reset_dt <= now:
                 p["remaining"] = 5000
                 db["outreach_pats"].update_one(
                     {"_id": p["_id"]}, {"$set": {"remaining": 5000}}
@@ -1076,10 +1076,9 @@ async def delete_pat(pat_id: str, user: dict = Depends(_verify_admin_token)):
 def _get_best_pat(db) -> Optional[Dict]:
     """Pick the PAT with highest remaining rate limit."""
     now = datetime.now(timezone.utc)
-    pats = list(db["outreach_pats"].find({"active": True}).sort("remaining", -1))
+    pats = list(db["outreach_pats"].find({"active": True}))
+    
     for p in pats:
-        if p.get("remaining", 0) > 0:
-            return p
         if p.get("reset_at"):
             reset_dt = p["reset_at"]
             if reset_dt.tzinfo is None:
@@ -1089,7 +1088,12 @@ def _get_best_pat(db) -> Optional[Dict]:
                     {"_id": p["_id"]}, {"$set": {"remaining": 5000}}
                 )
                 p["remaining"] = 5000
-                return p
+                
+    pats.sort(key=lambda x: x.get("remaining", 0), reverse=True)
+    
+    for p in pats:
+        if p.get("remaining", 0) > 0:
+            return p
     # All PATs have 0 remaining but no reset_at — force a recheck
     for p in pats:
         if not p.get("reset_at"):

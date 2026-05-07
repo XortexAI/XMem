@@ -854,6 +854,45 @@ function updateJobProgress() {
   document.getElementById('scraper-progress-wrap').style.display = '';
 }
 
+async function downloadEmailsCSV() {
+  if (!_outreachSelectedJobId) {
+    alert('Select a job first to download emails.');
+    return;
+  }
+  
+  const data = await apiFetch(`/outreach/jobs/${_outreachSelectedJobId}/emails`);
+  if (!data || !data.emails || data.emails.length === 0) {
+    alert('No emails found for this job yet.');
+    return;
+  }
+  
+  const emails = data.emails;
+  let csvContent = "data:text/csv;charset=utf-8,";
+  csvContent += "Username,Email,Found At,Sent\n";
+  
+  emails.forEach(e => {
+    const username = e.username || '';
+    const email = e.email || '';
+    const foundAt = e.scraped_at ? new Date(e.scraped_at).toLocaleString() : '';
+    const sent = e.sent ? 'Yes' : 'No';
+    
+    const row = [username, email, foundAt, sent].map(val => `"${String(val).replace(/"/g, '""')}"`).join(',');
+    csvContent += row + "\n";
+  });
+  
+  const encodedUri = encodeURI(csvContent);
+  const link = document.createElement("a");
+  link.setAttribute("href", encodedUri);
+  
+  const job = _outreachJobsData.find(j => j._id === _outreachSelectedJobId);
+  const filename = job ? `emails_${job.repo_slug.replace(/\//g, '_')}.csv` : 'emails.csv';
+  
+  link.setAttribute("download", filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
 // ── Draft & Send ──────────────────────────────────────────────────
 
 async function loadOutreachDraft() {

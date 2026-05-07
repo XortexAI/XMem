@@ -435,7 +435,13 @@
 
         <!-- Live Emails for selected job -->
         <div class="panel" id="panel-job-emails" style="margin-top:16px;display:none">
-          <div class="panel-header"><h3 id="job-emails-title">Collected Emails</h3><span class="panel-badge" id="job-emails-count">0</span></div>
+          <div class="panel-header">
+            <div style="display:flex;align-items:center;gap:8px">
+              <h3 id="job-emails-title">Collected Emails</h3>
+              <span class="panel-badge" id="job-emails-count">0</span>
+            </div>
+            <button class="outreach-btn outreach-btn-primary" onclick="downloadEmailsCSV()" style="padding:4px 12px;font-size:12px">Download CSV</button>
+          </div>
           <div id="scraper-progress-wrap" style="margin-bottom:16px;display:none">
             <div class="outreach-progress-bar"><div class="outreach-progress-fill" id="scraper-progress-fill"></div></div>
             <div class="outreach-progress-text" id="scraper-progress-text">0 / 0</div>

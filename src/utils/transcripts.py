@@ -97,7 +97,8 @@ def _parse_cursor_transcript(text: str) -> list[ParsedMessagePair]:
             continue
 
         if section.startswith("**User**"):
-            current_user_query = section.replace("**User**", "", 1).strip()
+            content = section.replace("**User**", "", 1).strip()
+            current_user_query = _append_user_text(current_user_query, content)
         elif section.startswith("**Cursor**") or section.startswith("**Assistant**"):
             content = (
                 section.replace("**Cursor**", "", 1)
@@ -138,7 +139,7 @@ def _parse_antigravity_transcript(text: str) -> list[ParsedMessagePair]:
                     }
                 )
                 planner_chunks = []
-            current_user_query = None
+                current_user_query = None
 
         elif re.match(r"###\s+Planner Response", block, re.IGNORECASE):
             continue
@@ -154,7 +155,9 @@ def _parse_antigravity_transcript(text: str) -> list[ParsedMessagePair]:
                         }
                     )
                     planner_chunks = []
-                current_user_query = block
+                    current_user_query = block
+                else:
+                    current_user_query = _append_user_text(current_user_query, block)
 
             elif re.match(r"###\s+Planner Response", prev_heading, re.IGNORECASE):
                 if block:
@@ -278,8 +281,11 @@ def _pair_role_records(records: list[dict[str, Any]]) -> list[ParsedMessagePair]
             continue
 
         if role in _USER_ROLES:
-            flush_pair()
-            current_user_query = text
+            if assistant_chunks:
+                flush_pair()
+                current_user_query = text
+            else:
+                current_user_query = _append_user_text(current_user_query, text)
         elif current_user_query:
             assistant_chunks.append(text)
 
@@ -434,8 +440,11 @@ def _parse_role_heading_transcript(
             continue
 
         if role in _USER_ROLES:
-            flush_pair()
-            current_user_query = content
+            if assistant_chunks:
+                flush_pair()
+                current_user_query = content
+            else:
+                current_user_query = _append_user_text(current_user_query, content)
         elif role in assistant_roles and current_user_query:
             assistant_chunks.append(content)
 
@@ -472,8 +481,11 @@ def _parse_inline_role_labels(
             continue
 
         if role in _USER_ROLES:
-            flush_pair()
-            current_user_query = content
+            if assistant_chunks:
+                flush_pair()
+                current_user_query = content
+            else:
+                current_user_query = _append_user_text(current_user_query, content)
         elif role in assistant_roles and current_user_query:
             assistant_chunks.append(content)
 
@@ -486,7 +498,11 @@ def _strip_tool_markdown(text: str) -> str:
 
 
 def _clean_text(text: str) -> str:
-    return text.strip().strip("-").strip()
+    return text.strip()
+
+
+def _append_user_text(current: str | None, text: str) -> str:
+    return f"{current}\n\n{text}" if current else text
 
 
 def _is_gemini_cli_setup_text(text: str) -> bool:

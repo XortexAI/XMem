@@ -50,6 +50,7 @@ for name in [
 
 from src.pipelines.ingest import IngestPipeline
 from src.pipelines.retrieval import RetrievalPipeline
+from src.utils.transcripts import parse_transcript_text as _shared_parse_transcript_text
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -693,108 +694,6 @@ def _extract_chat_pairs(url: str, html: str) -> tuple[str, str, list[dict[str, s
     return provider, extraction_method, pairs
 
 
-def _parse_cursor_transcript(text: str) -> list[dict[str, str]]:
-    """Parse a Cursor-exported markdown transcript into message pairs."""
-    pairs: list[dict[str, str]] = []
-    
-    sections = text.split("---")
-    
-    start_idx = 0
-    if sections and "Exported on" in sections[0]:
-        start_idx = 1
-    
-    current_user_query = None
-    
-    for section in sections[start_idx:]:
-        section = section.strip()
-        if not section:
-            continue
-        
-        if section.startswith("**User**"):
-            content = section.replace("**User**", "", 1).strip()
-            current_user_query = content
-        
-        elif section.startswith("**Cursor**") or section.startswith("**Assistant**"):
-            content = section.replace("**Cursor**", "", 1).replace("**Assistant**", "", 1).strip()
-            
-            if current_user_query:
-                pairs.append({
-                    "user_query": current_user_query,
-                    "agent_response": content,
-                })
-                current_user_query = None
-    
-    return pairs
-
-
-def _parse_antigravity_transcript(text: str) -> list[dict[str, str]]:
-    """Parse an Antigravity-exported markdown transcript into message pairs.
-
-    Antigravity transcripts follow this structure::
-
-        # Chat Conversation
-        Note: _This is purely the output..._
-        ### User Input
-        <user message>
-        ### Planner Response
-        <agent response>
-        ...
-
-    Multiple consecutive ``### Planner Response`` blocks are concatenated into
-    a single agent response (they occur when the agent used tools mid-turn).
-    """
-    pairs: list[dict[str, str]] = []
-
-    text = text.replace("\r\n", "\n")
-
-    # Split on H3 headings, keeping the headings in the token list
-    blocks = re.split(r"(?m)^(###\s+.+)$", text)
-
-    current_user_query: str | None = None
-    planner_chunks: list[str] = []
-
-    for i, block in enumerate(blocks):
-        block = block.strip()
-        if not block:
-            continue
-
-        if re.match(r"###\s+User Input", block, re.IGNORECASE):
-            if current_user_query and planner_chunks:
-                pairs.append({
-                    "user_query": current_user_query,
-                    "agent_response": "\n\n".join(planner_chunks).strip(),
-                })
-                planner_chunks = []
-            current_user_query = None
-
-        elif re.match(r"###\s+Planner Response", block, re.IGNORECASE):
-            pass  # content handled below
-
-        else:
-            if i > 0:
-                prev_heading = blocks[i - 1].strip() if i >= 1 else ""
-                if re.match(r"###\s+User Input", prev_heading, re.IGNORECASE):
-                    if current_user_query and planner_chunks:
-                        pairs.append({
-                            "user_query": current_user_query,
-                            "agent_response": "\n\n".join(planner_chunks).strip(),
-                        })
-                        planner_chunks = []
-                    current_user_query = block
-
-                elif re.match(r"###\s+Planner Response", prev_heading, re.IGNORECASE):
-                    if block:
-                        planner_chunks.append(block)
-
-    if current_user_query and planner_chunks:
-        pairs.append({
-            "user_query": current_user_query,
-            "agent_response": "\n\n".join(planner_chunks).strip(),
-        })
-
-    return pairs
-
-
 async def _parse_transcript_with_llm(text: str) -> list[dict[str, str]]:
     """Use an LLM to parse transcript text when format detection fails."""
     from src.models import get_model
@@ -842,19 +741,8 @@ Transcript:
 
 
 def _parse_transcript_text(text: str) -> tuple[str, list[dict[str, str]]]:
-    """Parse transcript text and return (format, pairs)."""
-    if "_Exported on" in text and "from Cursor" in text:
-        pairs = _parse_cursor_transcript(text)
-        if pairs:
-            return "cursor", pairs
-
-    # Detect Antigravity format
-    if "# Chat Conversation" in text and ("### User Input" in text or "### Planner Response" in text):
-        pairs = _parse_antigravity_transcript(text)
-        if pairs:
-            return "antigravity", pairs
-
-    return "unknown", []
+    """Compatibility wrapper around the shared transcript parser."""
+    return _shared_parse_transcript_text(text)
 
 
 async def _scrape_chat_share(url: str) -> dict[str, Any]:

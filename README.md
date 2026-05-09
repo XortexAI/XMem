@@ -1,7 +1,7 @@
 <div align="center">
   <h1>XMem</h1>
   <p><strong>The Memory Layer for AI That Never Forgets</strong></p>
-  <p>Give every AI agent and LLM interface persistent, cross-platform memory — out of the box.</p>
+  <p>Give every AI agent and LLM interface persistent, cross-platform memory out of the box.</p>
 
   <br/>
 
@@ -20,7 +20,7 @@
 
 LLMs have **goldfish memory**. Every conversation starts from zero. Switch from ChatGPT to Claude? Context gone. Move from your IDE to a browser? Context gone. Ask about something you discussed last week? Context gone.
 
-This isn't just annoying — it's a fundamental bottleneck for anyone building AI agents, personal assistants, or any application that needs to *know* its user over time.
+This isn't just annoying it's a fundamental bottleneck for anyone building AI agents, personal assistants, or any application that needs to *know* its user over time.
 
 Companies like Mem0, Zep, and others have raised **tens of millions** trying to solve this. XMem takes a different approach.
 
@@ -52,7 +52,7 @@ We tested XMem against every major memory solution on two established academic b
 ### LongMemEval-S
 The industry-standard benchmark for long-term conversational memory. Tests whether a system can recall facts, track preference changes, reason about time, and maintain context across sessions.
 
-| Category | XMem(amazon.nova-lite) | Backboard.io (GPT-4o) | Mastra (GPT-4o) | Supermemory (GPT-4o) |
+| Category | XMem (Gemini 3-flash) | Backboard.io (GPT-4o) | Mastra (GPT-4o) | Supermemory (GPT-4o) |
 | :--- | :---: | :---: | :---: | :---: |
 | **Single-Session Assistant** | **96.43** | 98.2 | 82.1 | 96.43 |
 | **Single-Session User** | **97.1** | 97.1 | 98.6 | 97.14 |
@@ -86,10 +86,10 @@ Tests compositional reasoning over memory — can the system connect facts acros
 
 ## Core Features
 
-### Chrome Extension — Memory Where You Already Work
+### Chrome Extension: Memory Where You Already Work
 Stop copy-pasting context between AI tools. The XMem Chrome extension brings persistent memory to ChatGPT, Claude, Gemini, DeepSeek, and Perplexity:
 
-- **Live Search & Inject**: As you type a prompt, XMem searches your memory in real-time and shows a floating chip. One click injects relevant context directly into your input — zero friction, no workflow change.
+- **Live Search & Inject**: As you type a prompt, XMem searches your memory in real-time and shows a floating chip. One click injects relevant context directly into your input zero friction, no workflow change.
 - **Background Auto-Save (Xingest)**: When you hit "Send", XMem asynchronously captures the conversation turn. A background queue extracts facts and summaries without touching your UI.
 
 ### Intelligent Multi-Domain Classification

@@ -21,6 +21,7 @@ from src.api.dependencies import (
     require_api_key,
     require_ready,
 )
+from src.api.chat_share import scrape_failure_message
 from src.api.schemas import (
     APIResponse,
     BatchIngestRequest,
@@ -757,7 +758,8 @@ async def scrape_chat_link(req: ScrapeRequest, request: Request):
         pairs = result["pairs"]
 
         if not pairs:
-            return _error(request, "Failed to extract messages from the provided link.", 400)
+            elapsed = round((time.perf_counter() - start) * 1000, 2)
+            return _error(request, scrape_failure_message(result), 400, elapsed)
 
         data = ScrapeResponse(pairs=pairs)
         elapsed = round((time.perf_counter() - start) * 1000, 2)

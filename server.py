@@ -192,11 +192,13 @@ async def scrape_chat_link(req: ScrapeRequest):
         elapsed = round((time.perf_counter() - start) * 1000, 2)
 
         if not pairs:
+            from src.api.chat_share import scrape_failure_message
+
             return JSONResponse(
                 {
                     "status": "error",
                     "data": None,
-                    "error": "Failed to extract messages from the provided link.",
+                    "error": scrape_failure_message(result),
                     "elapsed_ms": elapsed,
                 },
                 status_code=400,

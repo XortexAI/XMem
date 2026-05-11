@@ -31,11 +31,28 @@ class UserStore:
         # Try to connect, but don't fail if MongoDB is unavailable
         self._try_connect()
 
+    def _requires_durable_storage(self) -> bool:
+        """Return True when in-memory user fallback must not be used."""
+        return settings.environment.lower() in {"production", "prod"}
+
+    def _enable_in_memory_fallback(self, error: Exception) -> None:
+        """Switch to in-memory storage unless the environment forbids it."""
+        message = f"MongoDB connection failed for user storage: {error}"
+        if self._requires_durable_storage():
+            logger.error("%s; refusing in-memory fallback in production", message)
+            raise RuntimeError(
+                "MongoDB is required for user storage when ENVIRONMENT=production"
+            ) from error
+
+        logger.warning("%s; using in-memory storage", message)
+        self._connected = False
+        self._in_memory = True
+        self.users = None
+
     def _try_connect(self) -> None:
         """Attempt to connect to MongoDB, fall back to in-memory if unavailable."""
         try:
-            from pymongo import MongoClient, ASCENDING
-            from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+            from pymongo import MongoClient
 
             self._client = MongoClient(self._uri, serverSelectionTimeoutMS=5000)
             # Test connection
@@ -47,10 +64,7 @@ class UserStore:
             logger.info("Connected to MongoDB for user storage")
             self._ensure_indexes()
         except Exception as e:
-            logger.warning(f"MongoDB connection failed, using in-memory storage: {e}")
-            self._connected = False
-            self._in_memory = True
-            self.users = None
+            self._enable_in_memory_fallback(e)
 
     def _ensure_indexes(self) -> None:
         """Create necessary indexes for the users collection."""
@@ -101,8 +115,6 @@ class UserStore:
 
         # MongoDB path
         try:
-            from pymongo.errors import DuplicateKeyError
-
             existing = self.users.find_one({"google_id": google_id})
 
             if existing:
@@ -130,7 +142,7 @@ class UserStore:
         except Exception as e:
             logger.error(f"Database error in get_or_create_user: {e}")
             # Fall back to in-memory
-            self._in_memory = True
+            self._enable_in_memory_fallback(e)
             return self.get_or_create_user(google_id, email, name, picture)
 
     def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:

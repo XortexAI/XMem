@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
+import pytest
+
 from src.database.api_key_store import APIKeyStore, _in_memory_api_keys
 from src.database.project_store import ProjectStore
 from src.database.models import TeamRole
@@ -41,6 +45,54 @@ def test_api_key_store_creates_validates_updates_and_revokes_in_memory(monkeypat
 
     assert store.revoke_api_key("user-1", created["key_id"])
     assert store.validate_api_key(created["key"]) is None
+
+
+def test_api_key_store_enforces_scopes_expiry_and_bindings_in_memory(monkeypatch):
+    _in_memory_api_keys.clear()
+    monkeypatch.setattr(APIKeyStore, "_try_connect", _force_api_key_memory)
+    store = APIKeyStore()
+
+    created = store.create_api_key(
+        "user-1",
+        name="Project key",
+        scopes=["memory:read", "scanner:write"],
+        expires_at=datetime.utcnow() + timedelta(minutes=5),
+        org_id="org-1",
+        project_id="project-1",
+    )
+
+    validated = store.validate_api_key(
+        created["key"],
+        required_scope="memory:read",
+        org_id="org-1",
+        project_id="project-1",
+    )
+    assert validated["scopes"] == ["memory:read", "scanner:write"]
+    assert validated["org_id"] == "org-1"
+    assert validated["project_id"] == "project-1"
+
+    assert store.validate_api_key(created["key"], required_scope="admin:write") is None
+    assert store.validate_api_key(created["key"], org_id="other-org") is None
+    assert store.validate_api_key(created["key"], project_id="other-project") is None
+
+    expired = store.create_api_key(
+        "user-1",
+        expires_at=datetime.utcnow() - timedelta(seconds=1),
+    )
+    assert store.validate_api_key(expired["key"]) is None
+    assert _in_memory_api_keys[expired["key_id"]]["is_active"] is False
+
+
+def test_api_key_store_refuses_memory_fallback_in_production(monkeypatch):
+    store = object.__new__(APIKeyStore)
+    store._connected = False
+    store._in_memory = False
+    store.api_keys = None
+
+    monkeypatch.setattr("src.database.api_key_store.settings.environment", "production")
+
+    with pytest.raises(RuntimeError, match="MongoDB is required"):
+        store._enable_in_memory_fallback(ConnectionError("offline"))
 
 
 def test_user_store_get_or_create_and_username_helpers_in_memory(monkeypatch):

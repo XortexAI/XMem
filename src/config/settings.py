@@ -264,7 +264,7 @@ class Settings(BaseSettings):
     # Monitoring & Observability
     # =============================================================================
     environment: str = Field(
-        default="production",
+        default="development",
         description="Deployment environment: dev, staging, production"
     )
     sentry_dsn: Optional[str] = Field(

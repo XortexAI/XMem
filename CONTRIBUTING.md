@@ -56,8 +56,50 @@ source .venv/bin/activate
 Install the project with development dependencies:
 
 ```bash
-pip install -e .
+pip install -e ".[dev]"
 ```
+
+## Testing
+
+XMem uses `pytest`, `pytest-asyncio`, and `pytest-cov`. Tests are organized by
+scope:
+
+- `tests/unit/` - pure helpers, schema validation, deterministic agent logic,
+  and in-memory database helper behavior.
+- `tests/integration/` - pipelines and API dependency wiring with mocked LLM,
+  Pinecone, Neo4j, and scanner/code-store dependencies.
+- `tests/e2e/` - full memory flows using local fakes only.
+
+Run the full suite:
+
+```bash
+pytest
+```
+
+Run a specific scope:
+
+```bash
+pytest tests/unit
+pytest tests/integration
+pytest tests/e2e
+```
+
+Run the same coverage gate as CI:
+
+```bash
+pytest --cov=src/utils --cov=src/schemas --cov=src/pipelines --cov=src/enterprise --cov=src/api --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+```
+
+Mocking policy:
+
+- Do not call live LLM providers, Pinecone, Neo4j, MongoDB, or GitHub from the
+  default test suite.
+- Use the shared fakes in `tests/conftest.py` for chat models, vector stores,
+  and graph clients.
+- Keep provider-specific behavior behind small wrappers and monkeypatch those
+  wrappers in tests.
+- Add integration tests for pipeline interactions and unit tests for parser,
+  validator, and deterministic decision logic.
 
 ## Linting and Formatting
 

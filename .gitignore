@@ -54,6 +54,8 @@ logs/
 frontend/
 scripts/
 tests/
+!tests/
+!tests/**/*.py
 benchmarks/
 LongMemEval/
 backboard/

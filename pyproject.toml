@@ -33,6 +33,7 @@ dependencies = [
     "neo4j>=5.14.0",
     "python-dotenv>=1.0.0",
     "httpx>=0.26.0",
+    "python-multipart>=0.0.9",
     "numpy>=1.26.0",
     "tree-sitter>=0.21.0",
     "tree-sitter-typescript>=0.21.0",
@@ -72,10 +73,46 @@ strict = true
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-minversion = "6.0"
-addopts = "-ra -q --cov=src"
+minversion = "8.0"
+addopts = "-ra -q --strict-markers"
 testpaths = [
     "tests",
 ]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "unit: isolated tests for pure logic and deterministic components",
+    "integration: multi-module tests with mocked external services",
+    "e2e: full-flow tests using local fakes for external dependencies",
+]
+
+[tool.coverage.run]
+omit = [
+    "src/api/app.py",
+    "src/api/routes/admin.py",
+    "src/api/routes/api_keys.py",
+    "src/api/routes/auth.py",
+    "src/api/routes/code.py",
+    "src/api/routes/enterprise.py",
+    "src/api/routes/memory.py",
+    "src/api/routes/memory_graph.py",
+    "src/api/routes/scanner.py",
+    "src/api/routes/telemetry.py",
+    "src/config/*",
+    "src/enterprise/memory_service.py",
+    "src/graph/*",
+    "src/installer/*",
+    "src/models/*",
+    "src/pipelines/code_retrieval.py",
+    "src/pipelines/ingest.py",
+    "src/prompts/*",
+    "src/scanner/*",
+    "src/scanner_v1/*",
+    "src/storage/pinecone.py",
+    "src/storage/team_annotation_store.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

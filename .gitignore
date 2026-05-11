@@ -53,7 +53,6 @@ logs/
 # Dev-only folders
 frontend/
 scripts/
-tests/
 benchmarks/
 LongMemEval/
 backboard/

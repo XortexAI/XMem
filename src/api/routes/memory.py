@@ -63,6 +63,11 @@ scrape_router = APIRouter(
     dependencies=[Depends(enforce_rate_limit)],
 )
 
+search_router = APIRouter(
+    tags=["memory"],
+    dependencies=[Depends(require_ready), Depends(enforce_rate_limit)],
+)
+
 
 # Helpers
 def _model_name(model: Any) -> str:
@@ -667,6 +672,7 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
             confidence=result.confidence,
         )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
+        pipeline.record_latency("agentic", elapsed)
         return _wrap(request, data, elapsed)
 
     except Exception as exc:
@@ -676,10 +682,15 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
 
 
 # POST /v1/memory/search
+@search_router.post(
+    "/search",
+    response_model=APIResponse,
+    summary="Raw semantic search across memory domains with optional answer synthesis",
+)
 @router.post(
     "/search",
     response_model=APIResponse,
-    summary="Raw semantic search across memory domains (no LLM answer)",
+    summary="Raw semantic search across memory domains with optional answer synthesis",
 )
 async def search_memory(req: SearchRequest, request: Request, user: dict = Depends(require_api_key)):
     start = time.perf_counter()
@@ -689,17 +700,34 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
     user_id = user.get("username") or user.get("name") or user["id"]
 
     try:
-        all_results: List[SourceRecord] = []
+        all_results = await pipeline.search_raw(
+            query=req.query,
+            user_id=user_id,
+            domains=req.domains,
+            top_k=req.top_k,
+        )
+        answer = ""
+        if req.answer:
+            answer = await pipeline.answer_from_sources(req.query, all_results)
 
-        if "profile" in req.domains:
-            all_results.extend(_search_profile(pipeline, user_id))
-        if "temporal" in req.domains:
-            all_results.extend(_search_temporal(pipeline, req.query, user_id, req.top_k))
-        if "summary" in req.domains:
-            all_results.extend(await _search_summary(pipeline, req.query, user_id, req.top_k))
-
-        data = SearchResponse(results=all_results, total=len(all_results))
         elapsed = round((time.perf_counter() - start) * 1000, 2)
+        pipeline.record_latency("answer" if req.answer else "raw", elapsed)
+        data = SearchResponse(
+            results=[
+                SourceRecord(
+                    domain=s.domain,
+                    content=s.content,
+                    score=round(s.score, 3),
+                    metadata=s.metadata,
+                )
+                for s in all_results
+            ],
+            total=len(all_results),
+            answer=answer,
+            model=_model_name(pipeline.model) if req.answer else "",
+            confidence=min(1.0, len(all_results) * 0.2) if answer else 0.0,
+            latency=pipeline.get_latency_snapshot(),
+        )
         return _wrap(request, data, elapsed)
 
     except Exception as exc:

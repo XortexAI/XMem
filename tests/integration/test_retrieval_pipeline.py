@@ -45,6 +45,85 @@ async def test_retrieval_pipeline_executes_tool_calls_and_generates_answer(vecto
 
 
 @pytest.mark.asyncio
+async def test_retrieval_pipeline_caches_catalog_and_retrieval_plan(vector_store, neo4j_client):
+    vector_store.seed(
+        "profile-1",
+        "work / company = XMem",
+        {"user_id": "alice", "domain": "profile", "main_content": "work_company"},
+    )
+    model = FakeChatModel(
+        tool_responses=[
+            FakeLLMResponse("", tool_calls=[
+                {"name": "search_profile", "args": {"topic": "work"}, "id": "call-profile"},
+            ])
+        ],
+        responses=["Alice works at XMem.", "Alice still works at XMem."],
+    )
+    pipeline = RetrievalPipeline(model=model, vector_store=vector_store, neo4j_client=neo4j_client)
+
+    first = await pipeline.run("Where does Alice work?", "alice")
+    second = await pipeline.run("Where does Alice work?", "alice")
+
+    assert "XMem" in first.answer
+    assert "XMem" in second.answer
+    assert len(pipeline.model_with_tools.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_raw_search_returns_ranked_hits_without_tool_selection(vector_store, neo4j_client):
+    vector_store.seed(
+        "profile-1",
+        "work / company = XMem",
+        {"user_id": "alice", "domain": "profile", "main_content": "work_company"},
+        score=0.7,
+    )
+    vector_store.seed(
+        "summary-1",
+        "Alice is tuning low-latency retrieval.",
+        {"user_id": "alice", "domain": "summary"},
+        score=0.9,
+    )
+    neo4j_client.seed_event(
+        user_id="alice",
+        date="05-11",
+        event_name="Latency review",
+        desc="Measured raw search latency",
+        year="2026",
+        similarity_score=0.8,
+    )
+    model = FakeChatModel()
+    pipeline = RetrievalPipeline(model=model, vector_store=vector_store, neo4j_client=neo4j_client)
+
+    results = await pipeline.search_raw(
+        "latency",
+        "alice",
+        ["profile", "temporal", "summary"],
+        top_k=5,
+    )
+
+    assert [record.score for record in results] == sorted(
+        [record.score for record in results],
+        reverse=True,
+    )
+    assert {record.domain for record in results} == {"profile", "temporal", "summary"}
+    assert not pipeline.model_with_tools.calls
+
+
+@pytest.mark.asyncio
+async def test_answer_from_sources_skips_tool_selection(vector_store, neo4j_client):
+    model = FakeChatModel(responses=["Alice works at XMem."])
+    pipeline = RetrievalPipeline(model=model, vector_store=vector_store, neo4j_client=neo4j_client)
+
+    answer = await pipeline.answer_from_sources(
+        "Where does Alice work?",
+        [],
+    )
+
+    assert answer == "Alice works at XMem."
+    assert not pipeline.model_with_tools.calls
+
+
+@pytest.mark.asyncio
 async def test_retrieval_tool_dispatch_handles_unknown_and_snippet(vector_store, neo4j_client):
     model = FakeChatModel()
     pipeline = RetrievalPipeline(model=model, vector_store=vector_store, neo4j_client=neo4j_client)

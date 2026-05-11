@@ -216,7 +216,7 @@ def _extract_script_pairs(soup: BeautifulSoup) -> List[MessagePair]:
             candidates.append(script_text)
 
         match = re.search(
-            r"__PRELOADED_STATE__\s*=\s*(\{.*?\});",
+            r"__PRELOADED_STATE__\s*=\s*(\{.*\})",
             script_text,
             re.DOTALL,
         )
@@ -253,7 +253,7 @@ def _message_pairs_from_dom(user_blocks: List[Any], agent_blocks: List[Any]) -> 
 
 
 def _looks_unavailable(html: str) -> bool:
-    lowered = " ".join(html.lower().split())
+    lowered = html.lower()
     markers = (
         "conversation is private",
         "private conversation",

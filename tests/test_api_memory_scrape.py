@@ -46,6 +46,35 @@ def test_extracts_claude_pairs_from_next_data_script() -> None:
     assert pairs[0].agent_response == "Here is a short summary."
 
 
+def test_extracts_claude_preloaded_state_when_message_contains_brace_semicolon() -> None:
+    html = r"""
+    <html>
+      <body>
+        <script>
+          window.__PRELOADED_STATE__ = {
+            "chat": {
+              "messages": [
+                {"sender": "human", "text": "Show a JavaScript object literal."},
+                {
+                  "sender": "assistant",
+                  "text": "Use const value = {}; then keep explaining."
+                }
+              ]
+            }
+          };
+        </script>
+      </body>
+    </html>
+    """
+
+    provider, method, pairs = _extract_chat_pairs("https://claude.ai/share/abc", html)
+
+    assert provider == "claude"
+    assert method == "structured"
+    assert len(pairs) == 1
+    assert pairs[0].agent_response == "Use const value = {}; then keep explaining."
+
+
 def test_extracts_gemini_pairs_from_public_share_dom() -> None:
     html = """
     <html>

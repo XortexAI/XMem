@@ -87,10 +87,13 @@ async def list_api_keys(
 
     Returns metadata about each key but NOT the actual key values.
     """
-    keys = api_key_store.get_user_api_keys(
-        user_id=current_user["id"],
-        include_inactive=include_inactive
-    )
+    try:
+        keys = api_key_store.get_user_api_keys(
+            user_id=current_user["id"],
+            include_inactive=include_inactive
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
 
     # Convert to response model
     key_responses = [
@@ -118,10 +121,13 @@ async def create_api_key(
     WARNING: The full API key is only returned once in this response.
     Make sure to save it securely - it cannot be retrieved again.
     """
-    result = api_key_store.create_api_key(
-        user_id=current_user["id"],
-        name=request.name,
-    )
+    try:
+        result = api_key_store.create_api_key(
+            user_id=current_user["id"],
+            name=request.name,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
 
     return APIKeyCreateResponse(
         key=result["key"],
@@ -138,11 +144,14 @@ async def update_api_key(
     current_user: dict = Depends(require_auth),
 ):
     """Update an API key's name."""
-    success = api_key_store.update_api_key_name(
-        user_id=current_user["id"],
-        key_id=key_id,
-        new_name=request.name,
-    )
+    try:
+        success = api_key_store.update_api_key_name(
+            user_id=current_user["id"],
+            key_id=key_id,
+            new_name=request.name,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
 
     if not success:
         raise HTTPException(
@@ -180,10 +189,13 @@ async def revoke_api_key(
     Once revoked, the key cannot be used for authentication.
     This action is reversible - you can reactivate a key if needed (not implemented yet).
     """
-    success = api_key_store.revoke_api_key(
-        user_id=current_user["id"],
-        key_id=key_id,
-    )
+    try:
+        success = api_key_store.revoke_api_key(
+            user_id=current_user["id"],
+            key_id=key_id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
 
     if not success:
         raise HTTPException(

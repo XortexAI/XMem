@@ -1,7 +1,5 @@
 """Authentication routes for Google OAuth and JWT management."""
 
-import secrets
-import string
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
@@ -14,6 +12,7 @@ from pydantic import BaseModel
 
 from src.api.dependencies import get_current_user, require_api_key, require_user
 from src.config import settings
+from src.database.control_plane_store import control_plane_store
 from src.database.user_store import UserStore
 from src.database.api_key_store import APIKeyStore
 
@@ -23,87 +22,32 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 user_store = UserStore()
 api_key_store = APIKeyStore()
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MCP OAuth Temp Token Store (in-memory with TTL)
-# ═══════════════════════════════════════════════════════════════════════════
-_mcp_temp_tokens: Dict[str, Dict[str, Any]] = {}
 TEMP_TOKEN_PREFIX = "xm-temp-"
 TEMP_TOKEN_TTL_MINUTES = 10
-TEMP_TOKEN_LENGTH = 32
-
-
-def _generate_mcp_temp_token() -> str:
-    """Generate a temporary token for MCP OAuth flow."""
-    alphabet = string.ascii_letters + string.digits
-    random_part = "".join(secrets.choice(alphabet) for _ in range(TEMP_TOKEN_LENGTH))
-    return f"{TEMP_TOKEN_PREFIX}{random_part}"
 
 
 def _create_mcp_temp_token(user_id: str) -> str:
     """Create and store a temporary token for the user."""
-    token = _generate_mcp_temp_token()
-    expires_at = datetime.utcnow() + timedelta(minutes=TEMP_TOKEN_TTL_MINUTES)
-
-    _mcp_temp_tokens[token] = {
-        "user_id": user_id,
-        "created_at": datetime.utcnow(),
-        "expires_at": expires_at,
-        "exchanged": False,
-    }
-
+    token, _ = control_plane_store.create_temp_token(
+        user_id=user_id,
+        ttl_minutes=TEMP_TOKEN_TTL_MINUTES,
+        prefix=TEMP_TOKEN_PREFIX,
+    )
     return token
 
 
 def _get_and_invalidate_mcp_token(token: str) -> Optional[str]:
     """Validate temp token and return user_id if valid, None otherwise."""
-    if token not in _mcp_temp_tokens:
-        return None
+    return control_plane_store.consume_temp_token(token)
 
-    token_data = _mcp_temp_tokens[token]
-
-    # Check expiry
-    if datetime.utcnow() > token_data["expires_at"]:
-        del _mcp_temp_tokens[token]
-        return None
-
-    # Check if already exchanged
-    if token_data["exchanged"]:
-        return None
-
-    # Mark as exchanged and return user_id
-    user_id = token_data["user_id"]
-    del _mcp_temp_tokens[token]  # Single-use token
-    return user_id
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Standard OAuth 2.0 Store (for ChatGPT UI)
-# ═══════════════════════════════════════════════════════════════════════════
-_oauth_auth_codes: Dict[str, Dict[str, Any]] = {}
 
 def _generate_auth_code(user_id: str) -> str:
     """Generate a standard OAuth 2.0 authorization code."""
-    alphabet = string.ascii_letters + string.digits
-    code = "".join(secrets.choice(alphabet) for _ in range(32))
-    
-    _oauth_auth_codes[code] = {
-        "user_id": user_id,
-        "expires_at": datetime.utcnow() + timedelta(minutes=10)
-    }
-    return code
+    return control_plane_store.create_auth_code(user_id=user_id, ttl_minutes=10)
 
 def _get_and_invalidate_auth_code(code: str) -> Optional[str]:
     """Validate auth code and return user_id if valid."""
-    if code not in _oauth_auth_codes:
-        return None
-        
-    data = _oauth_auth_codes[code]
-    del _oauth_auth_codes[code] # Single-use
-    
-    if datetime.utcnow() > data["expires_at"]:
-        return None
-        
-    return data["user_id"]
+    return control_plane_store.consume_auth_code(code)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -460,12 +404,18 @@ async def generate_mcp_temp_token(current_user: dict = Depends(require_user)):
         )
 
     user_id = str(current_user.get("id"))
-    temp_token = _create_mcp_temp_token(user_id)
+    try:
+        temp_token = _create_mcp_temp_token(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication storage unavailable",
+        )
 
     return MCPTempTokenResponse(
         temp_token=temp_token,
         expires_in=TEMP_TOKEN_TTL_MINUTES * 60,
-        expires_at=_mcp_temp_tokens[temp_token]["expires_at"]
+        expires_at=datetime.utcnow() + timedelta(minutes=TEMP_TOKEN_TTL_MINUTES)
     )
 
 
@@ -480,7 +430,13 @@ async def exchange_mcp_token(request: MCPExchangeRequest):
     The temp token is single-use and invalidated after exchange.
     """
     # Validate and consume the temp token
-    user_id = _get_and_invalidate_mcp_token(request.temp_token)
+    try:
+        user_id = _get_and_invalidate_mcp_token(request.temp_token)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication storage unavailable",
+        )
 
     if not user_id:
         raise HTTPException(
@@ -497,10 +453,16 @@ async def exchange_mcp_token(request: MCPExchangeRequest):
         )
 
     # Create a new API key for this user
-    key_result = api_key_store.create_api_key(
-        user_id=user_id,
-        name=f"MCP Client - {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
-    )
+    try:
+        key_result = api_key_store.create_api_key(
+            user_id=user_id,
+            name=f"MCP Client - {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+        )
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="API key storage unavailable",
+        )
 
     # Prepare user response
     user_response = {
@@ -531,7 +493,13 @@ async def oauth_approve(request: OAuthApproveRequest, current_user: dict = Depen
         raise HTTPException(status_code=401, detail="Authentication required")
         
     user_id = str(current_user.get("id"))
-    code = _generate_auth_code(user_id)
+    try:
+        code = _generate_auth_code(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication storage unavailable",
+        )
     return OAuthApproveResponse(code=code)
 
 
@@ -555,15 +523,21 @@ async def oauth_token(
     if not code:
         return JSONResponse(status_code=400, content={"error": "invalid_request", "error_description": "code is required"})
         
-    user_id = _get_and_invalidate_auth_code(code)
+    try:
+        user_id = _get_and_invalidate_auth_code(code)
+    except RuntimeError:
+        return JSONResponse(status_code=503, content={"error": "server_error", "error_description": "Authentication storage unavailable"})
     if not user_id:
         return JSONResponse(status_code=400, content={"error": "invalid_grant", "error_description": "Invalid or expired authorization code"})
         
     # Generate a permanent API key acting as the access token
-    key_result = api_key_store.create_api_key(
-        user_id=user_id,
-        name=f"OAuth Client ({client_id or 'Unknown'}) - {datetime.utcnow().strftime('%Y-%m-%d')}"
-    )
+    try:
+        key_result = api_key_store.create_api_key(
+            user_id=user_id,
+            name=f"OAuth Client ({client_id or 'Unknown'}) - {datetime.utcnow().strftime('%Y-%m-%d')}"
+        )
+    except RuntimeError:
+        return JSONResponse(status_code=503, content={"error": "server_error", "error_description": "API key storage unavailable"})
     
     return {
         "access_token": key_result["key"],

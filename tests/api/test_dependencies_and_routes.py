@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from src.api import dependencies as deps
 from src.api.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from src.api.routes.health import router as health_router
+from src.database.control_plane_store import _in_memory_rate_limits
 from src.schemas.retrieval import RetrievalResult
 
 
@@ -35,6 +36,7 @@ class FakeRetrievalPipeline:
 
 @pytest.fixture
 def dependency_app(monkeypatch):
+    monkeypatch.setattr(deps.settings, "environment", "dev", raising=False)
     monkeypatch.setattr(deps.settings, "api_keys", ["test-static-key"], raising=False)
     deps._init_error = None
     deps._pipelines_ready.set()
@@ -87,6 +89,11 @@ def test_dependency_injection_returns_configured_pipeline(dependency_app):
 
 @pytest.mark.asyncio
 async def test_rate_limiter_blocks_after_limit(monkeypatch):
-    limiter = deps._SlidingWindowRateLimiter(max_requests=1, window_seconds=60)
-    assert await limiter.check("user-1") == (True, 0)
-    assert await limiter.check("user-1") == (False, 0)
+    monkeypatch.setattr(deps.settings, "environment", "dev", raising=False)
+    _in_memory_rate_limits.clear()
+    assert await deps._rate_limiter.check("user-1") == (True, deps.settings.rate_limit - 1)
+    limiter = deps._rate_limiter
+    for _ in range(deps.settings.rate_limit - 1):
+        await limiter.check("user-2")
+    assert await limiter.check("user-2") == (True, 0)
+    assert await limiter.check("user-2") == (False, 0)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.database.api_key_store import APIKeyStore, _in_memory_api_keys
+from src.config import settings
 from src.database.project_store import ProjectStore
 from src.database.models import TeamRole
 from src.database.user_store import UserStore, _in_memory_users
@@ -25,6 +26,7 @@ def _force_project_memory(self):
 
 def test_api_key_store_creates_validates_updates_and_revokes_in_memory(monkeypatch):
     _in_memory_api_keys.clear()
+    monkeypatch.setattr(settings, "environment", "dev", raising=False)
     monkeypatch.setattr(APIKeyStore, "_try_connect", _force_api_key_memory)
     store = APIKeyStore()
 
@@ -45,6 +47,7 @@ def test_api_key_store_creates_validates_updates_and_revokes_in_memory(monkeypat
 
 def test_user_store_get_or_create_and_username_helpers_in_memory(monkeypatch):
     _in_memory_users.clear()
+    monkeypatch.setattr(settings, "environment", "dev", raising=False)
     monkeypatch.setattr(UserStore, "_try_connect", _force_user_memory)
     store = UserStore()
 
@@ -63,6 +66,7 @@ def test_user_store_get_or_create_and_username_helpers_in_memory(monkeypatch):
 
 
 def test_project_store_team_permissions_in_memory(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "dev", raising=False)
     monkeypatch.setattr(ProjectStore, "_try_connect", _force_project_memory)
     store = ProjectStore()
 

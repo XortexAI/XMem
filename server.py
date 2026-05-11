@@ -50,6 +50,7 @@ for name in [
 
 from src.pipelines.ingest import IngestPipeline
 from src.pipelines.retrieval import RetrievalPipeline
+from src.api.ingestion_coordinator import UserIngestionCoordinator
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -82,6 +83,7 @@ retrieval_pipeline: RetrievalPipeline | None = None
 _pipelines_ready = asyncio.Event()
 _init_error: str | None = None
 SKIP_PIPELINES = os.getenv("XMEM_SKIP_PIPELINES", "").lower() in {"1", "true", "yes"}
+_user_coordinator = UserIngestionCoordinator()
 
 
 def _init_pipelines_sync() -> None:
@@ -315,14 +317,15 @@ async def v1_ingest_memory(req: IngestRequest):
         )
 
     try:
-        result = await ingest_pipeline.run(
-            user_query=req.user_query,
-            agent_response=req.agent_response or "Acknowledged.",
-            user_id=req.user_id,
-            session_datetime=req.session_datetime,
-            image_url=req.image_url,
-            effort_level=req.effort_level,
-        )
+        async with _user_coordinator.acquire(req.user_id):
+            result = await ingest_pipeline.run(
+                user_query=req.user_query,
+                agent_response=req.agent_response or "Acknowledged.",
+                user_id=req.user_id,
+                session_datetime=req.session_datetime,
+                image_url=req.image_url,
+                effort_level=req.effort_level,
+            )
 
         data = {
             "model": _get_model_name(ingest_pipeline.model),
@@ -368,11 +371,12 @@ async def api_ingest(req: IngestRequest):
         lg.addHandler(capture)
 
     try:
-        result = await ingest_pipeline.run(
-            user_query=req.user_query,
-            agent_response=req.agent_response or "Acknowledged.",
-            user_id=req.user_id,
-        )
+        async with _user_coordinator.acquire(req.user_id):
+            result = await ingest_pipeline.run(
+                user_query=req.user_query,
+                agent_response=req.agent_response or "Acknowledged.",
+                user_id=req.user_id,
+            )
 
         # Build structured response
         response: Dict[str, Any] = {

@@ -64,3 +64,103 @@ async def test_retrieval_tool_dispatch_handles_unknown_and_snippet(vector_store,
     snippets = await pipeline._execute_tool("SearchSnippet", {"query": "binary search"}, "user-1", 5)
     assert snippets[0].domain == "snippet"
     assert "def bs" in snippets[0].content
+
+
+@pytest.mark.asyncio
+async def test_raw_search_returns_ranked_hits_without_llm_planning(vector_store, neo4j_client):
+    vector_store.seed(
+        "profile-1",
+        "work / company = XMem",
+        {"user_id": "alice", "domain": "profile", "main_content": "work_company"},
+        score=0.7,
+    )
+    vector_store.seed(
+        "summary-1",
+        "Alice is tuning low-latency retrieval.",
+        {"user_id": "alice", "domain": "summary"},
+        score=0.9,
+    )
+    neo4j_client.seed_event(
+        user_id="alice",
+        date="05-11",
+        event_name="Launch",
+        desc="Raw search launch",
+        year="2026",
+        similarity_score=0.8,
+    )
+
+    class SnippetStore:
+        async def search_by_text(self, **kwargs):
+            return [type("R", (), {
+                "id": "snip-1",
+                "content": "Search helper",
+                "score": 0.95,
+                "metadata": {"code_snippet": "def search(): pass", "language": "python"},
+            })()]
+
+    model = FakeChatModel(responses=["unused"])
+    pipeline = RetrievalPipeline(model=model, vector_store=vector_store, neo4j_client=neo4j_client)
+    pipeline._snippet_stores["alice"] = SnippetStore()
+
+    result = await pipeline.raw_search(
+        query="search launch",
+        user_id="alice",
+        domains=["profile", "summary", "temporal", "snippet"],
+        top_k=5,
+    )
+
+    assert [source.domain for source in result.sources] == [
+        "snippet", "summary", "temporal", "profile",
+    ]
+    assert result.answer == ""
+    assert model.calls == []
+    assert pipeline.model_with_tools.calls == []
+    assert "raw_search" in pipeline.latency_snapshot()
+
+
+@pytest.mark.asyncio
+async def test_raw_search_can_synthesize_answer_after_hits(vector_store, neo4j_client):
+    vector_store.seed(
+        "summary-1",
+        "Alice is building raw search.",
+        {"user_id": "alice", "domain": "summary"},
+    )
+    model = FakeChatModel(responses=["Alice is building raw search."])
+    pipeline = RetrievalPipeline(model=model, vector_store=vector_store, neo4j_client=neo4j_client)
+
+    result = await pipeline.raw_search(
+        query="What is Alice building?",
+        user_id="alice",
+        domains=["summary"],
+        include_answer=True,
+    )
+
+    assert result.answer == "Alice is building raw search."
+    assert len(model.calls) == 1
+    assert pipeline.model_with_tools.calls == []
+    assert "raw_search_answer" in pipeline.latency_snapshot()
+
+
+@pytest.mark.asyncio
+async def test_retrieval_pipeline_reuses_cached_tool_plan(vector_store, neo4j_client):
+    vector_store.seed(
+        "profile-1",
+        "work / company = XMem",
+        {"user_id": "alice", "domain": "profile", "main_content": "work_company"},
+    )
+    model = FakeChatModel(
+        tool_responses=[
+            FakeLLMResponse("", tool_calls=[
+                {"name": "search_profile", "args": {"topic": "work"}, "id": "call-profile"},
+            ])
+        ],
+        responses=["first answer", "second answer"],
+    )
+    pipeline = RetrievalPipeline(model=model, vector_store=vector_store, neo4j_client=neo4j_client)
+
+    first = await pipeline.run("Where does Alice work?", "alice")
+    second = await pipeline.run("Where does Alice work?", "alice")
+
+    assert first.answer == "first answer"
+    assert second.answer == "second answer"
+    assert len(pipeline.model_with_tools.calls) == 1

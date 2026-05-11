@@ -159,24 +159,48 @@ class SearchRequest(BaseModel):
         ..., min_length=1, max_length=256, pattern=r"^[\w.\-@]+$",
     )
     domains: List[str] = Field(
-        default=["profile", "temporal", "summary"],
+        default=["profile", "temporal", "summary", "snippet"],
         description="Which memory domains to search",
     )
     top_k: int = Field(default=10, ge=1, le=100)
+    answer: bool = Field(
+        default=False,
+        description="When true, synthesize an LLM answer from the raw hits.",
+    )
+    org_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="Required when including the code domain.",
+    )
+    repo: str = Field(
+        default="",
+        max_length=256,
+        description="Optional repository scope for code search.",
+    )
 
     @field_validator("domains")
     @classmethod
     def validate_domains(cls, v: List[str]) -> List[str]:
-        allowed = {"profile", "temporal", "summary"}
+        allowed = {"profile", "temporal", "summary", "snippet", "code"}
         for d in v:
             if d not in allowed:
                 raise ValueError(f"Invalid domain '{d}'. Allowed: {allowed}")
         return v
 
+    @field_validator("query")
+    @classmethod
+    def strip_search_query(cls, v: str) -> str:
+        return v.strip()
+
 
 class SearchResponse(BaseModel):
     results: List[SourceRecord] = Field(default_factory=list)
     total: int = 0
+    answer: str = ""
+    model: str = ""
+    confidence: float = 0.0
+    latency: Dict[str, Dict[str, float]] = Field(default_factory=dict)
 
 
 # ── Scrape (extract from shared chat links) ────────────────────────────────

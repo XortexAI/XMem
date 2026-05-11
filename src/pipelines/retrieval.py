@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Dict, List, Optional
+import time
+from collections import OrderedDict, defaultdict, deque
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from langchain_core.language_models import BaseChatModel
@@ -39,6 +41,45 @@ from src.storage.pinecone import PineconeVectorStore
 load_dotenv()
 
 logger = logging.getLogger("xmem.pipelines.retrieval")
+
+CONFIDENCE_PER_SOURCE = 0.2
+PROFILE_CATALOG_CACHE_MAX = 512
+RETRIEVAL_PLAN_CACHE_MAX = 1024
+
+
+class RetrievalLatencyTracker:
+    """Bounded in-memory latency samples for retrieval modes."""
+
+    def __init__(self, max_samples: int = 512) -> None:
+        self._samples: Dict[str, Deque[float]] = defaultdict(
+            lambda: deque(maxlen=max_samples)
+        )
+
+    def record(self, mode: str, elapsed_ms: float) -> None:
+        self._samples[mode].append(elapsed_ms)
+
+    def snapshot(self) -> Dict[str, Dict[str, float]]:
+        return {
+            mode: self._percentiles(samples)
+            for mode, samples in self._samples.items()
+            if samples
+        }
+
+    @staticmethod
+    def _percentiles(samples: Deque[float]) -> Dict[str, float]:
+        ordered = sorted(samples)
+        count = len(ordered)
+
+        def percentile(pct: float) -> float:
+            index = min(count - 1, max(0, int(round((pct / 100) * (count - 1)))))
+            return round(ordered[index], 2)
+
+        return {
+            "count": count,
+            "p50_ms": percentile(50),
+            "p95_ms": percentile(95),
+            "p99_ms": percentile(99),
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -132,6 +173,14 @@ class RetrievalPipeline:
 
         self.embed_fn = embed_fn
         self._snippet_stores: Dict[str, PineconeVectorStore] = {}
+        self._profile_catalog_cache: OrderedDict[
+            str, Tuple[float, List[Dict[str, str]], List[Any]]
+        ] = OrderedDict()
+        self._retrieval_plan_cache: OrderedDict[
+            str, List[Dict[str, Any]]
+        ] = OrderedDict()
+        self._cache_ttl_s = 300.0
+        self._latency = RetrievalLatencyTracker()
 
         logger.info("RetrievalPipeline initialized")
 
@@ -146,6 +195,7 @@ class RetrievalPipeline:
         top_k: int = 5,
     ) -> RetrievalResult:
         """Run the two-step retrieval pipeline."""
+        mode_start = time.perf_counter()
 
         logger.info("=" * 60)
         logger.info("RETRIEVAL PIPELINE START")
@@ -154,28 +204,42 @@ class RetrievalPipeline:
         logger.info("=" * 60)
 
         # ── Step 0: Fetch available profile catalog for this user ─────
-        profile_catalog, profile_records = self._fetch_profile_catalog(user_id)
+        profile_catalog, _ = self._fetch_profile_catalog(user_id)
         catalog_text = self._format_catalog(profile_catalog)
         logger.info("Available profiles: %s", catalog_text)
 
-        # Store profile records so _search_profile can reuse them
-        self._cached_profile_records = profile_records
-
         # ── Step 1: Ask LLM what to fetch (tool calls) ────────────────
         system_prompt = build_system_prompt(profile_catalog=catalog_text)
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=query),
-        ]
+        plan_key = self._plan_cache_key(user_id, query, top_k, catalog_text)
+        cached_tool_calls = self._get_cached_retrieval_plan(plan_key)
+        ai_response: Optional[AIMessage] = None
 
-        ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
-        logger.info("LLM response received (tool_calls=%d)", len(ai_response.tool_calls or []))
+        if cached_tool_calls is not None:
+            tool_calls = cached_tool_calls
+            logger.info("Using cached retrieval plan (tool_calls=%d)", len(tool_calls))
+        else:
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=query),
+            ]
+            ai_response = await self.model_with_tools.ainvoke(messages)
+            tool_calls = list(ai_response.tool_calls or [])
+            logger.info("LLM response received (tool_calls=%d)", len(tool_calls))
+            if tool_calls:
+                self._cache_retrieval_plan(plan_key, [
+                    {
+                        "name": tc["name"],
+                        "args": dict(tc.get("args") or {}),
+                        "id": f"cached-{idx}",
+                    }
+                    for idx, tc in enumerate(tool_calls)
+                ])
 
         # ── Step 2: Execute tool calls ────────────────────────────────
         sources: List[SourceRecord] = []
         tool_messages: List[ToolMessage] = []
 
-        if ai_response.tool_calls:
+        if tool_calls:
             called_tools = set()
 
             async def _process_tool_call(tc):
@@ -188,7 +252,7 @@ class RetrievalPipeline:
                 )
                 return tool_name, tool_args, tool_id, records
 
-            tool_results = await asyncio.gather(*[_process_tool_call(tc) for tc in ai_response.tool_calls])
+            tool_results = await asyncio.gather(*[_process_tool_call(tc) for tc in tool_calls])
 
             for tool_name, tool_args, tool_id, records in tool_results:
                 sources.extend(records)
@@ -214,7 +278,7 @@ class RetrievalPipeline:
                     tool_messages.append(
                         ToolMessage(
                             content=f"[Auto-fetched summary context]\n{extra_text}",
-                            tool_call_id=ai_response.tool_calls[-1]["id"],
+                            tool_call_id=tool_calls[-1]["id"],
                         )
                     )
 
@@ -233,7 +297,7 @@ class RetrievalPipeline:
             answer = final_response.content
         else:
             # No tool calls — LLM answered directly (shouldn't happen often)
-            answer = ai_response.content
+            answer = ai_response.content if ai_response is not None else ""
             logger.info("LLM answered without tool calls")
 
         if isinstance(answer, list):
@@ -247,7 +311,7 @@ class RetrievalPipeline:
                     parts.append(str(c))
             answer = "\n".join(parts)
 
-        confidence = min(1.0, len(sources) * 0.2) if sources else 0.1
+        confidence = self.confidence_from_sources(sources)
 
         logger.info("=" * 60)
         logger.info("RETRIEVAL PIPELINE COMPLETE")
@@ -255,12 +319,141 @@ class RetrievalPipeline:
         logger.info("  answer: %s", answer[:100] + "..." if len(answer) > 100 else answer)
         logger.info("=" * 60)
 
-        return RetrievalResult(
+        result = RetrievalResult(
             query=query,
             answer=answer,
             sources=sources,
             confidence=confidence,
         )
+        self._record_latency("agentic", (time.perf_counter() - mode_start) * 1000)
+        return result
+
+    async def raw_search(
+        self,
+        query: str,
+        user_id: str,
+        domains: Optional[List[str]] = None,
+        top_k: int = 10,
+        include_answer: bool = False,
+    ) -> RetrievalResult:
+        """Fast retrieval path that returns ranked hits without LLM planning."""
+        mode_start = time.perf_counter()
+        requested = domains if domains is not None else [
+            "profile", "temporal", "summary", "snippet",
+        ]
+        sources: List[SourceRecord] = []
+        tasks = []
+
+        if "profile" in requested:
+            sources.extend(self._search_profile_catalog(user_id=user_id, top_k=top_k))
+        if "temporal" in requested:
+            tasks.append(self._search_temporal(query=query, user_id=user_id, top_k=top_k))
+        if "summary" in requested:
+            tasks.append(self._search_summary(query=query, user_id=user_id, top_k=top_k))
+        if "snippet" in requested:
+            tasks.append(self._search_snippet(query=query, user_id=user_id, top_k=top_k))
+
+        if tasks:
+            for records in await asyncio.gather(*tasks):
+                sources.extend(records)
+
+        sources = self._rank_sources(sources)
+        answer = ""
+        if include_answer:
+            answer = await self.answer_from_sources(query=query, sources=sources)
+
+        confidence = self.confidence_from_sources(sources)
+        result = RetrievalResult(
+            query=query,
+            answer=answer,
+            sources=sources,
+            confidence=confidence,
+        )
+
+        mode = "raw_search_answer" if include_answer else "raw_search"
+        self._record_latency(mode, (time.perf_counter() - mode_start) * 1000)
+        return result
+
+    def latency_snapshot(self) -> Dict[str, Dict[str, float]]:
+        """Return p50/p95/p99 latency snapshots by retrieval mode."""
+        return self._latency.snapshot()
+
+    def _plan_cache_key(
+        self,
+        user_id: str,
+        query: str,
+        top_k: int,
+        catalog_text: str,
+    ) -> str:
+        return "\0".join([user_id, str(top_k), query, catalog_text])
+
+    def _get_cached_retrieval_plan(
+        self,
+        key: str,
+    ) -> Optional[List[Dict[str, Any]]]:
+        plan = self._retrieval_plan_cache.get(key)
+        if plan is not None:
+            self._retrieval_plan_cache.move_to_end(key)
+        return plan
+
+    def _cache_retrieval_plan(
+        self,
+        key: str,
+        plan: List[Dict[str, Any]],
+    ) -> None:
+        self._retrieval_plan_cache[key] = plan
+        self._retrieval_plan_cache.move_to_end(key)
+        if len(self._retrieval_plan_cache) > RETRIEVAL_PLAN_CACHE_MAX:
+            self._retrieval_plan_cache.popitem(last=False)
+
+    def _record_latency(self, mode: str, elapsed_ms: float) -> None:
+        self._latency.record(mode, elapsed_ms)
+        try:
+            from src.config.metrics import METRICS
+            METRICS.pipeline_stage_duration.labels(
+                pipeline="retrieval",
+                stage=mode,
+            ).observe(elapsed_ms / 1000)
+        except Exception:
+            pass
+
+    def _rank_sources(self, sources: List[SourceRecord]) -> List[SourceRecord]:
+        return sorted(
+            sources,
+            key=lambda source: source.score if source.score is not None else 0.0,
+            reverse=True,
+        )
+
+    def confidence_from_sources(self, sources: List[SourceRecord]) -> float:
+        return min(1.0, len(sources) * CONFIDENCE_PER_SOURCE) if sources else 0.1
+
+    async def answer_from_sources(
+        self,
+        query: str,
+        sources: List[SourceRecord],
+    ) -> str:
+        if not sources:
+            return "I could not find matching memory records for that query."
+
+        answer_prompt = ANSWER_PROMPT.format(
+            context=self._format_tool_results(sources),
+            query=query,
+        )
+        final_response = await self.model.ainvoke([HumanMessage(content=answer_prompt)])
+        return self._coerce_answer_text(final_response.content)
+
+    def _coerce_answer_text(self, answer: Any) -> str:
+        if isinstance(answer, list):
+            parts = []
+            for c in answer:
+                if isinstance(c, dict) and "text" in c:
+                    parts.append(c["text"])
+                elif isinstance(c, str):
+                    parts.append(c)
+                else:
+                    parts.append(str(c))
+            return "\n".join(parts)
+        return str(answer)
 
     # ------------------------------------------------------------------
     # Tool execution
@@ -320,9 +513,10 @@ class RetrievalPipeline:
         'work_company', 'work_title', etc.).
         """
         topic_prefix = topic.strip().lower().replace(" ", "_")
+        _, profile_records = self._fetch_profile_catalog(user_id)
 
         records = []
-        for r in getattr(self, "_cached_profile_records", []):
+        for r in profile_records:
             main_content = r.metadata.get("main_content", "")
             if not main_content.startswith(topic_prefix):
                 continue
@@ -344,6 +538,25 @@ class RetrievalPipeline:
             ))
 
         logger.info("  → Profile [%s]: %d results", topic, len(records))
+        return records
+
+    def _search_profile_catalog(
+        self,
+        user_id: str,
+        top_k: int,
+    ) -> List[SourceRecord]:
+        """Return cached profile records for raw search."""
+        _, profile_records = self._fetch_profile_catalog(user_id)
+        records = [
+            SourceRecord(
+                domain="profile",
+                content=r.content,
+                score=r.score,
+                metadata={"id": r.id, **r.metadata},
+            )
+            for r in profile_records[:top_k]
+        ]
+        logger.info("  → Profile catalog: %d results", len(records))
         return records
 
     # -- Temporal: Neo4j semantic search ───────────────────────────────
@@ -459,14 +672,18 @@ class RetrievalPipeline:
         top_k: int = 5,
     ) -> List[SourceRecord]:
         """Semantic search over user code snippets (sandboxed namespace)."""
-        store = self._get_snippet_store(user_id)
-        
-        # In the sandboxed namespace, we can just search. We pass domain filter just in case.
-        results = await store.search_by_text(
-            query_text=query,
-            top_k=top_k,
-            filters={"domain": "snippet"},
-        )
+        try:
+            store = self._get_snippet_store(user_id)
+
+            # In the sandboxed namespace, we can just search. We pass domain filter just in case.
+            results = await store.search_by_text(
+                query_text=query,
+                top_k=top_k,
+                filters={"domain": "snippet"},
+            )
+        except Exception as exc:
+            logger.warning("Snippet search error: %s", exc)
+            return []
 
         records = []
         for r in results:
@@ -499,6 +716,12 @@ class RetrievalPipeline:
             catalog  — list of {topic, sub_topic} for the prompt
             raw_results — the full SearchResult list, cached for _search_profile
         """
+        cached = self._profile_catalog_cache.get(user_id)
+        now = time.monotonic()
+        if cached and now - cached[0] < self._cache_ttl_s:
+            self._profile_catalog_cache.move_to_end(user_id)
+            return cached[1], cached[2]
+
         try:
             results = self.vector_store.search_by_metadata(
                 filters={"user_id": user_id, "domain": "profile"},
@@ -529,6 +752,10 @@ class RetrievalPipeline:
                     "sub_topic": "",
                 })
 
+        self._profile_catalog_cache[user_id] = (now, catalog, results)
+        self._profile_catalog_cache.move_to_end(user_id)
+        if len(self._profile_catalog_cache) > PROFILE_CATALOG_CACHE_MAX:
+            self._profile_catalog_cache.popitem(last=False)
         return catalog, results
 
     def _format_catalog(self, catalog: List[Dict[str, str]]) -> str:

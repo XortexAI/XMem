@@ -7,7 +7,6 @@ OpenAPI docs, input validation, and serialization are fully type-safe.
 
 from __future__ import annotations
 
-from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -159,15 +158,19 @@ class SearchRequest(BaseModel):
         ..., min_length=1, max_length=256, pattern=r"^[\w.\-@]+$",
     )
     domains: List[str] = Field(
-        default=["profile", "temporal", "summary"],
+        default=["profile", "temporal", "summary", "snippet"],
         description="Which memory domains to search",
     )
     top_k: int = Field(default=10, ge=1, le=100)
+    answer: bool = Field(
+        default=False,
+        description="When true, synthesize an answer from the raw hits without agentic tool selection.",
+    )
 
     @field_validator("domains")
     @classmethod
     def validate_domains(cls, v: List[str]) -> List[str]:
-        allowed = {"profile", "temporal", "summary"}
+        allowed = {"profile", "temporal", "summary", "snippet"}
         for d in v:
             if d not in allowed:
                 raise ValueError(f"Invalid domain '{d}'. Allowed: {allowed}")
@@ -177,6 +180,10 @@ class SearchRequest(BaseModel):
 class SearchResponse(BaseModel):
     results: List[SourceRecord] = Field(default_factory=list)
     total: int = 0
+    answer: str = ""
+    model: str = ""
+    confidence: float = 0.0
+    latency: Dict[str, Dict[str, float | int]] = Field(default_factory=dict)
 
 
 # ── Scrape (extract from shared chat links) ────────────────────────────────

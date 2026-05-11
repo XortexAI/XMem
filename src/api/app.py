@@ -33,6 +33,7 @@ from src.api.routes.code import router as code_router
 from src.api.routes.enterprise import router as enterprise_router
 from src.api.routes.health import router as health_router
 from src.api.routes.memory import router as memory_router
+from src.api.routes.memory import search_router as memory_search_router
 from src.api.routes.memory import scrape_router as memory_scrape_router
 from src.api.routes.memory import v2_router as memory_v2_router
 from src.api.routes.memory import v2_scrape_router as memory_v2_scrape_router
@@ -157,6 +158,7 @@ def create_app() -> FastAPI:
     # ── Routes ────────────────────────────────────────────────────────
     app.include_router(health_router)
     app.include_router(memory_scrape_router)
+    app.include_router(memory_search_router)
     app.include_router(memory_router)
     app.include_router(memory_v2_scrape_router)
     app.include_router(memory_v2_router)

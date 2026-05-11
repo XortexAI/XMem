@@ -158,7 +158,7 @@ class SearchRequest(BaseModel):
         ..., min_length=1, max_length=256, pattern=r"^[\w.\-@]+$",
     )
     domains: List[str] = Field(
-        default=["profile", "temporal", "summary", "snippet"],
+        default=["profile", "temporal", "summary", "snippet", "code"],
         description="Which memory domains to search",
     )
     top_k: int = Field(default=10, ge=1, le=100)
@@ -170,7 +170,7 @@ class SearchRequest(BaseModel):
     @field_validator("domains")
     @classmethod
     def validate_domains(cls, v: List[str]) -> List[str]:
-        allowed = {"profile", "temporal", "summary", "snippet"}
+        allowed = {"profile", "temporal", "summary", "snippet", "code"}
         for d in v:
             if d not in allowed:
                 raise ValueError(f"Invalid domain '{d}'. Allowed: {allowed}")

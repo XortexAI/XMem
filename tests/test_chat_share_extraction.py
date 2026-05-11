@@ -68,6 +68,32 @@ def test_extracts_claude_preloaded_state_pairs():
     ]
 
 
+def test_extracts_claude_current_public_share_dom_pairs():
+    html = """
+    <div data-testid="user-message">
+      <p class="whitespace-pre-wrap break-words">test test</p>
+    </div>
+    <div class="font-claude-response relative leading">
+      <div>
+        <div class="standard-markdown">
+          <p class="font-claude-response-body">Hey! I'm here and working.</p>
+        </div>
+      </div>
+    </div>
+    """
+
+    provider, method, pairs = _extract_chat_pairs("https://claude.ai/share/abc", html)
+
+    assert provider == "claude"
+    assert method == "dom"
+    assert pairs == [
+        MessagePair(
+            user_query="test test",
+            agent_response="Hey! I'm here and working.",
+        )
+    ]
+
+
 def test_extracts_gemini_dom_pairs():
     html = """
     <message-content role="user">Compare memory tools.</message-content>
@@ -85,6 +111,36 @@ def test_extracts_gemini_dom_pairs():
         MessagePair(
             user_query="Compare memory tools.",
             agent_response="XMem focuses on persistent agent memory.",
+        )
+    ]
+
+
+def test_extracts_gemini_current_public_share_dom_pairs():
+    html = """
+    <div class="query-text">
+      <span class="screen-reader-user-query-label"> You said </span>
+      <p class="query-text-line"> Test test </p>
+    </div>
+    <structured-content-container class="message-content">
+      <message-content>
+        <div class="markdown">
+          <p>Loud and clear! I'm here and ready to roll.</p>
+        </div>
+      </message-content>
+    </structured-content-container>
+    """
+
+    provider, method, pairs = _extract_chat_pairs(
+        "https://gemini.google.com/share/abc",
+        html,
+    )
+
+    assert provider == "gemini"
+    assert method == "dom"
+    assert pairs == [
+        MessagePair(
+            user_query="Test test",
+            agent_response="Loud and clear! I'm here and ready to roll.",
         )
     ]
 

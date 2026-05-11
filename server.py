@@ -556,7 +556,7 @@ def _render_chat_share_sync(url: str) -> tuple[str, str]:
     with sync_playwright() as p:
         browser = None
         launch_errors = []
-        for channel in (None, "msedge", "chrome"):
+        for channel in ("chromium", None, "msedge", "chrome"):
             try:
                 kwargs = {"headless": True}
                 if channel:
@@ -593,15 +593,15 @@ def _render_chat_share_sync(url: str) -> tuple[str, str]:
             page.route("**/*", _block_heavy_assets)
 
             try:
-                page.goto(url, wait_until="networkidle", timeout=20000)
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception as exc:
                 print(f"[scrape] navigation warning: {exc}", flush=True)
 
             provider = _detect_chat_provider(page.url or url)
             selector = {
                 "chatgpt": "div[data-message-author-role]",
-                "claude": "script",
-                "gemini": "message-content, div.user-query, div.model-response",
+                "claude": "div[data-testid='user-message'], div.font-claude-response",
+                "gemini": "message-content, div.user-query, div.model-response, .query-text",
             }.get(provider)
             if selector:
                 try:
@@ -609,7 +609,7 @@ def _render_chat_share_sync(url: str) -> tuple[str, str]:
                 except Exception as exc:
                     print(f"[scrape] timed out waiting for {provider} content: {exc}", flush=True)
 
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(5000 if provider == "claude" else 2000)
             final_url = page.url
             html = page.content()
         finally:
@@ -662,14 +662,37 @@ def _extract_chat_pairs(url: str, html: str) -> tuple[str, str, list[dict[str, s
                         extraction_method = "structured"
             except Exception as exc:
                 print(f"[scrape] Claude parse warning: {exc}", flush=True)
+        if not pairs:
+            user_msgs = soup.select("div[data-testid='user-message']")
+            asst_msgs = soup.select("div.font-claude-response")
+            for user_msg, assistant_msg in zip(user_msgs, asst_msgs):
+                pairs.append({
+                    "user_query": user_msg.get_text(separator="\n", strip=True),
+                    "agent_response": assistant_msg.get_text(separator="\n", strip=True),
+                })
+            if pairs:
+                extraction_method = "dom"
 
     elif provider == "gemini":
-        user_blocks = soup.select("message-content[role='user'], div.user-query")
-        model_blocks = soup.select("message-content[role='model'], div.model-response")
+        user_blocks = soup.select(
+            "message-content[role='user'], div.user-query, .query-text"
+        )
+        model_blocks = soup.select(
+            "message-content[role='model'], div.model-response, "
+            "structured-content-container.message-content message-content, "
+            "message-content:not([role])"
+        )
         for user_block, model_block in zip(user_blocks, model_blocks):
+            user_text = user_block.get_text(separator="\n", strip=True)
+            user_labels = {"you said", "your prompt", "あなたの入力", "あなたのプロンプト"}
+            user_lines = [
+                line.strip()
+                for line in user_text.splitlines()
+                if line.strip() and line.strip().lower() not in user_labels
+            ]
             pairs.append({
-                "user_query": user_block.get_text(separator="\n").strip(),
-                "agent_response": model_block.get_text(separator="\n").strip(),
+                "user_query": "\n".join(user_lines),
+                "agent_response": model_block.get_text(separator="\n", strip=True),
             })
         if pairs:
             extraction_method = "dom"

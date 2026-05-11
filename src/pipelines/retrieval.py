@@ -21,8 +21,10 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
+from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -44,12 +46,15 @@ logger = logging.getLogger("xmem.pipelines.retrieval")
 
 
 _CACHE_TTL_SECONDS = 60.0
+_PROFILE_CATALOG_CACHE_LIMIT = 256
+_RETRIEVAL_PLAN_CACHE_LIMIT = 512
 _LATENCY_SAMPLE_LIMIT = 200
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tool schemas — These are the "function signatures" exposed to the LLM
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class SearchProfile(BaseModel):
     """Look up user profile facts by topic.
@@ -64,21 +69,28 @@ class SearchTemporal(BaseModel):
     """Search for date-based events like appointments, birthdays, milestones.
     Use when the question involves 'when', dates, schedules, or events."""
 
-    query: str = Field(description="Short search query describing the event, e.g. 'dentist appointment'")
+    query: str = Field(
+        description="Short search query describing the event, e.g. 'dentist appointment'"
+    )
 
 
 class SearchSummary(BaseModel):
     """Search general conversation summaries for broad context.
     Use as a fallback for questions that don't fit profile or temporal domains."""
 
-    query: str = Field(description="Short search query, e.g. 'what does the user enjoy'")
+    query: str = Field(
+        description="Short search query, e.g. 'what does the user enjoy'"
+    )
 
 
 class SearchSnippet(BaseModel):
     """Search for personal code snippets previously saved by the user.
-    Use when the question asks about a specific piece of code, script, or technical configuration the user wrote."""
+    Use when the question asks about a specific piece of code, script, or technical configuration the user wrote.
+    """
 
-    query: str = Field(description="Short search query, e.g. 'python database connection script'")
+    query: str = Field(
+        description="Short search query, e.g. 'python database connection script'"
+    )
 
 
 TOOLS = [SearchProfile, SearchTemporal, SearchSummary, SearchSnippet]
@@ -88,14 +100,17 @@ TOOLS = [SearchProfile, SearchTemporal, SearchSummary, SearchSnippet]
 # Embedding helper (reuses the cached model from ingest)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def _get_embed_fn() -> Callable[[str], List[float]]:
     from src.pipelines.ingest import embed_text
+
     return embed_text
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # RetrievalPipeline
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class RetrievalPipeline:
     """Two-step agentic retrieval: tool-call → fetch → answer."""
@@ -109,6 +124,7 @@ class RetrievalPipeline:
         # ── LLM ───────────────────────────────────────────────────────
         if model is None:
             from src.models import get_model
+
             override = settings.retrieval_model
             self.model = get_model(model_name=override) if override else get_model()
         else:
@@ -138,8 +154,12 @@ class RetrievalPipeline:
 
         self.embed_fn = embed_fn
         self._snippet_stores: Dict[str, BaseVectorStore] = {}
-        self._profile_catalog_cache: Dict[str, tuple[float, List[Dict[str, str]], List[Any]]] = {}
-        self._retrieval_plan_cache: Dict[tuple[str, str, int, str], tuple[float, AIMessage]] = {}
+        self._profile_catalog_cache: OrderedDict[
+            str, tuple[float, List[Dict[str, str]], List[Any]]
+        ] = OrderedDict()
+        self._retrieval_plan_cache: OrderedDict[
+            tuple[str, str, int, str], tuple[float, Any]
+        ] = OrderedDict()
         self._latency_samples: Dict[str, List[float]] = {}
 
         logger.info("RetrievalPipeline initialized")
@@ -163,7 +183,7 @@ class RetrievalPipeline:
         logger.info("=" * 60)
 
         # ── Step 0: Fetch available profile catalog for this user ─────
-        profile_catalog, profile_records = self._get_profile_catalog(user_id)
+        profile_catalog, profile_records = await self._get_profile_catalog(user_id)
         catalog_text = self._format_catalog(profile_catalog)
         logger.info("Available profiles: %s", catalog_text)
 
@@ -177,12 +197,15 @@ class RetrievalPipeline:
             HumanMessage(content=query),
         ]
 
-        plan_key = (user_id, query.strip(), top_k, catalog_text)
+        catalog_hash = hashlib.sha256(catalog_text.encode("utf-8")).hexdigest()
+        plan_key = (user_id, query.strip(), top_k, catalog_hash)
         ai_response = self._get_cached_retrieval_plan(plan_key)
         if ai_response is None:
             ai_response = await self.model_with_tools.ainvoke(messages)
             self._cache_retrieval_plan(plan_key, ai_response)
-        logger.info("LLM response received (tool_calls=%d)", len(ai_response.tool_calls or []))
+        logger.info(
+            "LLM response received (tool_calls=%d)", len(ai_response.tool_calls or [])
+        )
 
         # ── Step 2: Execute tool calls ────────────────────────────────
         sources: List[SourceRecord] = []
@@ -197,11 +220,16 @@ class RetrievalPipeline:
                 tool_id = tc["id"]
                 logger.info("  Tool call: %s(%s)", tool_name, tool_args)
                 records = await self._execute_tool(
-                    tool_name, tool_args, user_id, top_k,
+                    tool_name,
+                    tool_args,
+                    user_id,
+                    top_k,
                 )
                 return tool_name, tool_args, tool_id, records
 
-            tool_results = await asyncio.gather(*[_process_tool_call(tc) for tc in ai_response.tool_calls])
+            tool_results = await asyncio.gather(
+                *[_process_tool_call(tc) for tc in ai_response.tool_calls]
+            )
 
             for tool_name, tool_args, tool_id, records in tool_results:
                 sources.extend(records)
@@ -218,7 +246,9 @@ class RetrievalPipeline:
             if "searchsummary" not in called_tools:
                 logger.info("  Auto-adding summary context (top_k=5)")
                 extra = await self._search_summary(
-                    query=query, user_id=user_id, top_k=20,
+                    query=query,
+                    user_id=user_id,
+                    top_k=20,
                 )
                 if extra:
                     sources.extend(extra)
@@ -256,7 +286,9 @@ class RetrievalPipeline:
         logger.info("=" * 60)
         logger.info("RETRIEVAL PIPELINE COMPLETE")
         logger.info("  sources: %d", len(sources))
-        logger.info("  answer: %s", answer[:100] + "..." if len(answer) > 100 else answer)
+        logger.info(
+            "  answer: %s", answer[:100] + "..." if len(answer) > 100 else answer
+        )
         logger.info("=" * 60)
 
         return RetrievalResult(
@@ -276,16 +308,23 @@ class RetrievalPipeline:
         """Return ranked memory hits without asking the LLM for a retrieval plan."""
 
         domain_set = set(domains)
-        results: List[SourceRecord] = []
-
+        tasks = []
         if "profile" in domain_set:
-            results.extend(await self._search_profile_raw(query, user_id, top_k))
+            tasks.append(self._search_profile_raw(query, user_id, top_k))
         if "temporal" in domain_set:
-            results.extend(await self._search_temporal(query, user_id, top_k))
+            tasks.append(self._search_temporal(query, user_id, top_k))
         if "summary" in domain_set:
-            results.extend(await self._search_summary(query, user_id, top_k))
+            tasks.append(self._search_summary(query, user_id, top_k))
         if "snippet" in domain_set:
-            results.extend(await self._search_snippet(query, user_id, top_k))
+            tasks.append(self._search_snippet(query, user_id, top_k))
+
+        if not tasks:
+            return []
+
+        task_results = await asyncio.gather(*tasks)
+        results = [
+            record for domain_results in task_results for record in domain_results
+        ]
 
         return sorted(results, key=lambda record: record.score, reverse=True)
 
@@ -381,17 +420,19 @@ class RetrievalPipeline:
             parts = main_content.split("_", 1)
             sub_topic = parts[1] if len(parts) == 2 else ""
 
-            records.append(SourceRecord(
-                domain="profile",
-                content=r.content,
-                score=r.score,
-                metadata={
-                    "id": r.id,
-                    "topic": topic,
-                    "sub_topic": sub_topic,
-                    **r.metadata,
-                },
-            ))
+            records.append(
+                SourceRecord(
+                    domain="profile",
+                    content=r.content,
+                    score=r.score,
+                    metadata={
+                        "id": r.id,
+                        "topic": topic,
+                        "sub_topic": sub_topic,
+                        **r.metadata,
+                    },
+                )
+            )
 
         logger.info("  → Profile [%s]: %d results", topic, len(records))
         return records
@@ -414,16 +455,18 @@ class RetrievalPipeline:
             )
         except Exception as exc:
             logger.warning("Profile raw search failed, using cached catalog: %s", exc)
-            _, results = self._get_profile_catalog(user_id)
+            _, results = await self._get_profile_catalog(user_id)
 
         records = []
         for r in results[:top_k]:
-            records.append(SourceRecord(
-                domain="profile",
-                content=r.content,
-                score=r.score,
-                metadata={"id": r.id, **r.metadata},
-            ))
+            records.append(
+                SourceRecord(
+                    domain="profile",
+                    content=r.content,
+                    score=r.score,
+                    metadata={"id": r.id, **r.metadata},
+                )
+            )
         logger.info("Profile raw [%s]: %d results", query, len(records))
         return records
 
@@ -446,7 +489,7 @@ class RetrievalPipeline:
                 query_text=query,
                 top_k=top_k,
                 similarity_threshold=0.15,
-            )
+            ),
         )
 
         records = []
@@ -473,12 +516,14 @@ class RetrievalPipeline:
 
             content = " | ".join(content_parts)
 
-            records.append(SourceRecord(
-                domain="temporal",
-                content=content,
-                score=ev.get("similarity_score", 0.0),
-                metadata=ev,
-            ))
+            records.append(
+                SourceRecord(
+                    domain="temporal",
+                    content=content,
+                    score=ev.get("similarity_score", 0.0),
+                    metadata=ev,
+                )
+            )
 
         logger.info("  → Temporal [%s]: %d results", query, len(records))
         return records
@@ -504,12 +549,14 @@ class RetrievalPipeline:
 
         records = []
         for r in results:
-            records.append(SourceRecord(
-                domain="summary",
-                content=r.content,
-                score=r.score,
-                metadata={"id": r.id, **r.metadata},
-            ))
+            records.append(
+                SourceRecord(
+                    domain="summary",
+                    content=r.content,
+                    score=r.score,
+                    metadata={"id": r.id, **r.metadata},
+                )
+            )
 
         logger.info("  → Summary [%s]: %d results", query, len(records))
         return records
@@ -533,7 +580,7 @@ class RetrievalPipeline:
     ) -> List[SourceRecord]:
         """Semantic search over user code snippets (sandboxed namespace)."""
         store = self._get_snippet_store(user_id)
-        
+
         # In the sandboxed namespace, we can just search. We pass domain filter just in case.
         results = await store.search_by_text(
             query_text=query,
@@ -550,12 +597,14 @@ class RetrievalPipeline:
                 lang = r.metadata.get("language", "")
                 content += f"\n```{lang}\n{snippet}\n```"
 
-            records.append(SourceRecord(
-                domain="snippet",
-                content=content,
-                score=r.score,
-                metadata={"id": r.id, **r.metadata},
-            ))
+            records.append(
+                SourceRecord(
+                    domain="snippet",
+                    content=content,
+                    score=r.score,
+                    metadata={"id": r.id, **r.metadata},
+                )
+            )
 
         logger.info("  → Snippet [%s]: %d results", query, len(records))
         return records
@@ -564,18 +613,22 @@ class RetrievalPipeline:
     # Profile catalog (tells the LLM what profile keys exist)
     # ------------------------------------------------------------------
 
-    def _get_profile_catalog(self, user_id: str):
+    async def _get_profile_catalog(self, user_id: str):
         cached = self._profile_catalog_cache.get(user_id)
         now = time.monotonic()
         if cached and cached[0] > now:
+            self._profile_catalog_cache.move_to_end(user_id)
             return cached[1], cached[2]
+        if cached:
+            self._profile_catalog_cache.pop(user_id, None)
 
-        catalog, results = self._fetch_profile_catalog(user_id)
+        catalog, results = await asyncio.to_thread(self._fetch_profile_catalog, user_id)
         self._profile_catalog_cache[user_id] = (
             now + _CACHE_TTL_SECONDS,
             catalog,
             results,
         )
+        self._trim_cache(self._profile_catalog_cache, _PROFILE_CATALOG_CACHE_LIMIT)
         return catalog, results
 
     def _fetch_profile_catalog(self, user_id: str):
@@ -606,15 +659,19 @@ class RetrievalPipeline:
 
             parts = main_content.split("_", 1)
             if len(parts) == 2:
-                catalog.append({
-                    "topic": parts[0],
-                    "sub_topic": parts[1],
-                })
+                catalog.append(
+                    {
+                        "topic": parts[0],
+                        "sub_topic": parts[1],
+                    }
+                )
             else:
-                catalog.append({
-                    "topic": main_content,
-                    "sub_topic": "",
-                })
+                catalog.append(
+                    {
+                        "topic": main_content,
+                        "sub_topic": "",
+                    }
+                )
 
         return catalog, results
 
@@ -641,6 +698,7 @@ class RetrievalPipeline:
         if expires_at <= time.monotonic():
             self._retrieval_plan_cache.pop(key, None)
             return None
+        self._retrieval_plan_cache.move_to_end(key)
         return response
 
     def _cache_retrieval_plan(
@@ -652,6 +710,11 @@ class RetrievalPipeline:
             time.monotonic() + _CACHE_TTL_SECONDS,
             response,
         )
+        self._trim_cache(self._retrieval_plan_cache, _RETRIEVAL_PLAN_CACHE_LIMIT)
+
+    def _trim_cache(self, cache: OrderedDict, limit: int) -> None:
+        while len(cache) > limit:
+            cache.popitem(last=False)
 
     def _coerce_answer(self, answer: Any) -> str:
         if isinstance(answer, list):

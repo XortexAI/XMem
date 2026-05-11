@@ -317,6 +317,8 @@ class RetrievalPipeline:
             tasks.append(self._search_summary(query, user_id, top_k))
         if "snippet" in domain_set:
             tasks.append(self._search_snippet(query, user_id, top_k))
+        if "code" in domain_set:
+            tasks.append(self._search_code(query, user_id, top_k))
 
         if not tasks:
             return []
@@ -559,6 +561,53 @@ class RetrievalPipeline:
             )
 
         logger.info("  → Summary [%s]: %d results", query, len(records))
+        return records
+
+    # -- Code: Pinecone semantic search --------------------------------
+
+    async def _search_code(
+        self,
+        query: str,
+        user_id: str,
+        top_k: int = 10,
+    ) -> List[SourceRecord]:
+        """Semantic search over stored code annotations."""
+
+        results = await self.vector_store.search_by_text(
+            query_text=query,
+            top_k=top_k,
+            filters={
+                "user_id": user_id,
+                "domain": "code",
+            },
+        )
+
+        records = []
+        for r in results:
+            metadata = dict(r.metadata)
+            detail_parts = []
+            for label, key in (
+                ("repo", "repo"),
+                ("file", "target_file"),
+                ("symbol", "target_symbol"),
+                ("type", "annotation_type"),
+                ("severity", "severity"),
+            ):
+                value = metadata.get(key)
+                if value:
+                    detail_parts.append(f"{label}={value}")
+
+            prefix = f"[{'; '.join(detail_parts)}] " if detail_parts else ""
+            records.append(
+                SourceRecord(
+                    domain="code",
+                    content=f"{prefix}{r.content}",
+                    score=r.score,
+                    metadata={"id": r.id, **metadata},
+                )
+            )
+
+        logger.info("  -> Code [%s]: %d results", query, len(records))
         return records
 
     # -- Snippet: Pinecone semantic search ─────────────────────────────

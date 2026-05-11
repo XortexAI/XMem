@@ -121,6 +121,20 @@ async def test_raw_search_returns_ranked_hits_without_tool_selection(
         {"user_id": "alice", "domain": "summary"},
         score=0.9,
     )
+    vector_store.seed(
+        "code-1",
+        "RetryLoop can spin when the first retrieval attempt times out.",
+        {
+            "user_id": "alice",
+            "domain": "code",
+            "annotation_type": "bug_report",
+            "target_symbol": "RetryLoop",
+            "target_file": "src/retry.py",
+            "repo": "xmem",
+            "severity": "high",
+        },
+        score=0.95,
+    )
     neo4j_client.seed_event(
         user_id="alice",
         date="05-11",
@@ -137,7 +151,7 @@ async def test_raw_search_returns_ranked_hits_without_tool_selection(
     results = await pipeline.search_raw(
         "latency",
         "alice",
-        ["profile", "temporal", "summary"],
+        ["profile", "temporal", "summary", "code"],
         top_k=5,
     )
 
@@ -145,7 +159,15 @@ async def test_raw_search_returns_ranked_hits_without_tool_selection(
         [record.score for record in results],
         reverse=True,
     )
-    assert {record.domain for record in results} == {"profile", "temporal", "summary"}
+    assert {record.domain for record in results} == {
+        "profile",
+        "temporal",
+        "summary",
+        "code",
+    }
+    code_hit = next(record for record in results if record.domain == "code")
+    assert "file=src/retry.py" in code_hit.content
+    assert code_hit.metadata["target_symbol"] == "RetryLoop"
     assert not pipeline.model_with_tools.calls
 
 

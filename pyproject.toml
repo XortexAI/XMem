@@ -45,6 +45,7 @@ dependencies = [
     "google-auth-oauthlib>=1.2.0",
     "sentry-sdk[fastapi]>=2.0.0",
     "prometheus-client>=0.20.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

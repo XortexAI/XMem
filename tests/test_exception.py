@@ -27,13 +27,13 @@ class TestXMemError:
         err = XMemError("something broke")
         assert str(err) == "something broke"
 
-    def test_mssg_attribute_is_accessible(self):
+    def test_message_attribute_is_accessible(self):
         err = XMemError("hello")
-        assert str(err) == "hello"
+        assert err.message == "hello"
 
     def test_operation_is_none_by_default(self):
         err = XMemError("message")
-        assert err.operation == None
+        assert err.operation is None
 
     def test_operation_attribute_is_accessible(self):
         err = XMemError("msg", operation="delete")
@@ -144,6 +144,10 @@ class TestExceptionHierarchy:
         with pytest.raises(XMemError):
             raise EmbeddingError("embed failed")
 
+    def test_vector_store_validation_error_is_caught_as_vector_store_error(self):
+        with pytest.raises(VectorStoreError):
+            raise VectorStoreValidationError("invalid metadata")
+        
     def test_validation_error_is_not_a_vector_store_error(self):
         err = ValidationError("bad input")
         assert not isinstance(err, VectorStoreError)

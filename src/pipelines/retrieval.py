@@ -354,7 +354,10 @@ class RetrievalPipeline:
             tasks.append(self._search_snippet(query=query, user_id=user_id, top_k=top_k))
 
         if tasks:
-            for records in await asyncio.gather(*tasks):
+            for records in await asyncio.gather(*tasks, return_exceptions=True):
+                if isinstance(records, Exception):
+                    logger.warning("Raw memory search subquery failed: %s", records)
+                    continue
                 sources.extend(records)
 
         sources = self._rank_sources(sources)

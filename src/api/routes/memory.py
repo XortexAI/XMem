@@ -70,6 +70,10 @@ def _model_name(model: Any) -> str:
     return getattr(model, "model", getattr(model, "model_name", "unknown"))
 
 
+def _score_value(score: float | None) -> float:
+    return round(score, 3) if score is not None else 0.0
+
+
 def _build_domain_result(judge: Any, weaver: Any) -> DomainResult | None:
     if not judge or not getattr(judge, "operations", None):
         return None
@@ -661,7 +665,7 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
             sources=[
                 SourceRecord(
                     domain=s.domain, content=s.content,
-                    score=round(s.score, 3), metadata=s.metadata,
+                    score=_score_value(s.score), metadata=s.metadata,
                 )
                 for s in result.sources
             ],
@@ -750,7 +754,7 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
                 SourceRecord(
                     domain=s.domain,
                     content=s.content,
-                    score=round(s.score, 3) if s.score is not None else 0.0,
+                    score=_score_value(s.score),
                     metadata=s.metadata,
                 )
                 for s in records

@@ -18,7 +18,6 @@ The judge ONLY decides — it never performs any writes itself.
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -32,6 +31,7 @@ from src.schemas.judge import (
     OperationType,
 )
 from src.storage.base import BaseVectorStore, SearchResult
+from src.utils.json_parse import extract_json_from_response
 
 
 # ---------------------------------------------------------------------------
@@ -488,13 +488,7 @@ class JudgeAgent(BaseAgent):
         self, raw: str, items_strings: List[str]
     ) -> JudgeResult:
         try:
-            cleaned = raw.strip()
-            if "```json" in cleaned:
-                cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0]
-            elif "```" in cleaned:
-                cleaned = cleaned.split("```", 1)[1].split("```", 1)[0]
-
-            data = json.loads(cleaned.strip())
+            data = extract_json_from_response(raw)
 
             operations: list[Operation] = []
             for op_dict in data.get("operations", []):

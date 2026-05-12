@@ -9,7 +9,6 @@ specific symbols, files, or repositories.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict
 
 from langchain_core.language_models import BaseChatModel
@@ -22,6 +21,7 @@ from src.schemas.code import (
     CodeAnnotationResult,
     ExtractedAnnotation,
 )
+from src.utils.json_parse import extract_json_from_response
 
 
 class CodeAgent(BaseAgent):
@@ -63,14 +63,7 @@ class CodeAgent(BaseAgent):
     def _parse_response(self, raw: str) -> CodeAnnotationResult:
         """Parse JSON response into CodeAnnotationResult."""
         try:
-            cleaned = raw.strip()
-            if "```json" in cleaned:
-                cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0]
-            elif "```" in cleaned:
-                cleaned = cleaned.split("```", 1)[1].split("```", 1)[0]
-
-            data = json.loads(cleaned.strip())
-
+            data = extract_json_from_response(raw)
             annotations_data = data.get("annotations", [])
             if not annotations_data:
                 return CodeAnnotationResult()
@@ -102,7 +95,7 @@ class CodeAgent(BaseAgent):
 
             return CodeAnnotationResult(annotations=annotations)
 
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        except Exception as exc:
             self.logger.error("Failed to parse code agent response: %s", exc)
             self.logger.debug("Raw response: %s", raw[:500])
             return CodeAnnotationResult()

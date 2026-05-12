@@ -9,7 +9,6 @@ type, and tags for storage in the user's personal snippet namespace.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict
 
 from langchain_core.language_models import BaseChatModel
@@ -21,6 +20,7 @@ from src.schemas.code import (
     SnippetExtractionResult,
     SnippetType,
 )
+from src.utils.json_parse import extract_json_from_response
 
 
 class SnippetAgent(BaseAgent):
@@ -63,14 +63,7 @@ class SnippetAgent(BaseAgent):
     def _parse_response(self, raw: str) -> SnippetExtractionResult:
         """Parse JSON response into SnippetExtractionResult."""
         try:
-            cleaned = raw.strip()
-            if "```json" in cleaned:
-                cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0]
-            elif "```" in cleaned:
-                cleaned = cleaned.split("```", 1)[1].split("```", 1)[0]
-
-            data = json.loads(cleaned.strip())
-
+            data = extract_json_from_response(raw)
             snippets_data = data.get("snippets", [])
             if not snippets_data:
                 return SnippetExtractionResult()
@@ -101,7 +94,7 @@ class SnippetAgent(BaseAgent):
 
             return SnippetExtractionResult(snippets=snippets)
 
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        except Exception as exc:
             self.logger.error("Failed to parse snippet agent response: %s", exc)
             self.logger.debug("Raw response: %s", raw[:500])
             return SnippetExtractionResult()

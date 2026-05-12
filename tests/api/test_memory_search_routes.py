@@ -40,7 +40,7 @@ class FakeSearchPipeline:
             "profile": SourceRecord(
                 domain="profile",
                 content="work / company = XMem",
-                score=0.7,
+                score=None,
             ),
             "code": SourceRecord(
                 domain="code",
@@ -102,6 +102,7 @@ def test_memory_search_route_returns_raw_hits_without_answer(memory_search_app):
 
     assert response.status_code == 200
     assert payload["data"]["total"] == 2
+    assert payload["data"]["results"][0]["score"] == 0.0
     assert payload["data"]["answer"] == ""
     assert payload["data"]["latency"]["raw"]["count"] == 1
     assert pipeline.search_calls[0]["domains"] == ["profile", "summary"]

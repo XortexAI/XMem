@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 import time
 from typing import Any, Dict, List
@@ -236,6 +237,14 @@ async def _run_scrape_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 def _schedule_job(job: Dict[str, Any], handler) -> None:
     if job.get("status") == QUEUED:
         asyncio.create_task(run_job(get_default_job_store(), job["job_id"], handler))
+
+
+def _safe_score(score: Any) -> float:
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
 
 
 def _detect_chat_provider(*urls: str) -> str:
@@ -890,7 +899,7 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
             sources=[
                 SourceRecord(
                     domain=s.domain, content=s.content,
-                    score=round(s.score, 3), metadata=s.metadata,
+                    score=round(_safe_score(s.score), 3), metadata=s.metadata,
                 )
                 for s in result.sources
             ],
@@ -942,7 +951,7 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
                 SourceRecord(
                     domain=s.domain,
                     content=s.content,
-                    score=round(s.score, 3),
+                    score=round(_safe_score(s.score), 3),
                     metadata=s.metadata,
                 )
                 for s in all_results
@@ -966,7 +975,7 @@ def _search_profile(pipeline: RetrievalPipeline, user_id: str) -> List[SourceRec
         raw = pipeline.vector_store.search_by_metadata(
             filters={"user_id": user_id, "domain": "profile"}, top_k=100,
         )
-        return [SourceRecord(domain="profile", content=r.content, score=r.score, metadata=r.metadata) for r in raw]
+        return [SourceRecord(domain="profile", content=r.content, score=_safe_score(r.score), metadata=r.metadata) for r in raw]
     except Exception as exc:
         logger.warning("Profile search error: %s", exc)
         return []
@@ -993,7 +1002,7 @@ def _search_temporal(pipeline: RetrievalPipeline, query: str, user_id: str, top_
                 parts.append(f"Time: {ev['time']}")
             results.append(SourceRecord(
                 domain="temporal", content=" | ".join(parts),
-                score=ev.get("similarity_score", 0.0), metadata=ev,
+                score=_safe_score(ev.get("similarity_score", 0.0)), metadata=ev,
             ))
         return results
     except Exception as exc:
@@ -1008,7 +1017,7 @@ async def _search_summary(pipeline: RetrievalPipeline, query: str, user_id: str,
             filters={"user_id": user_id, "domain": "summary"},
         )
         return [
-            SourceRecord(domain="summary", content=r.content, score=r.score, metadata={"id": r.id, **r.metadata})
+            SourceRecord(domain="summary", content=r.content, score=_safe_score(r.score), metadata={"id": r.id, **r.metadata})
             for r in raw
         ]
     except Exception as exc:

@@ -1,14 +1,17 @@
 """
 Judge Agent — decides ADD / UPDATE / DELETE / NOOP for incoming memory data.
 
-Works across three domains (profile, temporal, summary).  For each new item
-it receives, the judge:
+Works across multiple domains (profile, temporal, summary, image, code, snippet).
+For each new item it receives, the judge:
 
 1. Formats the item as a search query appropriate for the domain.
 2. Fetches similar existing records:
    - profile → Pinecone (deterministic metadata filter on topic_subtopic)
    - summary → Pinecone (semantic similarity via vector store)
    - temporal → Neo4j (graph DB, via injected search callable)
+   - code → Pinecone (semantic similarity for code annotations)
+   - snippet → Pinecone (semantic similarity for personal snippets)
+   - image → Pinecone (semantic similarity for image observations)
 3. Sends both the new items and retrieved neighbours to the LLM.
 4. Parses the LLM's JSON response into a list of typed Operation objects.
 
@@ -63,6 +66,27 @@ def _temporal_item_to_string(event: dict) -> str:
 
 def _image_item_to_string(observation: dict) -> str:
     return f"{observation.get('category', '')}: {observation.get('description', '')}"
+
+
+def _code_item_to_string(annotation: dict) -> str:
+    """Format a code annotation for the judge prompt."""
+    target = annotation.get("target_symbol") or annotation.get("target_file") or "(general)"
+    ann_type = annotation.get("annotation_type", "explanation")
+    content = annotation.get("content", "")
+    repo = annotation.get("repo", "")
+    repo_str = f" in {repo}" if repo else ""
+    return f"[{ann_type}] {target}{repo_str}: {content}"
+
+
+def _snippet_item_to_string(snippet: dict) -> str:
+    """Format a code snippet for the judge prompt."""
+    content = snippet.get("content", "")
+    language = snippet.get("language", "")
+    snippet_type = snippet.get("snippet_type", "algorithm")
+    tags = snippet.get("tags", [])
+    tags_str = f" tags={','.join(tags)}" if tags else ""
+    has_code = "with code" if snippet.get("code_snippet") else "no code"
+    return f"[{snippet_type}] {content} ({language}, {has_code}){tags_str}"
 
 
 def _format_similar_block(
@@ -218,7 +242,15 @@ class JudgeAgent(BaseAgent):
             return [_temporal_item_to_string(e) for e in items]
         elif domain == JudgeDomain.IMAGE:
             return [_image_item_to_string(i) for i in items]
-        else:  # SUMMARY
+        elif domain == JudgeDomain.CODE:
+            if isinstance(items, dict):
+                return [_code_item_to_string(items)]
+            return [_code_item_to_string(a) for a in items]
+        elif domain == JudgeDomain.SNIPPET:
+            if isinstance(items, dict):
+                return [_snippet_item_to_string(items)]
+            return [_snippet_item_to_string(s) for s in items]
+        else:  # SUMMARY and any future domains
             return [str(s) for s in items]
 
     async def _fetch_similar(

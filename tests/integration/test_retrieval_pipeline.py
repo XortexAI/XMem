@@ -205,6 +205,35 @@ async def test_raw_search_runs_requested_domains_concurrently(
 
 
 @pytest.mark.asyncio
+async def test_raw_search_skips_failed_domains_and_normalizes_scores(
+    vector_store, neo4j_client
+):
+    model = FakeChatModel()
+    pipeline = RetrievalPipeline(
+        model=model, vector_store=vector_store, neo4j_client=neo4j_client
+    )
+
+    async def profile_domain(*_args):
+        return [SourceRecord(domain="profile", content="No backend score", score=None)]
+
+    async def summary_domain(*_args):
+        raise RuntimeError("summary backend offline")
+
+    pipeline._search_profile_raw = profile_domain
+    pipeline._search_summary = summary_domain
+
+    results = await pipeline.search_raw(
+        "latency",
+        "alice",
+        ["profile", "summary"],
+        top_k=5,
+    )
+
+    assert [(record.domain, record.score) for record in results] == [("profile", 0.0)]
+    assert pipeline._format_tool_results(results) == "1. [profile] No backend score"
+
+
+@pytest.mark.asyncio
 async def test_profile_catalog_fetch_does_not_block_event_loop(
     vector_store, neo4j_client
 ):

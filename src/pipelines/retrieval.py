@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import time
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional
@@ -323,10 +324,15 @@ class RetrievalPipeline:
         if not tasks:
             return []
 
-        task_results = await asyncio.gather(*tasks)
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
         results = [
-            record for domain_results in task_results for record in domain_results
+            record
+            for domain_results in task_results
+            if not self._log_search_error(domain_results)
+            for record in domain_results
         ]
+        for record in results:
+            record.score = self._score_value(record.score)
 
         return sorted(results, key=lambda record: record.score, reverse=True)
 
@@ -426,7 +432,7 @@ class RetrievalPipeline:
                 SourceRecord(
                     domain="profile",
                     content=r.content,
-                    score=r.score,
+                    score=self._score_value(r.score),
                     metadata={
                         "id": r.id,
                         "topic": topic,
@@ -465,7 +471,7 @@ class RetrievalPipeline:
                 SourceRecord(
                     domain="profile",
                     content=r.content,
-                    score=r.score,
+                    score=self._score_value(r.score),
                     metadata={"id": r.id, **r.metadata},
                 )
             )
@@ -522,7 +528,7 @@ class RetrievalPipeline:
                 SourceRecord(
                     domain="temporal",
                     content=content,
-                    score=ev.get("similarity_score", 0.0),
+                    score=self._score_value(ev.get("similarity_score", 0.0)),
                     metadata=ev,
                 )
             )
@@ -555,7 +561,7 @@ class RetrievalPipeline:
                 SourceRecord(
                     domain="summary",
                     content=r.content,
-                    score=r.score,
+                    score=self._score_value(r.score),
                     metadata={"id": r.id, **r.metadata},
                 )
             )
@@ -602,7 +608,7 @@ class RetrievalPipeline:
                 SourceRecord(
                     domain="code",
                     content=f"{prefix}{r.content}",
-                    score=r.score,
+                    score=self._score_value(r.score),
                     metadata={"id": r.id, **metadata},
                 )
             )
@@ -650,7 +656,7 @@ class RetrievalPipeline:
                 SourceRecord(
                     domain="snippet",
                     content=content,
-                    score=r.score,
+                    score=self._score_value(r.score),
                     metadata={"id": r.id, **r.metadata},
                 )
             )
@@ -765,6 +771,19 @@ class RetrievalPipeline:
         while len(cache) > limit:
             cache.popitem(last=False)
 
+    def _log_search_error(self, domain_results: Any) -> bool:
+        if isinstance(domain_results, Exception):
+            logger.warning("Raw search domain failed: %s", domain_results)
+            return True
+        return False
+
+    def _score_value(self, score: Any) -> float:
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            return 0.0
+        return value if math.isfinite(value) else 0.0
+
     def _coerce_answer(self, answer: Any) -> str:
         if isinstance(answer, list):
             parts = []
@@ -805,7 +824,8 @@ class RetrievalPipeline:
 
         lines = []
         for i, rec in enumerate(records, 1):
-            score_str = f" (score: {rec.score:.2f})" if rec.score > 0 else ""
+            score = self._score_value(rec.score)
+            score_str = f" (score: {score:.2f})" if score > 0 else ""
             lines.append(f"{i}. [{rec.domain}]{score_str} {rec.content}")
         return "\n".join(lines)
 

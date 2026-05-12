@@ -1,5 +1,5 @@
 """
-/v1/memory/* routes â€” production endpoints for XMem memory operations.
+/v1/memory/* and /v2/memory/* routes - production endpoints for XMem memory operations.
 
 All routes require a valid Bearer API key and respect the per-key rate limit.
 """
@@ -24,6 +24,7 @@ from src.api.dependencies import (
 from src.api.schemas import (
     APIResponse,
     BatchIngestRequest,
+    BatchIngestResponse,
     DomainResult,
     IngestRequest,
     IngestResponse,
@@ -66,6 +67,18 @@ router = APIRouter(
 
 scrape_router = APIRouter(
     prefix="/v1/memory",
+    tags=["memory"],
+    dependencies=[Depends(enforce_rate_limit)],
+)
+
+v2_router = APIRouter(
+    prefix="/v2/memory",
+    tags=["memory"],
+    dependencies=[Depends(require_ready), Depends(enforce_rate_limit)],
+)
+
+v2_scrape_router = APIRouter(
+    prefix="/v2/memory",
     tags=["memory"],
     dependencies=[Depends(enforce_rate_limit)],
 )
@@ -668,6 +681,31 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
     start = time.perf_counter()
     user_id = _current_user_id(user)
     payload = req.model_dump()
+
+    try:
+        data = await asyncio.wait_for(
+            _run_ingest_payload(payload, user_id),
+            timeout=120.0,
+        )
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _wrap(request, data, elapsed)
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Ingest failed for user=%s", user_id)
+        return _error(request, str(exc), 500, elapsed)
+
+
+# POST /v2/memory/ingest
+@v2_router.post(
+    "/ingest",
+    response_model=APIResponse,
+    summary="Start an async durable memory ingest job",
+)
+async def ingest_memory_v2(req: IngestRequest, request: Request, user: dict = Depends(require_api_key)):
+    start = time.perf_counter()
+    user_id = _current_user_id(user)
+    payload = req.model_dump()
     payload["user_id"] = user_id
 
     try:
@@ -697,7 +735,7 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
             request,
             job,
             created,
-            f"/v1/memory/ingest/{job['job_id']}/status",
+            f"/v2/memory/ingest/{job['job_id']}/status",
             elapsed,
         )
 
@@ -723,7 +761,7 @@ async def _read_user_job(job_id: str, user_id: str) -> Dict[str, Any] | None:
     return job
 
 
-@router.get(
+@v2_router.get(
     "/ingest/{job_id}/status",
     response_model=APIResponse,
     summary="Poll an async memory ingest job",
@@ -738,7 +776,7 @@ async def ingest_job_status(job_id: str, request: Request, user: dict = Depends(
     return _wrap(request, _job_status_data(job), elapsed)
 
 
-@router.get(
+@v2_router.get(
     "/jobs/{job_id}/status",
     response_model=APIResponse,
     summary="Poll an async memory job",
@@ -760,6 +798,35 @@ async def memory_job_status(job_id: str, request: Request, user: dict = Depends(
     summary="Ingest multiple conversation turns into long-term memory sequentially",
 )
 async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: dict = Depends(require_api_key)):
+    start = time.perf_counter()
+    user_id = _current_user_id(user)
+
+    try:
+        results = []
+        for item in req.items:
+            data = await asyncio.wait_for(
+                _run_ingest_payload(item.model_dump(), user_id),
+                timeout=120.0,
+            )
+            results.append(IngestResponse(**data))
+
+        response_data = BatchIngestResponse(results=results)
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _wrap(request, response_data, elapsed)
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Batch ingest failed for user=%s", user_id)
+        return _error(request, str(exc), 500, elapsed)
+
+
+# POST /v2/memory/batch-ingest
+@v2_router.post(
+    "/batch-ingest",
+    response_model=APIResponse,
+    summary="Start an async durable batch memory ingest job",
+)
+async def batch_ingest_memory_v2(req: BatchIngestRequest, request: Request, user: dict = Depends(require_api_key)):
     start = time.perf_counter()
     user_id = _current_user_id(user)
     payload = req.model_dump()
@@ -788,7 +855,7 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
             request,
             job,
             created,
-            f"/v1/memory/jobs/{job['job_id']}/status",
+            f"/v2/memory/jobs/{job['job_id']}/status",
             elapsed,
         )
 
@@ -931,6 +998,34 @@ async def _search_summary(pipeline: RetrievalPipeline, query: str, user_id: str,
 )
 async def scrape_chat_link(req: ScrapeRequest, request: Request):
     start = time.perf_counter()
+    url = req.url
+
+    try:
+        result = await _scrape_chat_share(url)
+        pairs = result["pairs"]
+
+        if not pairs:
+            elapsed = round((time.perf_counter() - start) * 1000, 2)
+            return _error(request, _chat_share_error_message(result), 400, elapsed)
+
+        data = ScrapeResponse(pairs=pairs)
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _wrap(request, data, elapsed)
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Scrape failed for url=%s", url)
+        return _error(request, str(exc) or repr(exc), 500, elapsed)
+
+
+# POST /v2/memory/scrape
+@v2_scrape_router.post(
+    "/scrape",
+    response_model=APIResponse,
+    summary="Start an async durable scrape job",
+)
+async def scrape_chat_link_v2(req: ScrapeRequest, request: Request):
+    start = time.perf_counter()
     payload = req.model_dump()
 
     try:
@@ -950,7 +1045,7 @@ async def scrape_chat_link(req: ScrapeRequest, request: Request):
             request,
             job,
             created,
-            f"/v1/memory/scrape/{job['job_id']}/status",
+            f"/v2/memory/scrape/{job['job_id']}/status",
             elapsed,
         )
 
@@ -960,7 +1055,7 @@ async def scrape_chat_link(req: ScrapeRequest, request: Request):
         return _error(request, str(exc) or repr(exc), 500, elapsed)
 
 
-@scrape_router.get(
+@v2_scrape_router.get(
     "/scrape/{job_id}/status",
     response_model=APIResponse,
     summary="Poll an async scrape job",

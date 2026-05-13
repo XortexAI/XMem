@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from src.database import api_key_store as api_key_store_module
 from src.database.api_key_store import APIKeyStore, _in_memory_api_keys
 from src.database.project_store import ProjectStore
 from src.database.models import TeamRole
@@ -10,6 +15,17 @@ def _force_api_key_memory(self):
     self._connected = False
     self._in_memory = True
     self.api_keys = None
+
+
+class _FailingApiKeyCollection:
+    def insert_one(self, _doc):
+        raise RuntimeError("database unavailable")
+
+
+def _force_api_key_connected_with_write_failure(self):
+    self._connected = True
+    self._in_memory = False
+    self.api_keys = _FailingApiKeyCollection()
 
 
 def _force_user_memory(self):
@@ -35,12 +51,48 @@ def test_api_key_store_creates_validates_updates_and_revokes_in_memory(monkeypat
     assert validated["user_id"] == "user-1"
     assert "key_hash" not in validated
 
+    scoped = store.create_api_key(
+        "user-1",
+        name="Project",
+        scopes=["memory:read"],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        org_id="org-1",
+        project_id="proj-1",
+    )
+    scoped_doc = store.validate_api_key(scoped["key"])
+    assert scoped_doc["scopes"] == ["memory:read"]
+    assert scoped_doc["org_id"] == "org-1"
+    assert scoped_doc["project_id"] == "proj-1"
+
+    expired = store.create_api_key(
+        "user-1",
+        name="Expired",
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+    assert store.validate_api_key(expired["key"]) is None
+
     assert store.update_api_key_name("user-1", created["key_id"], "Local Dev")
-    [listed] = store.get_user_api_keys("user-1")
+    listed = next(
+        key for key in store.get_user_api_keys("user-1") if key["id"] == created["key_id"]
+    )
     assert listed["name"] == "Local Dev"
 
     assert store.revoke_api_key("user-1", created["key_id"])
     assert store.validate_api_key(created["key"]) is None
+
+
+def test_api_key_store_refuses_write_fallback_in_remote_production(monkeypatch):
+    monkeypatch.setattr(APIKeyStore, "_try_connect", _force_api_key_connected_with_write_failure)
+    monkeypatch.setattr(api_key_store_module.settings, "environment", "production")
+    monkeypatch.setattr(
+        api_key_store_module.settings,
+        "mongodb_uri",
+        "mongodb://mongo.example:27017",
+    )
+
+    store = APIKeyStore()
+    with pytest.raises(RuntimeError, match="Durable MongoDB storage is required"):
+        store.create_api_key("user-1")
 
 
 def test_user_store_get_or_create_and_username_helpers_in_memory(monkeypatch):

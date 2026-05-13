@@ -5,8 +5,8 @@ import string
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, status
+from fastapi.responses import JSONResponse
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 from jose import JWTError, jwt
@@ -16,12 +16,14 @@ from src.api.dependencies import get_current_user, require_api_key, require_user
 from src.config import settings
 from src.database.user_store import UserStore
 from src.database.api_key_store import APIKeyStore
+from src.database.control_plane_store import ControlPlaneStore
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 # Initialize stores
 user_store = UserStore()
 api_key_store = APIKeyStore()
+control_plane_store = ControlPlaneStore()
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MCP OAuth Temp Token Store (in-memory with TTL)
@@ -41,39 +43,20 @@ def _generate_mcp_temp_token() -> str:
 
 def _create_mcp_temp_token(user_id: str) -> str:
     """Create and store a temporary token for the user."""
-    token = _generate_mcp_temp_token()
-    expires_at = datetime.utcnow() + timedelta(minutes=TEMP_TOKEN_TTL_MINUTES)
-
-    _mcp_temp_tokens[token] = {
-        "user_id": user_id,
-        "created_at": datetime.utcnow(),
-        "expires_at": expires_at,
-        "exchanged": False,
-    }
-
-    return token
+    created = control_plane_store.create_single_use_token(
+        "mcp_temp_token",
+        user_id=user_id,
+        prefix=TEMP_TOKEN_PREFIX,
+        ttl_seconds=TEMP_TOKEN_TTL_MINUTES * 60,
+    )
+    _mcp_temp_tokens[created["token"]] = {"expires_at": created["expires_at"]}
+    return created["token"]
 
 
 def _get_and_invalidate_mcp_token(token: str) -> Optional[str]:
     """Validate temp token and return user_id if valid, None otherwise."""
-    if token not in _mcp_temp_tokens:
-        return None
-
-    token_data = _mcp_temp_tokens[token]
-
-    # Check expiry
-    if datetime.utcnow() > token_data["expires_at"]:
-        del _mcp_temp_tokens[token]
-        return None
-
-    # Check if already exchanged
-    if token_data["exchanged"]:
-        return None
-
-    # Mark as exchanged and return user_id
-    user_id = token_data["user_id"]
-    del _mcp_temp_tokens[token]  # Single-use token
-    return user_id
+    _mcp_temp_tokens.pop(token, None)
+    return control_plane_store.consume_single_use_token("mcp_temp_token", token)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -83,27 +66,19 @@ _oauth_auth_codes: Dict[str, Dict[str, Any]] = {}
 
 def _generate_auth_code(user_id: str) -> str:
     """Generate a standard OAuth 2.0 authorization code."""
-    alphabet = string.ascii_letters + string.digits
-    code = "".join(secrets.choice(alphabet) for _ in range(32))
-    
-    _oauth_auth_codes[code] = {
-        "user_id": user_id,
-        "expires_at": datetime.utcnow() + timedelta(minutes=10)
-    }
-    return code
+    created = control_plane_store.create_single_use_token(
+        "oauth_auth_code",
+        user_id=user_id,
+        prefix="",
+        ttl_seconds=10 * 60,
+    )
+    _oauth_auth_codes[created["token"]] = {"expires_at": created["expires_at"]}
+    return created["token"]
 
 def _get_and_invalidate_auth_code(code: str) -> Optional[str]:
     """Validate auth code and return user_id if valid."""
-    if code not in _oauth_auth_codes:
-        return None
-        
-    data = _oauth_auth_codes[code]
-    del _oauth_auth_codes[code] # Single-use
-    
-    if datetime.utcnow() > data["expires_at"]:
-        return None
-        
-    return data["user_id"]
+    _oauth_auth_codes.pop(code, None)
+    return control_plane_store.consume_single_use_token("oauth_auth_code", code)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -534,9 +509,6 @@ async def oauth_approve(request: OAuthApproveRequest, current_user: dict = Depen
     code = _generate_auth_code(user_id)
     return OAuthApproveResponse(code=code)
 
-
-from fastapi import Form
-from fastapi.responses import JSONResponse
 
 @router.post("/oauth/token")
 async def oauth_token(

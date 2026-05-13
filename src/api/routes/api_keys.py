@@ -22,6 +22,10 @@ api_key_store = APIKeyStore()
 class APIKeyCreateRequest(BaseModel):
     """Request model for creating a new API key."""
     name: str = Field(default="Default", description="Name for this API key")
+    scopes: List[str] = Field(default_factory=lambda: ["all"], description="Allowed scopes")
+    expires_at: Optional[datetime] = Field(None, description="Optional expiration timestamp")
+    org_id: Optional[str] = Field(None, description="Optional organization binding")
+    project_id: Optional[str] = Field(None, description="Optional project binding")
 
 
 class APIKeyCreateResponse(BaseModel):
@@ -33,6 +37,10 @@ class APIKeyCreateResponse(BaseModel):
     key_id: str = Field(..., description="ID of the API key for reference")
     name: str = Field(..., description="Name of the API key")
     created_at: datetime = Field(..., description="Creation timestamp")
+    scopes: List[str] = Field(default_factory=lambda: ["all"], description="Allowed scopes")
+    expires_at: Optional[datetime] = Field(None, description="Optional expiration timestamp")
+    org_id: Optional[str] = Field(None, description="Optional organization binding")
+    project_id: Optional[str] = Field(None, description="Optional project binding")
 
 
 class APIKeyResponse(BaseModel):
@@ -43,6 +51,10 @@ class APIKeyResponse(BaseModel):
     created_at: datetime = Field(..., description="Creation timestamp")
     last_used: Optional[datetime] = Field(None, description="Last usage timestamp")
     is_active: bool = Field(..., description="Whether the key is active")
+    scopes: List[str] = Field(default_factory=lambda: ["all"], description="Allowed scopes")
+    expires_at: Optional[datetime] = Field(None, description="Optional expiration timestamp")
+    org_id: Optional[str] = Field(None, description="Optional organization binding")
+    project_id: Optional[str] = Field(None, description="Optional project binding")
 
 
 class APIKeyUpdateRequest(BaseModel):
@@ -101,6 +113,10 @@ async def list_api_keys(
             created_at=key["created_at"],
             last_used=key.get("last_used"),
             is_active=key.get("is_active", True),
+            scopes=key.get("scopes", ["all"]),
+            expires_at=key.get("expires_at"),
+            org_id=key.get("org_id"),
+            project_id=key.get("project_id"),
         )
         for key in keys
     ]
@@ -121,6 +137,10 @@ async def create_api_key(
     result = api_key_store.create_api_key(
         user_id=current_user["id"],
         name=request.name,
+        scopes=request.scopes,
+        expires_at=request.expires_at,
+        org_id=request.org_id,
+        project_id=request.project_id,
     )
 
     return APIKeyCreateResponse(
@@ -128,6 +148,10 @@ async def create_api_key(
         key_id=result["key_id"],
         name=result["name"],
         created_at=result["created_at"],
+        scopes=result.get("scopes", ["all"]),
+        expires_at=result.get("expires_at"),
+        org_id=result.get("org_id"),
+        project_id=result.get("project_id"),
     )
 
 
@@ -167,6 +191,10 @@ async def update_api_key(
         created_at=updated_key["created_at"],
         last_used=updated_key.get("last_used"),
         is_active=updated_key.get("is_active", True),
+        scopes=updated_key.get("scopes", ["all"]),
+        expires_at=updated_key.get("expires_at"),
+        org_id=updated_key.get("org_id"),
+        project_id=updated_key.get("project_id"),
     )
 
 

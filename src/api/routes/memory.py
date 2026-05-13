@@ -468,6 +468,77 @@ def _parse_antigravity_transcript(text: str) -> List[MessagePair]:
     return pairs
 
 
+def _content_to_text(content: Any) -> str:
+    """Extract readable text from Claude Code message content blocks."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        chunks: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                chunks.append(item)
+            elif isinstance(item, dict) and item.get("type") == "text":
+                chunks.append(str(item.get("text", "")))
+        return "\n".join(chunk.strip() for chunk in chunks if chunk.strip()).strip()
+    return ""
+
+
+def _parse_claude_code_transcript(text: str) -> List[MessagePair]:
+    """Parse Claude Code JSONL transcripts into message pairs.
+
+    Claude Code stores/export transcripts as newline-delimited JSON objects. User
+    and assistant turns live under ``message.role`` and ``message.content``.
+    Tool calls/results are intentionally ignored so only conversational text is
+    sent to the memory pipeline.
+    """
+    pairs: List[MessagePair] = []
+    current_user_query: str | None = None
+    assistant_chunks: List[str] = []
+
+    for raw_line in text.splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(event, dict):
+            continue
+
+        has_nested_message = isinstance(event.get("message"), dict)
+        message = event["message"] if has_nested_message else event
+        role = message.get("role") or (event.get("type") if not has_nested_message else None)
+        content = _content_to_text(message.get("content"))
+        if not content:
+            continue
+
+        if role == "user":
+            if current_user_query and assistant_chunks:
+                pairs.append(MessagePair(
+                    user_query=current_user_query,
+                    agent_response="\n\n".join(assistant_chunks).strip(),
+                ))
+                current_user_query = content
+                assistant_chunks = []
+            elif current_user_query:
+                current_user_query = f"{current_user_query}\n\n{content}"
+            else:
+                current_user_query = content
+        elif role == "assistant" and current_user_query:
+            assistant_chunks.append(content)
+
+    if current_user_query and assistant_chunks:
+        pairs.append(MessagePair(
+            user_query=current_user_query,
+            agent_response="\n\n".join(assistant_chunks).strip(),
+        ))
+
+    return pairs
+
+
 async def _parse_transcript_with_llm(text: str) -> List[MessagePair]:
     """Use an LLM to parse transcript text when format detection fails."""
     from src.models import get_model
@@ -527,6 +598,10 @@ def _parse_transcript_text(text: str) -> tuple[str, List[MessagePair]]:
         pairs = _parse_antigravity_transcript(text)
         if pairs:
             return "antigravity", pairs
+
+    pairs = _parse_claude_code_transcript(text)
+    if pairs:
+        return "claude_code", pairs
 
     return "unknown", []
 

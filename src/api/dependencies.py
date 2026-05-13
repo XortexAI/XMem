@@ -10,8 +10,6 @@ import asyncio
 import hashlib
 import hmac
 import logging
-import time
-from collections import defaultdict
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, status
@@ -19,6 +17,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
 from src.config import settings
+from src.database.control_plane_store import control_plane_store
 from src.database.api_key_store import APIKeyStore
 from src.database.user_store import UserStore
 from src.pipelines.ingest import IngestPipeline
@@ -175,7 +174,13 @@ async def require_api_key(
             return user
 
     # 2. Check MongoDB for user-generated API keys
-    key_doc = _api_key_store.validate_api_key(token)
+    try:
+        key_doc = _api_key_store.validate_api_key(token)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
     if key_doc:
         user_id = key_doc.get("user_id")
         if user_id:
@@ -276,40 +281,14 @@ async def require_user(current_user: Optional[dict] = Depends(get_current_user))
     return current_user
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Sliding-window rate limiter (in-process, per-key)
-# ═══════════════════════════════════════════════════════════════════════════
-
-class _SlidingWindowRateLimiter:
-    """Thread-safe sliding-window counter keyed by API identity."""
-
-    def __init__(self, max_requests: int, window_seconds: int = 60):
-        self.max_requests = max_requests
-        self.window = window_seconds
-        self._hits: dict[str, list[float]] = defaultdict(list)
-        self._lock = asyncio.Lock()
+class _ControlPlaneRateLimiter:
+    """Rate limiter backed by shared control-plane storage."""
 
     async def check(self, key: str) -> tuple[bool, int]:
-        """Return (allowed, remaining) for *key*."""
-        now = time.monotonic()
-        cutoff = now - self.window
-
-        async with self._lock:
-            timestamps = self._hits[key]
-            self._hits[key] = [t for t in timestamps if t > cutoff]
-
-            if len(self._hits[key]) >= self.max_requests:
-                return False, 0
-
-            self._hits[key].append(now)
-            remaining = self.max_requests - len(self._hits[key])
-            return True, remaining
+        return control_plane_store.check_rate_limit(key, settings.rate_limit, 60)
 
 
-_rate_limiter = _SlidingWindowRateLimiter(
-    max_requests=settings.rate_limit,
-    window_seconds=60,
-)
+_rate_limiter = _ControlPlaneRateLimiter()
 
 
 async def enforce_rate_limit(

@@ -34,6 +34,7 @@ from pydantic import BaseModel
 
 from src.config import settings
 from src.config.analytics import analytics
+from src.database.control_plane_store import control_plane_store
 
 logger = logging.getLogger("xmem.api.admin")
 
@@ -45,7 +46,6 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # ═══════════════════════════════════════════════════════════════════════════
 
 _admin_collection = None
-_admin_sessions: Dict[str, Dict[str, Any]] = {}  # token → {user, expires}
 
 
 def _get_admin_collection():
@@ -88,15 +88,18 @@ def _verify_admin_token(request: Request) -> Dict[str, Any]:
         if auth.startswith("Bearer "):
             token = auth[7:]
 
-    if not token or token not in _admin_sessions:
+    if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    session = _admin_sessions[token]
-    if datetime.now(timezone.utc) > session["expires"]:
-        del _admin_sessions[token]
+    try:
+        session_user = control_plane_store.get_admin_session(token)
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Admin session storage unavailable")
+
+    if not session_user:
         raise HTTPException(status_code=401, detail="Session expired")
 
-    return session["user"]
+    return session_user
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -115,11 +118,10 @@ async def admin_login(req: AdminLoginRequest):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Generate session token
-    token = hashlib.sha256(f"{req.username}{time.time()}".encode()).hexdigest()
-    _admin_sessions[token] = {
-        "user": {"username": user["username"], "role": user.get("role", "admin")},
-        "expires": datetime.now(timezone.utc) + timedelta(hours=24),
-    }
+    token = control_plane_store.create_admin_session(
+        {"username": user["username"], "role": user.get("role", "admin")},
+        ttl_hours=24,
+    )
 
     response = JSONResponse({"status": "ok", "token": token, "username": user["username"]})
     response.set_cookie(
@@ -135,8 +137,11 @@ async def admin_login(req: AdminLoginRequest):
 @router.post("/api/logout")
 async def admin_logout(request: Request):
     token = request.cookies.get("xmem_admin_token")
-    if token and token in _admin_sessions:
-        del _admin_sessions[token]
+    if token:
+        try:
+            control_plane_store.delete_admin_session(token)
+        except RuntimeError:
+            pass
     response = JSONResponse({"status": "ok"})
     response.delete_cookie("xmem_admin_token")
     return response
@@ -220,7 +225,13 @@ async def ws_live_logs(websocket: WebSocket):
 
     # Validate auth token from query param
     token = websocket.query_params.get("token", "")
-    if token not in _admin_sessions:
+    try:
+        session_user = control_plane_store.get_admin_session(token)
+    except RuntimeError:
+        await websocket.close(code=1011, reason="Admin session storage unavailable")
+        return
+
+    if not session_user:
         await websocket.close(code=4001, reason="Not authenticated")
         return
 

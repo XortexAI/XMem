@@ -65,6 +65,10 @@ class APIKeyStore:
             self._in_memory = True
             self.api_keys = None
 
+    def _require_durable_storage(self) -> None:
+        if self._in_memory and settings.environment.lower() == "production":
+            raise RuntimeError("MongoDB is required for API key storage in production")
+
     def _ensure_indexes(self) -> None:
         """Create necessary indexes for the api_keys collection."""
         if not self._connected:
@@ -128,6 +132,7 @@ class APIKeyStore:
         name: str = "Default",
     ) -> Dict[str, Any]:
         """Create a new API key for a user."""
+        self._require_durable_storage()
         key = self._generate_api_key()
         key_hash = self._hash_key(key)
         key_prefix = key[:8]
@@ -174,11 +179,14 @@ class APIKeyStore:
             }
         except Exception as e:
             logger.error(f"Database error creating API key: {e}")
+            if settings.environment.lower() == "production":
+                raise RuntimeError("Failed to create API key") from e
             self._in_memory = True
             return self.create_api_key(user_id, name)
 
     def get_user_api_keys(self, user_id: str, include_inactive: bool = False) -> List[Dict[str, Any]]:
         """Get all API keys for a user."""
+        self._require_durable_storage()
         if self._in_memory:
             keys = [
                 {**k, "id": str(k["_id"])}
@@ -202,10 +210,13 @@ class APIKeyStore:
             return keys
         except Exception as e:
             logger.error(f"Database error getting API keys: {e}")
+            if settings.environment.lower() == "production":
+                raise RuntimeError("Failed to get API keys") from e
             return []
 
     def validate_api_key(self, key: str) -> Optional[Dict[str, Any]]:
         """Validate an API key and return associated user info."""
+        self._require_durable_storage()
         key_hash = self._hash_key(key)
 
         if self._in_memory:
@@ -243,10 +254,13 @@ class APIKeyStore:
             return dict(key_doc) if key_doc else None
         except Exception as e:
             logger.error(f"Database error validating API key: {e}")
+            if settings.environment.lower() == "production":
+                raise RuntimeError("Failed to validate API key") from e
             return None
 
     def revoke_api_key(self, user_id: str, key_id: str) -> bool:
         """Revoke (deactivate) an API key."""
+        self._require_durable_storage()
         if self._in_memory:
             if key_id in _in_memory_api_keys:
                 if _in_memory_api_keys[key_id].get("user_id") == user_id:
@@ -267,6 +281,8 @@ class APIKeyStore:
             return success
         except Exception as e:
             logger.error(f"Failed to revoke API key {key_id}: {e}")
+            if settings.environment.lower() == "production":
+                raise RuntimeError("Failed to revoke API key") from e
             return False
 
     def update_api_key_name(
@@ -276,6 +292,7 @@ class APIKeyStore:
         new_name: str,
     ) -> bool:
         """Update the name of an API key."""
+        self._require_durable_storage()
         if self._in_memory:
             if key_id in _in_memory_api_keys:
                 if _in_memory_api_keys[key_id].get("user_id") == user_id:
@@ -296,6 +313,8 @@ class APIKeyStore:
             return success
         except Exception as e:
             logger.error(f"Failed to update API key name {key_id}: {e}")
+            if settings.environment.lower() == "production":
+                raise RuntimeError("Failed to update API key") from e
             return False
 
     def close(self) -> None:

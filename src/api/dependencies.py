@@ -12,7 +12,7 @@ import hmac
 import logging
 import time
 from collections import defaultdict
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -20,15 +20,20 @@ from jose import JWTError, jwt
 
 from src.config import settings
 from src.database.api_key_store import APIKeyStore
+from src.database.control_plane_store import ControlPlaneStore
 from src.database.user_store import UserStore
 from src.pipelines.ingest import IngestPipeline
 from src.pipelines.retrieval import RetrievalPipeline
+
+if TYPE_CHECKING:
+    from src.pipelines.code_retrieval import CodeRetrievalPipeline
 
 logger = logging.getLogger("xmem.api.deps")
 
 # Initialize stores
 _user_store = UserStore()
 _api_key_store = APIKeyStore()
+_control_plane_store = ControlPlaneStore()
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Pipeline singletons (initialised at app startup via lifespan)
@@ -177,11 +182,17 @@ async def require_api_key(
     # 2. Check MongoDB for user-generated API keys
     key_doc = _api_key_store.validate_api_key(token)
     if key_doc:
+        if not _api_key_matches_request_context(key_doc, request):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="API key is not valid for this organization or project.",
+            )
         user_id = key_doc.get("user_id")
         if user_id:
             user = _user_store.get_user_by_id(user_id)
             if user:
                 user["id"] = str(user.pop("_id"))
+                request.state.api_key = key_doc
                 request.state.user = user
                 return user
 
@@ -199,6 +210,25 @@ async def require_api_key(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Invalid API key or token.",
     )
+
+
+def _api_key_matches_request_context(key_doc: dict, request: Request) -> bool:
+    """Enforce optional API-key org/project bindings from request context."""
+    org_id = key_doc.get("org_id")
+    project_id = key_doc.get("project_id")
+    if not org_id and not project_id:
+        return True
+
+    request_org = request.headers.get("x-org-id") or request.query_params.get("org_id")
+    request_project = (
+        request.headers.get("x-project-id") or request.query_params.get("project_id")
+    )
+
+    if org_id and request_org != org_id:
+        return False
+    if project_id and request_project != project_id:
+        return False
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -306,19 +336,17 @@ class _SlidingWindowRateLimiter:
             return True, remaining
 
 
-_rate_limiter = _SlidingWindowRateLimiter(
-    max_requests=settings.rate_limit,
-    window_seconds=60,
-)
-
-
 async def enforce_rate_limit(
     request: Request,
     user: dict = Depends(require_api_key),
 ) -> dict:
     """Raise 429 if the caller has exceeded their per-minute quota."""
     identity = user.get("id", "anonymous")
-    allowed, remaining = await _rate_limiter.check(identity)
+    allowed, remaining = await _control_plane_store.check_rate_limit(
+        identity,
+        max_requests=settings.rate_limit,
+        window_seconds=60,
+    )
 
     request.state.rate_limit_remaining = remaining
 

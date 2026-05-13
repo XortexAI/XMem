@@ -6,11 +6,12 @@ import secrets
 import string
 import time
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import RLock
 from typing import List, Optional, Dict, Any
 
 from src.config import settings
+from src.database.control_plane_store import _production_requires_durable_storage
 
 logger = logging.getLogger("xmem.database.api_key_store")
 
@@ -60,6 +61,10 @@ class APIKeyStore:
             logger.info("Connected to MongoDB for API key storage")
             self._ensure_indexes()
         except Exception as e:
+            if _production_requires_durable_storage():
+                raise RuntimeError(
+                    "Durable MongoDB storage is required for API keys in production"
+                ) from e
             logger.warning(f"MongoDB connection failed, using in-memory storage: {e}")
             self._connected = False
             self._in_memory = True
@@ -74,6 +79,7 @@ class APIKeyStore:
             self.api_keys.create_index([("user_id", ASCENDING)])
             self.api_keys.create_index([("key_hash", ASCENDING)], unique=True)
             self.api_keys.create_index([("is_active", ASCENDING)])
+            self.api_keys.create_index([("expires_at", ASCENDING)])
         except Exception as e:
             logger.warning(f"Failed to create indexes: {e}")
 
@@ -126,6 +132,10 @@ class APIKeyStore:
         self,
         user_id: str,
         name: str = "Default",
+        scopes: Optional[List[str]] = None,
+        expires_at: Optional[datetime] = None,
+        org_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a new API key for a user."""
         key = self._generate_api_key()
@@ -141,6 +151,10 @@ class APIKeyStore:
                 "key_hash": key_hash,
                 "key_prefix": key_prefix,
                 "name": name,
+                "scopes": scopes or ["all"],
+                "expires_at": expires_at,
+                "org_id": org_id,
+                "project_id": project_id,
                 "created_at": now,
                 "last_used": None,
                 "is_active": True,
@@ -152,6 +166,10 @@ class APIKeyStore:
                 "key_id": key_id,
                 "name": name,
                 "created_at": now,
+                "scopes": scopes or ["all"],
+                "expires_at": expires_at,
+                "org_id": org_id,
+                "project_id": project_id,
             }
 
         try:
@@ -160,6 +178,10 @@ class APIKeyStore:
                 "key_hash": key_hash,
                 "key_prefix": key_prefix,
                 "name": name,
+                "scopes": scopes or ["all"],
+                "expires_at": expires_at,
+                "org_id": org_id,
+                "project_id": project_id,
                 "created_at": now,
                 "last_used": None,
                 "is_active": True,
@@ -171,9 +193,17 @@ class APIKeyStore:
                 "key_id": str(result.inserted_id),
                 "name": name,
                 "created_at": now,
+                "scopes": scopes or ["all"],
+                "expires_at": expires_at,
+                "org_id": org_id,
+                "project_id": project_id,
             }
         except Exception as e:
             logger.error(f"Database error creating API key: {e}")
+            if _production_requires_durable_storage():
+                raise RuntimeError(
+                    "Durable MongoDB storage is required for API keys in production"
+                ) from e
             self._in_memory = True
             return self.create_api_key(user_id, name)
 
@@ -211,6 +241,8 @@ class APIKeyStore:
         if self._in_memory:
             for key_doc in _in_memory_api_keys.values():
                 if key_doc.get("key_hash") == key_hash and key_doc.get("is_active", True):
+                    if self._is_expired(key_doc.get("expires_at")):
+                        return None
                     key_doc["last_used"] = datetime.utcnow()
                     result = {**key_doc, "id": str(key_doc["_id"])}
                     result.pop("key_hash", None)
@@ -227,6 +259,8 @@ class APIKeyStore:
                 "is_active": True,
             })
             if key_doc:
+                if self._is_expired(key_doc.get("expires_at")):
+                    return None
                 now = datetime.utcnow()
                 self.api_keys.update_one(
                     {"_id": key_doc["_id"]},
@@ -244,6 +278,13 @@ class APIKeyStore:
         except Exception as e:
             logger.error(f"Database error validating API key: {e}")
             return None
+
+    def _is_expired(self, expires_at: Optional[datetime]) -> bool:
+        if expires_at is None:
+            return False
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at <= datetime.now(timezone.utc)
 
     def revoke_api_key(self, user_id: str, key_id: str) -> bool:
         """Revoke (deactivate) an API key."""

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -76,6 +75,49 @@ def test_auth_dependency_rejects_missing_and_accepts_static_bearer_key(dependenc
     assert ok.json()["email"] == "static@xmem.ai"
     assert ok.headers["x-content-type-options"] == "nosniff"
     assert "x-request-id" in ok.headers
+
+
+def test_bound_api_key_requires_matching_request_context(dependency_app, monkeypatch):
+    class FakeApiKeyStore:
+        def validate_api_key(self, token):
+            if token != "xmem_bound":
+                return None
+            return {
+                "id": "key-1",
+                "user_id": "user-1",
+                "org_id": "org-1",
+                "project_id": "proj-1",
+                "scopes": ["memory:read"],
+            }
+
+    class FakeUserStore:
+        def get_user_by_id(self, user_id):
+            return {"_id": user_id, "email": "u@example.com", "name": "User"}
+
+    monkeypatch.setattr(deps, "_api_key_store", FakeApiKeyStore())
+    monkeypatch.setattr(deps, "_user_store", FakeUserStore())
+    client = TestClient(dependency_app)
+
+    wrong_context = client.get(
+        "/protected",
+        headers={
+            "Authorization": "Bearer xmem_bound",
+            "x-org-id": "other",
+            "x-project-id": "proj-1",
+        },
+    )
+    assert wrong_context.status_code == 403
+
+    ok = client.get(
+        "/protected",
+        headers={
+            "Authorization": "Bearer xmem_bound",
+            "x-org-id": "org-1",
+            "x-project-id": "proj-1",
+        },
+    )
+    assert ok.status_code == 200
+    assert ok.json()["user_id"] == "user-1"
 
 
 def test_dependency_injection_returns_configured_pipeline(dependency_app):

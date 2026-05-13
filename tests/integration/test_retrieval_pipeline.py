@@ -305,6 +305,25 @@ async def test_answer_from_sources_skips_tool_selection(vector_store, neo4j_clie
 
 
 @pytest.mark.asyncio
+async def test_answer_from_sources_handles_missing_source_scores(
+    vector_store, neo4j_client
+):
+    model = FakeChatModel(responses=["Alice works at XMem."])
+    pipeline = RetrievalPipeline(
+        model=model, vector_store=vector_store, neo4j_client=neo4j_client
+    )
+
+    answer = await pipeline.answer_from_sources(
+        "Where does Alice work?",
+        [SourceRecord(domain="profile", content="work / company = XMem", score=None)],
+    )
+
+    assert answer == "Alice works at XMem."
+    assert "score:" not in model.calls[0][0].content
+    assert not pipeline.model_with_tools.calls
+
+
+@pytest.mark.asyncio
 async def test_retrieval_tool_dispatch_handles_unknown_and_snippet(
     vector_store, neo4j_client
 ):

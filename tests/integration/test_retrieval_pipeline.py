@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from src.pipelines.retrieval import RetrievalPipeline
+from src.schemas.retrieval import SourceRecord
 from tests.conftest import FakeChatModel, FakeLLMResponse
 
 
@@ -139,6 +140,28 @@ async def test_raw_search_can_synthesize_answer_after_hits(vector_store, neo4j_c
     assert len(model.calls) == 1
     assert pipeline.model_with_tools.calls == []
     assert "raw_search_answer" in pipeline.latency_snapshot()
+
+
+@pytest.mark.asyncio
+async def test_answer_from_sources_handles_missing_source_scores(vector_store, neo4j_client):
+    model = FakeChatModel(responses=["Answer synthesized from a missing-score source."])
+    pipeline = RetrievalPipeline(model=model, vector_store=vector_store, neo4j_client=neo4j_client)
+
+    answer = await pipeline.answer_from_sources(
+        query="What is Alice building?",
+        sources=[
+            SourceRecord(
+                domain="summary",
+                content="Alice is building raw search.",
+                score=None,
+            ),
+        ],
+    )
+
+    assert answer == "Answer synthesized from a missing-score source."
+    assert len(model.calls) == 1
+    prompt = model.calls[0][0].content
+    assert "[summary] Alice is building raw search." in prompt
 
 
 @pytest.mark.asyncio

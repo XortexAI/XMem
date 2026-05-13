@@ -784,7 +784,8 @@ class RetrievalPipeline:
 
         lines = []
         for i, rec in enumerate(records, 1):
-            score_str = f" (score: {rec.score:.2f})" if rec.score > 0 else ""
+            score = rec.score if rec.score is not None else 0.0
+            score_str = f" (score: {score:.2f})" if score > 0 else ""
             lines.append(f"{i}. [{rec.domain}]{score_str} {rec.content}")
         return "\n".join(lines)
 

@@ -28,6 +28,7 @@ from src.api.schemas import (
     DomainResult,
     IngestRequest,
     IngestResponse,
+    JobEnqueueResponse,
     OperationDetail,
     RetrieveRequest,
     RetrieveResponse,
@@ -40,6 +41,7 @@ from src.api.schemas import (
     StatusEnum,
     WeaverSummary,
 )
+from src.jobs import get_job_store
 from src.pipelines.retrieval import RetrievalPipeline
 
 from bs4 import BeautifulSoup
@@ -108,6 +110,17 @@ def _error(request: Request, detail: str, code: int, elapsed_ms: float = 0) -> J
     return JSONResponse(content=body.model_dump(), status_code=code)
 
 
+def _job_enqueued_response(request: Request, job: Dict[str, Any], elapsed_ms: float) -> JSONResponse:
+    data = JobEnqueueResponse(
+        job_id=job["job_id"],
+        job_type=job["job_type"],
+        status=job["status"],
+        idempotency_key=job["idempotency_key"],
+        status_url=f"/v1/jobs/{job['job_id']}",
+    )
+    return _wrap(request, data, elapsed_ms)
+
+
 def _detect_chat_provider(*urls: str) -> str:
     for url in urls:
         lowered = (url or "").lower()
@@ -138,6 +151,37 @@ def _chat_share_error_message(result: Dict[str, Any]) -> str:
 
 async def _render_chat_share(url: str) -> tuple[str, str]:
     return await asyncio.to_thread(_render_chat_share_sync, url)
+
+
+async def run_ingest_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    pipeline = get_ingest_pipeline()
+    result = await asyncio.wait_for(
+        pipeline.run(
+            user_query=payload["user_query"],
+            agent_response=payload.get("agent_response") or "Acknowledged.",
+            user_id=payload["user_id"],
+            session_datetime=payload.get("session_datetime", ""),
+            image_url=payload.get("image_url", ""),
+            effort_level=payload.get("effort_level", "low"),
+        ),
+        timeout=120.0,
+    )
+    data = IngestResponse(
+        model=_model_name(pipeline.model),
+        classification=_safe_classifications(result),
+        profile=_build_domain_result(result.get("profile_judge"), result.get("profile_weaver")),
+        temporal=_build_domain_result(result.get("temporal_judge"), result.get("temporal_weaver")),
+        summary=_build_domain_result(result.get("summary_judge"), result.get("summary_weaver")),
+        image=_build_domain_result(result.get("image_judge"), result.get("image_weaver")),
+    )
+    return data.model_dump()
+
+
+async def run_batch_ingest_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    results = []
+    for item in payload["items"]:
+        results.append(await run_ingest_job({**item, "user_id": payload["user_id"]}))
+    return BatchIngestResponse(results=[IngestResponse(**result) for result in results]).model_dump()
 
 
 # ── Warm browser pool ──────────────────────────────────────────────────────
@@ -558,18 +602,31 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
 
     # Get username from authenticated user
     user_id = user.get("username") or user.get("name") or user["id"]
+    payload = {
+        "user_query": req.user_query,
+        "agent_response": req.agent_response or "Acknowledged.",
+        "user_id": user_id,
+        "session_datetime": req.session_datetime,
+        "image_url": req.image_url,
+        "effort_level": req.effort_level,
+    }
+
+    try:
+        store = get_job_store()
+        job = store.enqueue(
+            job_type="memory.ingest",
+            owner_id=user_id,
+            payload=payload,
+        )
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _job_enqueued_response(request, job, elapsed)
+    except RuntimeError:
+        logger.warning("Job store unavailable; falling back to synchronous ingest")
 
     try:
         async with _ingest_semaphore:
             result = await asyncio.wait_for(
-                pipeline.run(
-                    user_query=req.user_query,
-                    agent_response=req.agent_response or "Acknowledged.",
-                    user_id=user_id,
-                    session_datetime=req.session_datetime,
-                    image_url=req.image_url,
-                    effort_level=req.effort_level,
-                ),
+                pipeline.run(**payload),
                 timeout=120.0
             )
         data = IngestResponse(
@@ -606,6 +663,23 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
     start = time.perf_counter()
     pipeline = get_ingest_pipeline()
     user_id = user.get("username") or user.get("name") or user["id"]
+    payload = {
+        "user_id": user_id,
+        "items": [item.model_dump() for item in req.items],
+    }
+
+    try:
+        store = get_job_store()
+        job = store.enqueue(
+            job_type="memory.batch_ingest",
+            owner_id=user_id,
+            payload=payload,
+            timeout_seconds=120.0 * max(len(req.items), 1),
+        )
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _job_enqueued_response(request, job, elapsed)
+    except RuntimeError:
+        logger.warning("Job store unavailable; falling back to synchronous batch ingest")
 
     results = []
 

@@ -32,10 +32,13 @@ from src.api.routes.auth import router as auth_router
 from src.api.routes.code import router as code_router
 from src.api.routes.enterprise import router as enterprise_router
 from src.api.routes.health import router as health_router
+from src.api.routes.jobs import router as jobs_router
 from src.api.routes.memory import router as memory_router
+from src.api.routes.memory import run_batch_ingest_job, run_ingest_job
 from src.api.routes.memory import scrape_router as memory_scrape_router
 from src.api.routes.memory_graph import router as memory_graph_router
 from src.api.routes.scanner import router as scanner_router
+from src.api.routes.scanner import run_scanner_job, run_scanner_phase2_job
 from src.api.routes.telemetry import router as telemetry_router
 from src.api.schemas import APIResponse, StatusEnum
 from src.config import settings
@@ -99,7 +102,16 @@ def create_app() -> FastAPI:
         _set_event_loop(asyncio.get_running_loop())
 
         boot_task = asyncio.create_task(_boot_pipelines())
+        from src.jobs import init_jobs
+        init_jobs({
+            "memory.ingest": run_ingest_job,
+            "memory.batch_ingest": run_batch_ingest_job,
+            "scanner.scan": run_scanner_job,
+            "scanner.phase2": run_scanner_phase2_job,
+        })
         yield
+        from src.jobs import shutdown_jobs
+        await shutdown_jobs()
         await boot_task
         from src.api.dependencies import _ingest_pipeline, _retrieval_pipeline
         if _ingest_pipeline:
@@ -156,6 +168,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(memory_scrape_router)
     app.include_router(memory_router)
+    app.include_router(jobs_router)
     app.include_router(memory_graph_router)
     app.include_router(code_router)
     app.include_router(scanner_router)

@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 
 from src.api.dependencies import require_api_key
 from src.config import settings
+from src.jobs import get_job_store
 
 logger = logging.getLogger("xmem.api.routes.scanner")
 
@@ -583,6 +584,77 @@ async def _run_phase2_pipeline_only(
 
     _cleanup_clone(org, repo)
 
+
+async def run_scanner_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    await _run_scan_pipeline(
+        payload["scanner_job_id"],
+        payload["username"],
+        payload["org"],
+        payload["repo"],
+        payload["url"],
+        payload["branch"],
+        payload.get("pat", ""),
+        payload.get("force_full", True),
+    )
+    return {"scanner_job_id": payload["scanner_job_id"]}
+
+
+async def run_scanner_phase2_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    await _run_phase2_pipeline_only(
+        payload["scanner_job_id"],
+        payload["username"],
+        payload["org"],
+        payload["repo"],
+        payload["url"],
+        payload["branch"],
+    )
+    return {"scanner_job_id": payload["scanner_job_id"]}
+
+
+def _enqueue_or_start_scanner_job(
+    *,
+    job_type: str,
+    scanner_job_id: str,
+    username: str,
+    org: str,
+    repo: str,
+    url: str,
+    branch: str,
+    pat: str = "",
+    force_full: bool = True,
+) -> Optional[str]:
+    payload = {
+        "scanner_job_id": scanner_job_id,
+        "username": username,
+        "org": org,
+        "repo": repo,
+        "url": url,
+        "branch": branch,
+        "pat": pat,
+        "force_full": force_full,
+    }
+    try:
+        job = get_job_store().enqueue(
+            job_type=job_type,
+            owner_id=username,
+            payload=payload,
+            idempotency_key=f"{job_type}:{scanner_job_id}",
+            timeout_seconds=settings.job_timeout_seconds * 5,
+        )
+        return job["job_id"]
+    except RuntimeError:
+        logger.warning("Job store unavailable; falling back to in-process scanner task")
+        if job_type == "scanner.phase2":
+            asyncio.create_task(
+                _run_phase2_pipeline_only(scanner_job_id, username, org, repo, url, branch),
+            )
+        else:
+            asyncio.create_task(
+                _run_scan_pipeline(scanner_job_id, username, org, repo, url, branch, pat, force_full),
+            )
+        return None
+
+
 @router.post(
     "/validate-url",
     summary="Validate a GitHub URL and check accessibility",
@@ -726,13 +798,20 @@ async def resume_scan(req: ResumeScanRequest, user: dict = Depends(require_api_k
             branch=branch, url=url, phase1_status="running", phase2_status="pending",
             started_at=started_at, error=None,
         )
-        asyncio.create_task(
-            _run_scan_pipeline(job_id, req.username, req.org_id, req.repo, url, branch, ""),
+        queue_job_id = _enqueue_or_start_scanner_job(
+            job_type="scanner.scan",
+            scanner_job_id=job_id,
+            username=req.username,
+            org=req.org_id,
+            repo=req.repo,
+            url=url,
+            branch=branch,
         )
         logger.info("Resumed Phase 1 for %s/%s", req.org_id, req.repo)
         return JSONResponse({
             "status": "ok",
             "message": "Scan resumed from Phase 1.",
+            "queue_job_id": queue_job_id,
             "phase1_status": "running",
             "phase2_status": "pending",
         })
@@ -743,13 +822,20 @@ async def resume_scan(req: ResumeScanRequest, user: dict = Depends(require_api_k
         branch=branch, url=url, phase1_status="complete", phase2_status="running",
         started_at=started_at, error=None,
     )
-    asyncio.create_task(
-        _run_phase2_pipeline_only(job_id, req.username, req.org_id, req.repo, url, branch),
+    queue_job_id = _enqueue_or_start_scanner_job(
+        job_type="scanner.phase2",
+        scanner_job_id=job_id,
+        username=req.username,
+        org=req.org_id,
+        repo=req.repo,
+        url=url,
+        branch=branch,
     )
     logger.info("Resumed Phase 2 for %s/%s", req.org_id, req.repo)
     return JSONResponse({
         "status": "ok",
         "message": "Scan resumed from Phase 2.",
+        "queue_job_id": queue_job_id,
         "phase1_status": "complete",
         "phase2_status": "running",
     })
@@ -847,14 +933,19 @@ async def start_scan(req: ScanRequest, user: dict = Depends(require_api_key)):
     store.upsert_user_repo_entry(username, org, repo, branch)
 
     if phase2_only:
-        asyncio.create_task(
-            _run_phase2_pipeline_only(
-                job_id, username, org, repo, clone_url, branch,
-            ),
+        queue_job_id = _enqueue_or_start_scanner_job(
+            job_type="scanner.phase2",
+            scanner_job_id=job_id,
+            username=username,
+            org=org,
+            repo=repo,
+            url=clone_url,
+            branch=branch,
         )
         return JSONResponse({
             "status": "ok",
             "job_id": job_id,
+            "queue_job_id": queue_job_id,
             "org": org,
             "repo": repo,
             "reused": False,
@@ -864,15 +955,22 @@ async def start_scan(req: ScanRequest, user: dict = Depends(require_api_key)):
             "phase2_status": "running",
         })
 
-    asyncio.create_task(
-        _run_scan_pipeline(
-            job_id, username, org, repo, clone_url, branch, req.pat, req.force_full,
-        ),
+    queue_job_id = _enqueue_or_start_scanner_job(
+        job_type="scanner.scan",
+        scanner_job_id=job_id,
+        username=username,
+        org=org,
+        repo=repo,
+        url=clone_url,
+        branch=branch,
+        pat=req.pat,
+        force_full=req.force_full,
     )
 
     return JSONResponse({
         "status": "ok",
         "job_id": job_id,
+        "queue_job_id": queue_job_id,
         "org": org,
         "repo": repo,
         "reused": False,

@@ -132,6 +132,11 @@ def is_ready() -> bool:
     return _pipelines_ready.is_set() and _init_error is None
 
 
+def get_owner_id(user: dict) -> str:
+    """Return the stable owner identifier used to scope user-owned records."""
+    return user.get("username") or user.get("name") or user["id"]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Bearer-token authentication
 # ═══════════════════════════════════════════════════════════════════════════

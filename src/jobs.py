@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -50,7 +50,7 @@ class JobStore:
 
     @staticmethod
     def make_idempotency_key(job_type: str, owner_id: str, payload: Dict[str, Any]) -> str:
-        stable = repr(_stable(payload)).encode("utf-8")
+        stable = json.dumps(payload, default=str, separators=(",", ":"), sort_keys=True).encode("utf-8")
         digest = hashlib.sha256(stable).hexdigest()
         return f"{job_type}:{owner_id}:{digest}"
 
@@ -162,9 +162,11 @@ class JobStore:
                 }
             }
             self.jobs.update_one({"job_id": job_id}, update)
+            dead_letter_job = {k: v for k, v in job.items() if k != "_id"}
+            dead_letter_job.update(update["$set"])
             self.dead_letters.update_one(
                 {"job_id": job_id},
-                {"$set": {"job_id": job_id, "job": _public_job(job), "error": error, "created_at": now}},
+                {"$set": {"job_id": job_id, "job": dead_letter_job, "error": error, "created_at": now}},
                 upsert=True,
             )
             return
@@ -274,14 +276,6 @@ def serialize_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _stable(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {k: _stable(value[k]) for k in sorted(value)}
-    if isinstance(value, list):
-        return [_stable(v) for v in value]
-    return value
 
 
 def _public_job(job: Dict[str, Any]) -> Dict[str, Any]:

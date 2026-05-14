@@ -37,7 +37,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import require_api_key
+from src.api.dependencies import get_owner_id, require_api_key
 from src.config import settings
 from src.jobs import get_job_store
 
@@ -611,7 +611,7 @@ async def run_scanner_phase2_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"scanner_job_id": payload["scanner_job_id"]}
 
 
-def _enqueue_or_start_scanner_job(
+async def _enqueue_or_start_scanner_job(
     *,
     job_type: str,
     scanner_job_id: str,
@@ -634,7 +634,9 @@ def _enqueue_or_start_scanner_job(
         "force_full": force_full,
     }
     try:
-        job = get_job_store().enqueue(
+        store = get_job_store()
+        job = await asyncio.to_thread(
+            store.enqueue,
             job_type=job_type,
             owner_id=username,
             payload=payload,
@@ -798,7 +800,7 @@ async def resume_scan(req: ResumeScanRequest, user: dict = Depends(require_api_k
             branch=branch, url=url, phase1_status="running", phase2_status="pending",
             started_at=started_at, error=None,
         )
-        queue_job_id = _enqueue_or_start_scanner_job(
+        queue_job_id = await _enqueue_or_start_scanner_job(
             job_type="scanner.scan",
             scanner_job_id=job_id,
             username=req.username,
@@ -822,7 +824,7 @@ async def resume_scan(req: ResumeScanRequest, user: dict = Depends(require_api_k
         branch=branch, url=url, phase1_status="complete", phase2_status="running",
         started_at=started_at, error=None,
     )
-    queue_job_id = _enqueue_or_start_scanner_job(
+    queue_job_id = await _enqueue_or_start_scanner_job(
         job_type="scanner.phase2",
         scanner_job_id=job_id,
         username=req.username,
@@ -850,7 +852,7 @@ async def start_scan(req: ScanRequest, user: dict = Depends(require_api_key)):
             {"status": "error", "error": str(e)}, status_code=400,
         )
 
-    username = user.get("username") or user.get("name") or user["id"]
+    username = get_owner_id(user)
     job_id = f"{username}:{org}:{repo}"
     store = _get_code_store()
 
@@ -933,7 +935,7 @@ async def start_scan(req: ScanRequest, user: dict = Depends(require_api_key)):
     store.upsert_user_repo_entry(username, org, repo, branch)
 
     if phase2_only:
-        queue_job_id = _enqueue_or_start_scanner_job(
+        queue_job_id = await _enqueue_or_start_scanner_job(
             job_type="scanner.phase2",
             scanner_job_id=job_id,
             username=username,
@@ -955,7 +957,7 @@ async def start_scan(req: ScanRequest, user: dict = Depends(require_api_key)):
             "phase2_status": "running",
         })
 
-    queue_job_id = _enqueue_or_start_scanner_job(
+    queue_job_id = await _enqueue_or_start_scanner_job(
         job_type="scanner.scan",
         scanner_job_id=job_id,
         username=username,

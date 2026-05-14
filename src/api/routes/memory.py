@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from src.api.dependencies import (
     enforce_rate_limit,
     get_ingest_pipeline,
+    get_owner_id,
     get_retrieval_pipeline,
     require_api_key,
     require_ready,
@@ -600,8 +601,7 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
     start = time.perf_counter()
     pipeline = get_ingest_pipeline()
 
-    # Get username from authenticated user
-    user_id = user.get("username") or user.get("name") or user["id"]
+    user_id = get_owner_id(user)
     payload = {
         "user_query": req.user_query,
         "agent_response": req.agent_response or "Acknowledged.",
@@ -613,7 +613,8 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
 
     try:
         store = get_job_store()
-        job = store.enqueue(
+        job = await asyncio.to_thread(
+            store.enqueue,
             job_type="memory.ingest",
             owner_id=user_id,
             payload=payload,
@@ -662,7 +663,7 @@ def _safe_classifications(result: Dict[str, Any]) -> list:
 async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: dict = Depends(require_api_key)):
     start = time.perf_counter()
     pipeline = get_ingest_pipeline()
-    user_id = user.get("username") or user.get("name") or user["id"]
+    user_id = get_owner_id(user)
     payload = {
         "user_id": user_id,
         "items": [item.model_dump() for item in req.items],
@@ -670,7 +671,8 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
 
     try:
         store = get_job_store()
-        job = store.enqueue(
+        job = await asyncio.to_thread(
+            store.enqueue,
             job_type="memory.batch_ingest",
             owner_id=user_id,
             payload=payload,

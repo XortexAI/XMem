@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from src.api.dependencies import enforce_rate_limit, require_api_key
+from src.api.dependencies import enforce_rate_limit, get_owner_id, require_api_key
 from src.api.schemas import APIResponse, JobStatusResponse, StatusEnum
 from src.jobs import get_job_store, serialize_job
 
@@ -25,13 +26,13 @@ async def get_job_status(
     user: dict = Depends(require_api_key),
 ):
     start = time.perf_counter()
-    owner_id = user.get("username") or user.get("name") or user["id"]
+    owner_id = get_owner_id(user)
     try:
         store = get_job_store()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    job = store.get(job_id, owner_id=owner_id)
+    job = await asyncio.to_thread(store.get, job_id, owner_id=owner_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
 

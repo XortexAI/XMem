@@ -23,6 +23,13 @@ from src.schemas.judge import (
     Operation,
     OperationType,
 )
+from src.schemas.code import (
+    code_annotation_fields_from_storage_content,
+    code_annotation_pinecone_metadata,
+    snippet_fields_from_storage_content,
+    snippet_pinecone_metadata,
+    snippet_search_text,
+)
 from src.schemas.weaver import ExecutedOp, OpStatus, WeaverResult
 from src.storage.base import BaseVectorStore
 
@@ -573,15 +580,7 @@ class Weaver:
         import asyncio
         loop = asyncio.get_running_loop()
         embedding = await loop.run_in_executor(None, self.embed_fn, op.content)
-        metadata: Dict[str, Any] = {
-            "user_id": user_id,
-            "domain": "code",
-            "annotation_type": parsed.get("annotation_type", ""),
-            "target_symbol": parsed.get("target_symbol", ""),
-            "target_file": parsed.get("target_file", ""),
-            "repo": parsed.get("repo", ""),
-            "severity": parsed.get("severity", ""),
-        }
+        metadata = code_annotation_pinecone_metadata(user_id, parsed)
 
         from functools import partial
         ids = await loop.run_in_executor(
@@ -633,15 +632,7 @@ class Weaver:
         import asyncio
         loop = asyncio.get_running_loop()
         embedding = await loop.run_in_executor(None, self.embed_fn, op.content)
-        metadata: Dict[str, Any] = {
-            "user_id": user_id,
-            "domain": "code",
-            "annotation_type": parsed.get("annotation_type", ""),
-            "target_symbol": parsed.get("target_symbol", ""),
-            "target_file": parsed.get("target_file", ""),
-            "repo": parsed.get("repo", ""),
-            "severity": parsed.get("severity", ""),
-        }
+        metadata = code_annotation_pinecone_metadata(user_id, parsed)
 
         from functools import partial
         success = await loop.run_in_executor(
@@ -725,20 +716,12 @@ class Weaver:
             )
 
         parsed = _parse_snippet_content(op.content)
-        searchable = parsed.get("content", op.content)
+        searchable = snippet_search_text(parsed)
         import asyncio
         loop = asyncio.get_running_loop()
         embedding = await loop.run_in_executor(None, self.embed_fn, searchable)
 
-        metadata: Dict[str, Any] = {
-            "user_id": user_id,
-            "domain": "snippet",
-            "code_snippet": parsed.get("code_snippet", ""),
-            "language": parsed.get("language", ""),
-            "snippet_type": parsed.get("snippet_type", "algorithm"),
-            "tags": parsed.get("tags", ""),
-            "source": "chat",
-        }
+        metadata = snippet_pinecone_metadata(user_id, parsed)
 
         from functools import partial
         ids = await loop.run_in_executor(
@@ -771,20 +754,12 @@ class Weaver:
             )
 
         parsed = _parse_snippet_content(op.content)
-        searchable = parsed.get("content", op.content)
+        searchable = snippet_search_text(parsed)
         import asyncio
         loop = asyncio.get_running_loop()
         embedding = await loop.run_in_executor(None, self.embed_fn, searchable)
 
-        metadata: Dict[str, Any] = {
-            "user_id": user_id,
-            "domain": "snippet",
-            "code_snippet": parsed.get("code_snippet", ""),
-            "language": parsed.get("language", ""),
-            "snippet_type": parsed.get("snippet_type", "algorithm"),
-            "tags": parsed.get("tags", ""),
-            "source": "chat",
-        }
+        metadata = snippet_pinecone_metadata(user_id, parsed)
 
         from functools import partial
         success = await loop.run_in_executor(
@@ -911,29 +886,7 @@ def _parse_snippet_content(content: str) -> Dict[str, str]:
 
     Falls back gracefully if the content doesn't match.
     """
-    parts = [p.strip() for p in content.split(" | ")]
-    result: Dict[str, str] = {}
-
-    if len(parts) >= 5:
-        result["content"] = parts[0]
-        result["code_snippet"] = parts[1]
-        result["language"] = parts[2]
-        result["snippet_type"] = parts[3]
-        result["tags"] = parts[4]
-    elif len(parts) >= 3:
-        result["content"] = parts[0]
-        result["code_snippet"] = parts[1]
-        result["language"] = parts[2]
-        result["snippet_type"] = "algorithm"
-        result["tags"] = ""
-    else:
-        result["content"] = content
-        result["code_snippet"] = ""
-        result["language"] = ""
-        result["snippet_type"] = "algorithm"
-        result["tags"] = ""
-
-    return result
+    return snippet_fields_from_storage_content(content)
 
 
 def _parse_code_annotation_content(content: str) -> Dict[str, str]:
@@ -945,21 +898,4 @@ def _parse_code_annotation_content(content: str) -> Dict[str, str]:
     Falls back gracefully if the content doesn't match the expected format
     (treats the entire string as the annotation content).
     """
-    parts = [p.strip() for p in content.split("|")]
-    result: Dict[str, str] = {}
-
-    if len(parts) >= 6:
-        result["annotation_type"] = parts[0] or "explanation"
-        result["target_symbol"] = parts[1]
-        result["target_file"] = parts[2]
-        result["repo"] = parts[3]
-        result["severity"] = parts[4]
-        result["content"] = parts[5]
-    elif len(parts) >= 2:
-        result["annotation_type"] = parts[0] or "explanation"
-        result["content"] = " | ".join(parts[1:])
-    else:
-        result["content"] = content
-        result["annotation_type"] = "explanation"
-
-    return result
+    return code_annotation_fields_from_storage_content(content)

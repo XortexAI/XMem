@@ -82,7 +82,7 @@ from src.schemas.code import (
 )
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -765,7 +765,13 @@ class IngestPipeline:
             ]
             all_items.append(" | ".join(parts))
 
-        judge_result = await self.judge.arun({
+        code_judge = JudgeAgent(
+            model=self.judge.model,
+            vector_store=self.code_vector_store,
+            graph_event_search=self._graph_event_search_wrapper,
+            top_k=self.judge.top_k,
+        )
+        judge_result = await code_judge.arun_deterministic({
             "domain": JudgeDomain.CODE,
             "new_items": all_items,
             "user_id": user_id,
@@ -805,14 +811,18 @@ class IngestPipeline:
             ]
             all_items.append(" | ".join(parts))
 
-        judge_result = await self.judge.arun({
+        self.weaver.snippet_vector_store = self._get_snippet_store(user_id)
+        snippet_judge = JudgeAgent(
+            model=self.judge.model,
+            vector_store=self.weaver.snippet_vector_store,
+            graph_event_search=self._graph_event_search_wrapper,
+            top_k=self.judge.top_k,
+        )
+        judge_result = await snippet_judge.arun_deterministic({
             "domain": JudgeDomain.SNIPPET,
             "new_items": all_items,
             "user_id": user_id,
         })
-
-        # Bind the user-scoped snippet store before executing
-        self.weaver.snippet_vector_store = self._get_snippet_store(user_id)
 
         weaver_result = await self.weaver.execute(
             judge_result=judge_result,

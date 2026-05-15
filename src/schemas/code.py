@@ -12,8 +12,9 @@ Maps directly to the Pinecone namespace structure:
 
 from __future__ import annotations
 
+import hashlib
 from enum import Enum
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -290,3 +291,152 @@ def annotations_namespace(org_id: str) -> str:
 
 def snippets_namespace(user_id: str) -> str:
     return f"{user_id}:snippets"
+
+
+# ---------------------------------------------------------------------------
+# Pinecone identity helpers for code/snippet memory
+# ---------------------------------------------------------------------------
+
+def normalize_code_text(value: str | None) -> str:
+    """Normalize code only for stable identity keys, not for display/storage."""
+    text = (value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return "\n".join(line.rstrip() for line in text.split("\n"))
+
+
+def normalize_lookup_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def stable_hash(*parts: Any) -> str:
+    joined = "\x1f".join(normalize_lookup_text(part) for part in parts)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+def snippet_fields_from_storage_content(content: str) -> dict[str, str]:
+    """Parse the pipe-delimited snippet string emitted by the ingest pipeline."""
+    parts = [p.strip() for p in content.split(" | ")]
+    if len(parts) >= 5:
+        return {
+            "content": parts[0],
+            "code_snippet": parts[1].replace("\\n", "\n"),
+            "language": parts[2],
+            "snippet_type": parts[3] or SnippetType.ALGORITHM.value,
+            "tags": parts[4],
+        }
+    if len(parts) >= 3:
+        return {
+            "content": parts[0],
+            "code_snippet": parts[1].replace("\\n", "\n"),
+            "language": parts[2],
+            "snippet_type": SnippetType.ALGORITHM.value,
+            "tags": "",
+        }
+    return {
+        "content": content,
+        "code_snippet": "",
+        "language": "",
+        "snippet_type": SnippetType.ALGORITHM.value,
+        "tags": "",
+    }
+
+
+def snippet_identity_hash(fields: dict[str, Any]) -> str:
+    code = normalize_code_text(fields.get("code_snippet"))
+    content = normalize_lookup_text(fields.get("content"))
+    language = normalize_lookup_text(fields.get("language"))
+    identity_body = code or content
+    return stable_hash(language, identity_body)
+
+
+def snippet_search_text(fields: dict[str, Any]) -> str:
+    """Return the text embedded for semantic snippet search."""
+    content = str(fields.get("content") or "").strip()
+    language = str(fields.get("language") or "").strip()
+    tags = fields.get("tags") or ""
+    tags_text = ", ".join(tags) if isinstance(tags, list) else str(tags)
+    parts = [content]
+    if language:
+        parts.append(f"language: {language}")
+    if tags_text:
+        parts.append(f"tags: {tags_text}")
+    return "\n".join(part for part in parts if part)
+
+
+def snippet_pinecone_metadata(user_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    tags = fields.get("tags") or ""
+    if isinstance(tags, list):
+        tags = ",".join(str(tag).strip() for tag in tags if str(tag).strip())
+    return {
+        "user_id": user_id,
+        "domain": "snippet",
+        "snippet_hash": snippet_identity_hash(fields),
+        "code_snippet": str(fields.get("code_snippet") or ""),
+        "language": normalize_lookup_text(fields.get("language")),
+        "snippet_type": str(fields.get("snippet_type") or SnippetType.ALGORITHM.value),
+        "tags": str(tags),
+        "source": str(fields.get("source") or SnippetSource.CHAT.value),
+    }
+
+
+def code_annotation_fields_from_storage_content(content: str) -> dict[str, str]:
+    """Parse the pipe-delimited code annotation string emitted by ingest."""
+    parts = [p.strip() for p in content.split("|")]
+    if len(parts) >= 6:
+        return {
+            "annotation_type": parts[0] or AnnotationType.EXPLANATION.value,
+            "target_symbol": parts[1],
+            "target_file": parts[2],
+            "repo": parts[3],
+            "severity": parts[4],
+            "content": " | ".join(parts[5:]).strip(),
+        }
+    if len(parts) >= 2:
+        return {
+            "annotation_type": parts[0] or AnnotationType.EXPLANATION.value,
+            "target_symbol": "",
+            "target_file": "",
+            "repo": "",
+            "severity": "",
+            "content": " | ".join(parts[1:]).strip(),
+        }
+    return {
+        "annotation_type": AnnotationType.EXPLANATION.value,
+        "target_symbol": "",
+        "target_file": "",
+        "repo": "",
+        "severity": "",
+        "content": content,
+    }
+
+
+def code_annotation_identity_key(fields: dict[str, Any]) -> str:
+    target = fields.get("target_symbol") or fields.get("target_file") or ""
+    return "|".join([
+        normalize_lookup_text(fields.get("repo")),
+        normalize_lookup_text(target),
+        normalize_lookup_text(fields.get("annotation_type")),
+    ])
+
+
+def code_annotation_content_hash(fields: dict[str, Any]) -> str:
+    return stable_hash(
+        code_annotation_identity_key(fields),
+        fields.get("severity"),
+        fields.get("content"),
+    )
+
+
+def code_annotation_pinecone_metadata(
+    user_id: str, fields: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "user_id": user_id,
+        "domain": "code",
+        "annotation_key": code_annotation_identity_key(fields),
+        "annotation_hash": code_annotation_content_hash(fields),
+        "annotation_type": str(fields.get("annotation_type") or ""),
+        "target_symbol": str(fields.get("target_symbol") or ""),
+        "target_file": str(fields.get("target_file") or ""),
+        "repo": str(fields.get("repo") or ""),
+        "severity": str(fields.get("severity") or ""),
+    }

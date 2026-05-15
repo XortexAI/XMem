@@ -9,6 +9,11 @@ from src.schemas.code import (
     ExtractedAnnotation,
     SnippetRecord,
     SnippetType,
+    code_annotation_fields_from_storage_content,
+    code_annotation_pinecone_metadata,
+    snippet_fields_from_storage_content,
+    snippet_pinecone_metadata,
+    snippet_search_text,
     annotations_namespace,
     snippets_namespace,
     symbols_namespace,
@@ -84,3 +89,32 @@ def test_code_schema_enums_and_namespace_helpers():
     assert symbols_namespace("acme", "payments") == "acme:payments:symbols"
     assert annotations_namespace("acme") == "acme:annotations"
     assert snippets_namespace("user-1") == "user-1:snippets"
+
+
+def test_code_and_snippet_pinecone_metadata_have_stable_identity_keys():
+    snippet_fields = snippet_fields_from_storage_content(
+        "Binary search helper | def bs():\\n    return 1 | Python | utility | search,array"
+    )
+    snippet_meta = snippet_pinecone_metadata("user-1", snippet_fields)
+
+    same_snippet_fields = snippet_fields_from_storage_content(
+        "Binary search helper again | def bs():\n    return 1 | python | utility | search"
+    )
+
+    assert snippet_search_text(snippet_fields) == (
+        "Binary search helper\nlanguage: Python\ntags: search,array"
+    )
+    assert snippet_meta["domain"] == "snippet"
+    assert snippet_meta["language"] == "python"
+    assert snippet_meta["snippet_hash"] == snippet_pinecone_metadata(
+        "user-1", same_snippet_fields,
+    )["snippet_hash"]
+
+    annotation_fields = code_annotation_fields_from_storage_content(
+        "bug_report | Auth.login | src/auth.py | api | high | Token refresh can fail"
+    )
+    annotation_meta = code_annotation_pinecone_metadata("user-1", annotation_fields)
+
+    assert annotation_meta["domain"] == "code"
+    assert annotation_meta["annotation_key"] == "api|auth.login|bug_report"
+    assert len(annotation_meta["annotation_hash"]) == 64

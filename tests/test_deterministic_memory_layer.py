@@ -423,6 +423,25 @@ async def test_snippet_deterministic_judge_noops_same_snippet_across_sessions():
 
 
 @pytest.mark.asyncio
+async def test_snippet_deterministic_judge_deduplicates_incoming_batch():
+    store = FakeVectorStore()
+    judge = JudgeAgent(model=ModelMustNotBeCalled(), vector_store=store)
+
+    judge_result = await judge.arun_deterministic({
+        "domain": "snippet",
+        "new_items": [
+            "Binary search helper | def bs():\n    return 1 | python | utility | search",
+            "Binary search helper again | def bs():\n    return 1 | Python | utility | dsa",
+        ],
+        "user_id": "user-1",
+    })
+
+    assert judge_result.confidence == 1.0
+    assert len(judge_result.operations) == 1
+    assert judge_result.operations[0].type == OperationType.ADD
+
+
+@pytest.mark.asyncio
 async def test_snippet_weaver_stores_identity_hash_and_search_text():
     store = FakeVectorStore()
     judge_result = await JudgeAgent(
@@ -489,3 +508,28 @@ async def test_code_deterministic_judge_updates_same_target_annotation():
         "api|auth.login|bug_report"
     )
     assert len(store.records["code-1"]["metadata"]["annotation_hash"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_code_deterministic_judge_deduplicates_incoming_batch():
+    store = FakeVectorStore()
+    judge = JudgeAgent(model=ModelMustNotBeCalled(), vector_store=store)
+
+    first = (
+        "bug_report | Auth.login | src/auth.py | api | high | "
+        "Token refresh can fail"
+    )
+    changed = (
+        "bug_report | Auth.login | src/auth.py | api | high | "
+        "Token refresh can fail after session rotation"
+    )
+    judge_result = await judge.arun_deterministic({
+        "domain": "code",
+        "new_items": [first, changed],
+        "user_id": "user-1",
+    })
+
+    assert judge_result.confidence == 1.0
+    assert len(judge_result.operations) == 1
+    assert judge_result.operations[0].type == OperationType.ADD
+    assert judge_result.operations[0].content == changed

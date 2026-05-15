@@ -496,10 +496,13 @@ class JudgeAgent(BaseAgent):
     async def _deterministic_code(
         self, new_items: list, user_id: str,
     ) -> JudgeResult:
-        operations: list[Operation] = []
+        unique_items: dict[str, tuple[str, dict[str, Any]]] = {}
         for item in new_items:
             content = str(item)
             fields = code_annotation_fields_from_storage_content(content)
+            unique_items[code_annotation_identity_key(fields)] = (content, fields)
+
+        async def _process_one(content: str, fields: dict[str, Any]) -> Operation:
             match = await self._lookup_metadata_match({
                 "user_id": user_id,
                 "domain": JudgeDomain.CODE.value,
@@ -507,39 +510,44 @@ class JudgeAgent(BaseAgent):
             })
 
             if match is None:
-                operations.append(Operation(
+                return Operation(
                     type=OperationType.ADD,
                     content=content,
                     reason="No code annotation with the same repo/target/type key.",
-                ))
-                continue
+                )
 
             incoming_hash = code_annotation_content_hash(fields)
             existing_hash = str((match.metadata or {}).get("annotation_hash", ""))
             if incoming_hash == existing_hash:
-                operations.append(Operation(
+                return Operation(
                     type=OperationType.NOOP,
                     content=content,
                     embedding_id=match.id,
                     reason="Existing code annotation is unchanged.",
-                ))
-            else:
-                operations.append(Operation(
-                    type=OperationType.UPDATE,
-                    content=content,
-                    embedding_id=match.id,
-                    reason="Existing code annotation target has updated content.",
-                ))
+                )
+            return Operation(
+                type=OperationType.UPDATE,
+                content=content,
+                embedding_id=match.id,
+                reason="Existing code annotation target has updated content.",
+            )
 
+        operations = await asyncio.gather(*(
+            _process_one(content, fields)
+            for content, fields in unique_items.values()
+        ))
         return JudgeResult(operations=operations, confidence=1.0)
 
     async def _deterministic_snippet(
         self, new_items: list, user_id: str,
     ) -> JudgeResult:
-        operations: list[Operation] = []
+        unique_items: dict[str, tuple[str, dict[str, Any]]] = {}
         for item in new_items:
             content = str(item)
             fields = snippet_fields_from_storage_content(content)
+            unique_items[snippet_identity_hash(fields)] = (content, fields)
+
+        async def _process_one(content: str, fields: dict[str, Any]) -> Operation:
             match = await self._lookup_metadata_match({
                 "user_id": user_id,
                 "domain": JudgeDomain.SNIPPET.value,
@@ -547,19 +555,22 @@ class JudgeAgent(BaseAgent):
             })
 
             if match is None:
-                operations.append(Operation(
+                return Operation(
                     type=OperationType.ADD,
                     content=content,
                     reason="No snippet with the same normalized code/content identity.",
-                ))
-            else:
-                operations.append(Operation(
-                    type=OperationType.NOOP,
-                    content=content,
-                    embedding_id=match.id,
-                    reason="Same snippet was already stored for this user.",
-                ))
+                )
+            return Operation(
+                type=OperationType.NOOP,
+                content=content,
+                embedding_id=match.id,
+                reason="Same snippet was already stored for this user.",
+            )
 
+        operations = await asyncio.gather(*(
+            _process_one(content, fields)
+            for content, fields in unique_items.values()
+        ))
         return JudgeResult(operations=operations, confidence=1.0)
 
     async def _lookup_metadata_match(

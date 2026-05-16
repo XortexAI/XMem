@@ -505,7 +505,7 @@ async def test_code_deterministic_judge_updates_same_target_annotation():
 
     assert weaver_result.succeeded == 1
     assert store.records["code-1"]["metadata"]["annotation_key"] == (
-        "api|auth.login|bug_report"
+        "api|src/auth.py|auth.login|bug_report"
     )
     assert len(store.records["code-1"]["metadata"]["annotation_hash"]) == 64
 

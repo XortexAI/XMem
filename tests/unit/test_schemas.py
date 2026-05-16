@@ -10,8 +10,10 @@ from src.schemas.code import (
     SnippetRecord,
     SnippetType,
     code_annotation_fields_from_storage_content,
+    code_annotation_identity_key,
     code_annotation_pinecone_metadata,
     snippet_fields_from_storage_content,
+    snippet_identity_hash,
     snippet_pinecone_metadata,
     snippet_search_text,
     annotations_namespace,
@@ -116,5 +118,45 @@ def test_code_and_snippet_pinecone_metadata_have_stable_identity_keys():
     annotation_meta = code_annotation_pinecone_metadata("user-1", annotation_fields)
 
     assert annotation_meta["domain"] == "code"
-    assert annotation_meta["annotation_key"] == "api|auth.login|bug_report"
+    assert annotation_meta["annotation_key"] == "api|src/auth.py|auth.login|bug_report"
     assert len(annotation_meta["annotation_hash"]) == 64
+
+
+def test_code_annotation_identity_key_includes_file_and_symbol():
+    first = code_annotation_identity_key({
+        "repo": "api",
+        "target_file": "src/auth.py",
+        "target_symbol": "login",
+        "annotation_type": "bug_report",
+    })
+    second = code_annotation_identity_key({
+        "repo": "api",
+        "target_file": "src/admin.py",
+        "target_symbol": "login",
+        "annotation_type": "bug_report",
+    })
+
+    assert first == "api|src/auth.py|login|bug_report"
+    assert second == "api|src/admin.py|login|bug_report"
+    assert first != second
+
+
+def test_snippet_identity_hash_preserves_code_text_identity():
+    first = snippet_identity_hash({
+        "language": "python",
+        "code_snippet": "def normalize(value):\n    return value",
+        "content": "Normalize helper",
+    })
+    different_case = snippet_identity_hash({
+        "language": "python",
+        "code_snippet": "def normalize(value):\n    return Value",
+        "content": "Normalize helper",
+    })
+    different_spacing = snippet_identity_hash({
+        "language": "python",
+        "code_snippet": "def normalize(value):\n  return value",
+        "content": "Normalize helper",
+    })
+
+    assert first != different_case
+    assert first != different_spacing

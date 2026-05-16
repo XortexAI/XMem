@@ -312,6 +312,11 @@ def stable_hash(*parts: Any) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
+def strict_hash(*parts: Any) -> str:
+    joined = "\x1f".join(str(part or "") for part in parts)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
 def snippet_fields_from_storage_content(content: str) -> dict[str, str]:
     """Parse the pipe-delimited snippet string emitted by the ingest pipeline."""
     parts = [p.strip() for p in content.split(" | ")]
@@ -344,8 +349,9 @@ def snippet_identity_hash(fields: dict[str, Any]) -> str:
     code = normalize_code_text(fields.get("code_snippet"))
     content = normalize_lookup_text(fields.get("content"))
     language = normalize_lookup_text(fields.get("language"))
-    identity_body = code or content
-    return stable_hash(language, identity_body)
+    if code:
+        return strict_hash(language, code)
+    return stable_hash(language, content)
 
 
 def snippet_search_text(fields: dict[str, Any]) -> str:
@@ -410,10 +416,10 @@ def code_annotation_fields_from_storage_content(content: str) -> dict[str, str]:
 
 
 def code_annotation_identity_key(fields: dict[str, Any]) -> str:
-    target = fields.get("target_symbol") or fields.get("target_file") or ""
     return "|".join([
         normalize_lookup_text(fields.get("repo")),
-        normalize_lookup_text(target),
+        normalize_lookup_text(fields.get("target_file")),
+        normalize_lookup_text(fields.get("target_symbol")),
         normalize_lookup_text(fields.get("annotation_type")),
     ])
 

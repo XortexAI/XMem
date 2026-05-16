@@ -172,6 +172,50 @@ async def test_raw_search_returns_ranked_hits_without_tool_selection(
 
 
 @pytest.mark.asyncio
+async def test_raw_code_search_uses_code_annotation_store(vector_store, neo4j_client):
+    code_vector_store = type(vector_store)()
+    vector_store.seed(
+        "default-code-1",
+        "This stale default-store code record must not be returned.",
+        {
+            "user_id": "alice",
+            "domain": "code",
+            "target_symbol": "WrongStore",
+            "target_file": "src/wrong.py",
+        },
+        score=0.99,
+    )
+    code_vector_store.seed(
+        "annotation-code-1",
+        "RetryLoop can spin when the first retrieval attempt times out.",
+        {
+            "user_id": "alice",
+            "domain": "code",
+            "annotation_type": "bug_report",
+            "target_symbol": "RetryLoop",
+            "target_file": "src/retry.py",
+            "repo": "xmem",
+            "severity": "high",
+        },
+        score=0.8,
+    )
+    model = FakeChatModel()
+    pipeline = RetrievalPipeline(
+        model=model,
+        vector_store=vector_store,
+        code_vector_store=code_vector_store,
+        neo4j_client=neo4j_client,
+    )
+
+    results = await pipeline.search_raw("retry", "alice", ["code"], top_k=5)
+
+    assert [record.metadata["id"] for record in results] == ["annotation-code-1"]
+    assert "symbol=RetryLoop" in results[0].content
+    assert "WrongStore" not in results[0].content
+    assert not pipeline.model_with_tools.calls
+
+
+@pytest.mark.asyncio
 async def test_raw_search_runs_requested_domains_concurrently(
     vector_store, neo4j_client
 ):

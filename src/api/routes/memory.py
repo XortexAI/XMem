@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from typing import Any, Dict, List
 
@@ -71,7 +72,15 @@ def _model_name(model: Any) -> str:
 
 
 def _score_value(score: float | None) -> float:
-    return round(score, 3) if score is not None else 0.0
+    if score is None:
+        return 0.0
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return round(value, 3)
 
 
 def _build_domain_result(judge: Any, weaver: Any) -> DomainResult | None:

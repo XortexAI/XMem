@@ -143,7 +143,7 @@ async def test_raw_search_can_synthesize_answer_after_hits(vector_store, neo4j_c
 
 
 @pytest.mark.asyncio
-async def test_answer_from_sources_handles_missing_source_scores(vector_store, neo4j_client):
+async def test_answer_from_sources_handles_missing_or_non_finite_source_scores(vector_store, neo4j_client):
     model = FakeChatModel(responses=["Answer synthesized from a missing-score source."])
     pipeline = RetrievalPipeline(model=model, vector_store=vector_store, neo4j_client=neo4j_client)
 
@@ -155,6 +155,16 @@ async def test_answer_from_sources_handles_missing_source_scores(vector_store, n
                 content="Alice is building raw search.",
                 score=None,
             ),
+            SourceRecord(
+                domain="summary",
+                content="Alice is filtering non-finite scores.",
+                score=float("inf"),
+            ),
+            SourceRecord(
+                domain="summary",
+                content="Alice is handling invalid score math.",
+                score=float("nan"),
+            ),
         ],
     )
 
@@ -162,6 +172,8 @@ async def test_answer_from_sources_handles_missing_source_scores(vector_store, n
     assert len(model.calls) == 1
     prompt = model.calls[0][0].content
     assert "[summary] Alice is building raw search." in prompt
+    assert "(score: inf" not in prompt
+    assert "(score: nan" not in prompt
 
 
 @pytest.mark.asyncio

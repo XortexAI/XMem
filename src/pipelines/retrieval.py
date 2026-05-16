@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections import OrderedDict, defaultdict, deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
@@ -45,6 +46,16 @@ logger = logging.getLogger("xmem.pipelines.retrieval")
 CONFIDENCE_PER_SOURCE = 0.2
 PROFILE_CATALOG_CACHE_MAX = 512
 RETRIEVAL_PLAN_CACHE_MAX = 1024
+
+
+def _finite_score(score: float | None) -> float:
+    if score is None:
+        return 0.0
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
 
 
 class RetrievalLatencyTracker:
@@ -784,7 +795,7 @@ class RetrievalPipeline:
 
         lines = []
         for i, rec in enumerate(records, 1):
-            score = rec.score if rec.score is not None else 0.0
+            score = _finite_score(rec.score)
             score_str = f" (score: {score:.2f})" if score > 0 else ""
             lines.append(f"{i}. [{rec.domain}]{score_str} {rec.content}")
         return "\n".join(lines)

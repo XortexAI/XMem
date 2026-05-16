@@ -37,7 +37,7 @@ from src.config import settings
 from src.graph.neo4j_client import Neo4jClient
 from src.prompts.retrieval import ANSWER_PROMPT, build_system_prompt
 from src.schemas.retrieval import RetrievalResult, SourceRecord
-from src.schemas.code import snippets_namespace
+from src.schemas.code import annotations_namespace, snippets_namespace
 from src.storage.base import BaseVectorStore
 from src.storage.factory import get_vector_store
 
@@ -121,6 +121,8 @@ class RetrievalPipeline:
         model: Optional[BaseChatModel] = None,
         vector_store: Optional[BaseVectorStore] = None,
         neo4j_client: Optional[Neo4jClient] = None,
+        code_vector_store: Optional[BaseVectorStore] = None,
+        org_id: str = "default",
     ) -> None:
         # ── LLM ───────────────────────────────────────────────────────
         if model is None:
@@ -139,6 +141,15 @@ class RetrievalPipeline:
             self.vector_store = get_vector_store()
         else:
             self.vector_store = vector_store
+        if code_vector_store is not None:
+            self.code_vector_store = code_vector_store
+        elif vector_store is None:
+            self.code_vector_store = get_vector_store(
+                namespace=annotations_namespace(org_id),
+                create_if_not_exists=False,
+            )
+        else:
+            self.code_vector_store = self.vector_store
 
         # ── Graph store (Neo4j) ───────────────────────────────────────
         embed_fn = _get_embed_fn()
@@ -579,7 +590,7 @@ class RetrievalPipeline:
     ) -> List[SourceRecord]:
         """Semantic search over stored code annotations."""
 
-        results = await self.vector_store.search_by_text(
+        results = await self.code_vector_store.search_by_text(
             query_text=query,
             top_k=top_k,
             filters={

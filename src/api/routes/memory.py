@@ -41,6 +41,7 @@ from src.api.schemas import (
     WeaverSummary,
 )
 from src.pipelines.retrieval import RetrievalPipeline
+from src.api.ingestion_coordinator import UserIngestionCoordinator
 
 from bs4 import BeautifulSoup
 import json
@@ -50,6 +51,7 @@ from playwright.sync_api import sync_playwright
 logger = logging.getLogger("xmem.api.routes.memory")
 
 _ingest_semaphore = asyncio.Semaphore(5)
+_user_coordinator = UserIngestionCoordinator()
 
 router = APIRouter(
     prefix="/v1/memory",
@@ -561,17 +563,18 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
 
     try:
         async with _ingest_semaphore:
-            result = await asyncio.wait_for(
-                pipeline.run(
-                    user_query=req.user_query,
-                    agent_response=req.agent_response or "Acknowledged.",
-                    user_id=user_id,
-                    session_datetime=req.session_datetime,
-                    image_url=req.image_url,
-                    effort_level=req.effort_level,
-                ),
-                timeout=120.0
-            )
+            async with _user_coordinator.acquire(user_id):
+                result = await asyncio.wait_for(
+                    pipeline.run(
+                        user_query=req.user_query,
+                        agent_response=req.agent_response or "Acknowledged.",
+                        user_id=user_id,
+                        session_datetime=req.session_datetime,
+                        image_url=req.image_url,
+                        effort_level=req.effort_level,
+                    ),
+                    timeout=120.0
+                )
         data = IngestResponse(
             model=_model_name(pipeline.model),
             classification=_safe_classifications(result),
@@ -609,28 +612,29 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
 
     results = []
 
-    for item in req.items:
-        result = await asyncio.wait_for(
-            pipeline.run(
-                user_query=item.user_query,
-                agent_response=item.agent_response or "Acknowledged.",
-                user_id=user_id,
-                session_datetime=item.session_datetime,
-                image_url=item.image_url,
-                effort_level=item.effort_level,
-            ),
-            timeout=120.0
-        )
-        
-        data = IngestResponse(
-            model=_model_name(pipeline.model),
-            classification=_safe_classifications(result),
-            profile=_build_domain_result(result.get("profile_judge"), result.get("profile_weaver")),
-            temporal=_build_domain_result(result.get("temporal_judge"), result.get("temporal_weaver")),
-            summary=_build_domain_result(result.get("summary_judge"), result.get("summary_weaver")),
-            image=_build_domain_result(result.get("image_judge"), result.get("image_weaver")),
-        )
-        results.append(data)
+    async with _user_coordinator.acquire(user_id):
+        for item in req.items:
+            result = await asyncio.wait_for(
+                pipeline.run(
+                    user_query=item.user_query,
+                    agent_response=item.agent_response or "Acknowledged.",
+                    user_id=user_id,
+                    session_datetime=item.session_datetime,
+                    image_url=item.image_url,
+                    effort_level=item.effort_level,
+                ),
+                timeout=120.0
+            )
+            
+            data = IngestResponse(
+                model=_model_name(pipeline.model),
+                classification=_safe_classifications(result),
+                profile=_build_domain_result(result.get("profile_judge"), result.get("profile_weaver")),
+                temporal=_build_domain_result(result.get("temporal_judge"), result.get("temporal_weaver")),
+                summary=_build_domain_result(result.get("summary_judge"), result.get("summary_weaver")),
+                image=_build_domain_result(result.get("image_judge"), result.get("image_weaver")),
+            )
+            results.append(data)
 
     response_data = BatchIngestResponse(results=results)
     

@@ -59,8 +59,6 @@ Just type "X" on any AI platform of your choice and choose between the four mode
 
 https://github.com/user-attachments/assets/8e3349ab-63c9-4046-821d-ca8097948440
 
-https://github.com/user-attachments/assets/60a1d5c3-2efe-4ef1-abb3-e334f5cc5fb7
-
 ## Features
 
 ### Chrome Extension
@@ -81,11 +79,15 @@ Paste a shared ChatGPT, Claude, or Gemini link. XMem opens it, extracts every us
 
 You can also upload a transcript file (text, markdown, or JSON). XMem has built in parsing for Cursor and Antigravity exports and uses an LLM fallback for unknown formats.
 
+https://github.com/user-attachments/assets/4ff22405-b7ad-4b78-9189-9a6e3ebd5e40
+
 ### Scanner
 
 Scanner indexes entire Git repositories and builds a queryable knowledge graph of your codebase.
 
 Once indexed, you can ask natural language questions about files, functions, dependencies, and impact. Use it to understand a new repo, find where a feature lives, trace how code connects, or figure out what would break if you changed something.
+
+https://github.com/user-attachments/assets/f0fd393e-3820-404b-8d0e-e452e1dd52d0
 
 ### Multi-Domain Classification
 
@@ -164,6 +166,8 @@ pip install -e ".[local]"
 ```
 
 ## Architecture
+
+<img width="1536" height="1024" alt="WhatsApp Image 2026-04-27 at 11 50 51" src="https://github.com/user-attachments/assets/424d1c77-63e3-48ac-b457-6beecd437f65" />
 
 XMem is built as a **pipeline of specialized AI agents** coordinated by LangGraph, backed by a deterministic execution layer (Weaver) and three purpose-built storage engines.
 
@@ -259,28 +263,6 @@ User Query
 
 We tested XMem against every major memory solution on two established academic benchmarks. XMem outperforms across the board.
 
-### LongMemEval-S
-
-The industry standard benchmark for long-term conversational memory. Tests whether a system can recall facts, track preference changes, reason about time, and maintain context across sessions.
-
-<table>
-  <tr>
-    <th>Category</th>
-    <th>XMem (Gemini 3-flash)</th>
-    <th>Backboard.io (GPT-4o)</th>
-    <th>Mastra (GPT-4o)</th>
-    <th>Supermemory (GPT-4o)</th>
-  </tr>
-  <tr><td><strong>Single-Session Assistant</strong></td><td><strong>96.43</strong></td><td>98.2</td><td>82.1</td><td>96.43</td></tr>
-  <tr><td><strong>Single-Session User</strong></td><td><strong>97.1</strong></td><td>97.1</td><td>98.6</td><td>97.14</td></tr>
-  <tr><td><strong>Knowledge Update</strong></td><td><strong>91.2</strong></td><td>93.6</td><td>85.9</td><td>88.46</td></tr>
-  <tr><td><strong>Multi-Session</strong></td><td><strong>93.6</strong></td><td>91.7</td><td>79.7</td><td>71.43</td></tr>
-  <tr><td><strong>Temporal Reasoning</strong></td><td><strong>94.5</strong></td><td>91.7</td><td>85.7</td><td>76.69</td></tr>
-  <tr><td><strong>Single-Session Preference</strong></td><td><strong>87.0</strong></td><td>90.0</td><td>73.3</td><td>70.0</td></tr>
-</table>
-
-> XMem matches Backboard.io across all categories, both scoring near-perfect on session recall and preference tracking. XMem outperforms Mastra by **9.2 points** and Supermemory by **11.8 points** overall.
-
 ### LoCoMo
 
 Tests compositional reasoning over memory. Can the system connect facts across conversations, reason about temporal relationships, and answer open-ended questions?
@@ -304,6 +286,28 @@ Tests compositional reasoning over memory. Can the system connect facts across c
 </table>
 
 > On multi-hop reasoning (connecting facts from different conversations), XMem beats the next best system by **26.3 points**. Overall, XMem leads all systems at **91.5%**, ahead of Zep at 75.14.
+
+### LongMemEval-S
+
+The industry standard benchmark for long-term conversational memory. Tests whether a system can recall facts, track preference changes, reason about time, and maintain context across sessions.
+
+<table>
+  <tr>
+    <th>Category</th>
+    <th>XMem (Gemini 3-flash)</th>
+    <th>Backboard.io (GPT-4o)</th>
+    <th>Mastra (GPT-4o)</th>
+    <th>Supermemory (GPT-4o)</th>
+  </tr>
+  <tr><td><strong>Single-Session Assistant</strong></td><td><strong>96.43</strong></td><td>98.2</td><td>82.1</td><td>96.43</td></tr>
+  <tr><td><strong>Single-Session User</strong></td><td><strong>97.1</strong></td><td>97.1</td><td>98.6</td><td>97.14</td></tr>
+  <tr><td><strong>Knowledge Update</strong></td><td><strong>91.2</strong></td><td>93.6</td><td>85.9</td><td>88.46</td></tr>
+  <tr><td><strong>Multi-Session</strong></td><td><strong>93.6</strong></td><td>91.7</td><td>79.7</td><td>71.43</td></tr>
+  <tr><td><strong>Temporal Reasoning</strong></td><td><strong>94.5</strong></td><td>91.7</td><td>85.7</td><td>76.69</td></tr>
+  <tr><td><strong>Single-Session Preference</strong></td><td><strong>87.0</strong></td><td>90.0</td><td>73.3</td><td>70.0</td></tr>
+</table>
+
+> XMem matches Backboard.io across all categories, both scoring near-perfect on session recall and preference tracking. XMem outperforms Mastra by **9.2 points** and Supermemory by **11.8 points** overall.
 
 ### How We Benchmark
 - **Evaluation**: LLM-as-Judge using Gemini with structured rubrics
@@ -336,7 +340,9 @@ npm install && npm run build
 
 Load `dist/` in Chrome via `chrome://extensions` &rarr; "Load unpacked". Point it to your server URL.
 
-https://github.com/user-attachments/assets/97793cf9-d247-4d02-9c31-3cc9bbbf89aa
+
+https://github.com/user-attachments/assets/605985c3-ef27-4096-a28c-b0b4cc6f8b8d
+
 
 ### 3. Index a Repository (Optional)
 

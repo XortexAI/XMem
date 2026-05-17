@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Any, Dict, List
 
@@ -57,6 +58,12 @@ _ingest_semaphore = asyncio.Semaphore(5)
 router = APIRouter(
     prefix="/v1/memory",
     tags=["memory"],
+    dependencies=[Depends(require_ready), Depends(enforce_rate_limit)],
+)
+
+v2_router = APIRouter(
+    prefix="/v2/memory",
+    tags=["memory-v2"],
     dependencies=[Depends(require_ready), Depends(enforce_rate_limit)],
 )
 
@@ -189,8 +196,6 @@ async def run_batch_ingest_job(payload: Dict[str, Any]) -> Dict[str, Any]:
 # Launching Chromium from cold takes 3-5s. We keep a singleton alive and
 # reuse it across scrape requests. The browser is thread-safe when each
 # request uses its own BrowserContext.
-
-import threading
 
 _browser_lock = threading.Lock()
 _pw_instance = None
@@ -602,32 +607,18 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
     pipeline = get_ingest_pipeline()
 
     user_id = get_owner_id(user)
-    payload = {
-        "user_query": req.user_query,
-        "agent_response": req.agent_response or "Acknowledged.",
-        "user_id": user_id,
-        "session_datetime": req.session_datetime,
-        "image_url": req.image_url,
-        "effort_level": req.effort_level,
-    }
-
-    try:
-        store = get_job_store()
-        job = await asyncio.to_thread(
-            store.enqueue,
-            job_type="memory.ingest",
-            owner_id=user_id,
-            payload=payload,
-        )
-        elapsed = round((time.perf_counter() - start) * 1000, 2)
-        return _job_enqueued_response(request, job, elapsed)
-    except RuntimeError:
-        logger.warning("Job store unavailable; falling back to synchronous ingest")
 
     try:
         async with _ingest_semaphore:
             result = await asyncio.wait_for(
-                pipeline.run(**payload),
+                pipeline.run(
+                    user_query=req.user_query,
+                    agent_response=req.agent_response or "Acknowledged.",
+                    user_id=user_id,
+                    session_datetime=req.session_datetime,
+                    image_url=req.image_url,
+                    effort_level=req.effort_level,
+                ),
                 timeout=120.0
             )
         data = IngestResponse(
@@ -664,24 +655,6 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
     start = time.perf_counter()
     pipeline = get_ingest_pipeline()
     user_id = get_owner_id(user)
-    payload = {
-        "user_id": user_id,
-        "items": [item.model_dump() for item in req.items],
-    }
-
-    try:
-        store = get_job_store()
-        job = await asyncio.to_thread(
-            store.enqueue,
-            job_type="memory.batch_ingest",
-            owner_id=user_id,
-            payload=payload,
-            timeout_seconds=120.0 * max(len(req.items), 1),
-        )
-        elapsed = round((time.perf_counter() - start) * 1000, 2)
-        return _job_enqueued_response(request, job, elapsed)
-    except RuntimeError:
-        logger.warning("Job store unavailable; falling back to synchronous batch ingest")
 
     results = []
 
@@ -712,6 +685,71 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
     
     elapsed = round((time.perf_counter() - start) * 1000, 2)
     return _wrap(request, response_data, elapsed)
+
+
+@v2_router.post(
+    "/ingest",
+    response_model=APIResponse,
+    summary="Queue a conversation turn for durable background memory ingest",
+)
+async def enqueue_ingest_memory(req: IngestRequest, request: Request, user: dict = Depends(require_api_key)):
+    start = time.perf_counter()
+    user_id = get_owner_id(user)
+    payload = {
+        "user_query": req.user_query,
+        "agent_response": req.agent_response or "Acknowledged.",
+        "user_id": user_id,
+        "session_datetime": req.session_datetime,
+        "image_url": req.image_url,
+        "effort_level": req.effort_level,
+    }
+
+    try:
+        store = get_job_store()
+        job = await asyncio.to_thread(
+            store.enqueue,
+            job_type="memory.ingest",
+            owner_id=user_id,
+            payload=payload,
+        )
+    except RuntimeError as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.warning("Job store unavailable for v2 memory ingest: %s", exc)
+        return _error(request, str(exc), 503, elapsed)
+
+    elapsed = round((time.perf_counter() - start) * 1000, 2)
+    return _job_enqueued_response(request, job, elapsed)
+
+
+@v2_router.post(
+    "/batch-ingest",
+    response_model=APIResponse,
+    summary="Queue multiple conversation turns for durable background memory ingest",
+)
+async def enqueue_batch_ingest_memory(req: BatchIngestRequest, request: Request, user: dict = Depends(require_api_key)):
+    start = time.perf_counter()
+    user_id = get_owner_id(user)
+    payload = {
+        "user_id": user_id,
+        "items": [item.model_dump() for item in req.items],
+    }
+
+    try:
+        store = get_job_store()
+        job = await asyncio.to_thread(
+            store.enqueue,
+            job_type="memory.batch_ingest",
+            owner_id=user_id,
+            payload=payload,
+            timeout_seconds=120.0 * max(len(req.items), 1),
+        )
+    except RuntimeError as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.warning("Job store unavailable for v2 memory batch ingest: %s", exc)
+        return _error(request, str(exc), 503, elapsed)
+
+    elapsed = round((time.perf_counter() - start) * 1000, 2)
+    return _job_enqueued_response(request, job, elapsed)
 
 
 

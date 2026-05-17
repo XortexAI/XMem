@@ -62,11 +62,18 @@ class JobStore:
         payload: Dict[str, Any],
         idempotency_key: str | None = None,
         timeout_seconds: float | None = None,
+        lease_seconds: float | None = None,
         max_retries: int | None = None,
     ) -> Dict[str, Any]:
         now = _now()
         job_id = str(uuid.uuid4())
         key = idempotency_key or self.make_idempotency_key(job_type, owner_id, payload)
+        effective_timeout = settings.job_timeout_seconds if timeout_seconds is None else timeout_seconds
+        effective_lease = (
+            max(settings.job_lease_seconds, effective_timeout)
+            if lease_seconds is None
+            else lease_seconds
+        )
         doc = {
             "job_id": job_id,
             "job_type": job_type,
@@ -76,7 +83,8 @@ class JobStore:
             "status": JobStatus.PENDING.value,
             "retry_count": 0,
             "max_retries": settings.job_max_retries if max_retries is None else max_retries,
-            "timeout_seconds": settings.job_timeout_seconds if timeout_seconds is None else timeout_seconds,
+            "timeout_seconds": effective_timeout,
+            "lease_seconds": effective_lease,
             "error": None,
             "result": None,
             "run_after": now,
@@ -107,16 +115,6 @@ class JobStore:
 
     def claim_next(self, worker_id: str) -> Optional[Dict[str, Any]]:
         now = _now()
-        stale_before = now - timedelta(seconds=settings.job_lease_seconds)
-        query = {
-            "$or": [
-                {"status": JobStatus.PENDING.value, "run_after": {"$lte": now}},
-                {
-                    "status": JobStatus.RUNNING.value,
-                    "started_at": {"$lt": stale_before},
-                },
-            ]
-        }
         update = {
             "$set": {
                 "status": JobStatus.RUNNING.value,
@@ -125,12 +123,38 @@ class JobStore:
                 "updated_at": now,
             }
         }
-        return self.jobs.find_one_and_update(
-            query,
+        pending = self.jobs.find_one_and_update(
+            {"status": JobStatus.PENDING.value, "run_after": {"$lte": now}},
             update,
             sort=[("run_after", ASCENDING), ("created_at", ASCENDING)],
             return_document=ReturnDocument.AFTER,
         )
+        if pending:
+            return pending
+
+        running = self.jobs.find(
+            {"status": JobStatus.RUNNING.value, "started_at": {"$ne": None}},
+        ).sort([("started_at", ASCENDING)])
+        for job in running:
+            try:
+                lease_seconds = float(job.get("lease_seconds") or settings.job_lease_seconds)
+            except (TypeError, ValueError):
+                lease_seconds = settings.job_lease_seconds
+            stale_before = now - timedelta(seconds=lease_seconds)
+            if job.get("started_at") >= stale_before:
+                continue
+            claimed = self.jobs.find_one_and_update(
+                {
+                    "job_id": job["job_id"],
+                    "status": JobStatus.RUNNING.value,
+                    "started_at": job.get("started_at"),
+                },
+                update,
+                return_document=ReturnDocument.AFTER,
+            )
+            if claimed:
+                return claimed
+        return None
 
     def succeed(self, job_id: str, result: Any) -> None:
         now = _now()

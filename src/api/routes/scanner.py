@@ -642,6 +642,7 @@ async def _enqueue_or_start_scanner_job(
             payload=payload,
             idempotency_key=f"{job_type}:{scanner_job_id}",
             timeout_seconds=settings.job_timeout_seconds * 5,
+            lease_seconds=settings.job_timeout_seconds * 5,
         )
         return job["job_id"]
     except RuntimeError:

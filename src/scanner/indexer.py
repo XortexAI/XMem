@@ -46,7 +46,8 @@ from src.schemas.code import (
     files_namespace,
     directories_namespace,
 )
-from src.storage.pinecone import PineconeVectorStore
+from src.storage.base import BaseVectorStore
+from src.storage.factory import get_vector_store
 from src.config import settings
 
 logger = logging.getLogger("xmem.scanner.indexer")
@@ -112,21 +113,15 @@ class Indexer:
         else:
             self.code_graph = code_graph
 
-        # Pinecone stores (lazily created per namespace)
-        self._pinecone_stores: Dict[str, PineconeVectorStore] = {}
+        # Vector stores (lazily created per namespace)
+        self._pinecone_stores: Dict[str, BaseVectorStore] = {}
 
         # Stats
         self._stats: Dict[str, int] = defaultdict(int)
 
-    def _get_pinecone(self, namespace: str) -> PineconeVectorStore:
+    def _get_pinecone(self, namespace: str) -> BaseVectorStore:
         if namespace not in self._pinecone_stores:
-            self._pinecone_stores[namespace] = PineconeVectorStore(
-                api_key=settings.pinecone_api_key,
-                index_name=settings.pinecone_index_name,
-                dimension=settings.pinecone_dimension,
-                metric=settings.pinecone_metric,
-                cloud=settings.pinecone_cloud,
-                region=settings.pinecone_region,
+            self._pinecone_stores[namespace] = get_vector_store(
                 namespace=namespace,
                 create_if_not_exists=False,
             )

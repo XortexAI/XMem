@@ -87,7 +87,7 @@ from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
 from src.storage.base import BaseVectorStore, SearchResult
-from src.storage.pinecone import PineconeVectorStore
+from src.storage.factory import get_vector_store
 from src.config.effort import EffortLevel, EffortConfig, get_effort_config, chunk_text, estimate_tokens
 
 logger = logging.getLogger("xmem.pipelines.ingest")
@@ -104,11 +104,19 @@ from google.genai import types
 
 _embedding_client: Optional[genai.Client] = None
 _bedrock_embedding_client = None
+_fastembed_model = None
 
 
 def _is_bedrock_embedding() -> bool:
     """Check if the configured embedding model is an Amazon Bedrock model."""
     return settings.embedding_model.lower().startswith("amazon.")
+
+
+def _embedding_provider() -> str:
+    provider = (settings.embedding_provider or "auto").strip().lower()
+    if provider == "auto":
+        return "bedrock" if _is_bedrock_embedding() else "gemini"
+    return provider
 
 
 def get_embedding_client() -> genai.Client:
@@ -139,6 +147,32 @@ def _get_bedrock_embedding_client():
     return _bedrock_embedding_client
 
 
+def _get_fastembed_model():
+    global _fastembed_model
+    if _fastembed_model is None:
+        try:
+            from fastembed import TextEmbedding
+        except ImportError as exc:
+            raise ImportError(
+                "FastEmbed is not installed. Install local embedding dependencies "
+                "with: pip install -e \".[local]\""
+            ) from exc
+        _fastembed_model = TextEmbedding(model_name=settings.fastembed_model)
+        logger.info("Loaded FastEmbed model: %s", settings.fastembed_model)
+    return _fastembed_model
+
+
+def _ensure_embedding_dimension(values: tuple[float, ...], provider: str) -> tuple[float, ...]:
+    expected = int(settings.pinecone_dimension)
+    if len(values) != expected:
+        raise ValueError(
+            f"{provider} embedding dimension is {len(values)}, but PINECONE_DIMENSION "
+            f"is {expected}. Set PINECONE_DIMENSION to match the selected embedding model "
+            "before creating vector indexes."
+        )
+    return values
+
+
 @functools.lru_cache(maxsize=4096)
 def embed_text(text: str) -> tuple[float, ...]:
     """Embed a single text string → tuple of floats.
@@ -146,9 +180,19 @@ def embed_text(text: str) -> tuple[float, ...]:
     Dispatches to Google GenAI or Amazon Bedrock based on the
     EMBEDDING_MODEL setting.
     """
-    if _is_bedrock_embedding():
+    provider = _embedding_provider()
+    if provider == "gemini":
+        return _embed_text_gemini(text)
+    if provider == "bedrock":
         return _embed_text_bedrock(text)
-    return _embed_text_gemini(text)
+    if provider == "ollama":
+        return _embed_text_ollama(text)
+    if provider == "fastembed":
+        return _embed_text_fastembed(text)
+    raise ValueError(
+        f"Unsupported EMBEDDING_PROVIDER={provider!r}. "
+        "Use auto, gemini, bedrock, ollama, or fastembed."
+    )
 
 
 def _embed_text_gemini(text: str) -> tuple[float, ...]:
@@ -206,6 +250,45 @@ def _embed_text_bedrock(text: str) -> tuple[float, ...]:
 
     response_body = _json.loads(response["body"].read())
     return tuple(response_body["embeddings"][0]["embedding"])
+
+
+def _embed_text_ollama(text: str) -> tuple[float, ...]:
+    """Embed text with a local Ollama server.
+
+    Supports Ollama's newer /api/embed endpoint and falls back to the older
+    /api/embeddings shape for compatibility.
+    """
+    import httpx
+
+    model = settings.ollama_embedding_model or settings.embedding_model
+    if model == "gemini-embedding-001":
+        model = "nomic-embed-text"
+
+    base_url = settings.ollama_base_url.rstrip("/")
+    with httpx.Client(timeout=120.0) as client:
+        response = client.post(
+            f"{base_url}/api/embed",
+            json={"model": model, "input": text},
+        )
+        if response.status_code == 404:
+            response = client.post(
+                f"{base_url}/api/embeddings",
+                json={"model": model, "prompt": text},
+            )
+        response.raise_for_status()
+        data = response.json()
+
+    if "embeddings" in data:
+        [embedding] = data["embeddings"]
+    else:
+        embedding = data["embedding"]
+    return _ensure_embedding_dimension(tuple(float(v) for v in embedding), "Ollama")
+
+
+def _embed_text_fastembed(text: str) -> tuple[float, ...]:
+    model = _get_fastembed_model()
+    embedding = next(model.embed([text]))
+    return _ensure_embedding_dimension(tuple(float(v) for v in embedding), "FastEmbed")
 
 
 # ---------------------------------------------------------------------------
@@ -284,25 +367,13 @@ class IngestPipeline:
         if vector_store:
             self.vector_store = vector_store
         else:
-            self.vector_store = PineconeVectorStore(
-                api_key=settings.pinecone_api_key,
-                index_name=settings.pinecone_index_name,
-                dimension=settings.pinecone_dimension,
-                metric=settings.pinecone_metric,
-                cloud=settings.pinecone_cloud,
-                region=settings.pinecone_region,
+            self.vector_store = get_vector_store(
                 namespace=settings.pinecone_namespace,
             )
-        logger.info("Pinecone vector store initialised.")
+        logger.info("Vector store initialised (provider=%s).", settings.vector_store_provider)
 
         # ── Code annotations Pinecone store (annotations namespace) ──
-        self.code_vector_store = PineconeVectorStore(
-            api_key=settings.pinecone_api_key,
-            index_name=settings.pinecone_index_name,
-            dimension=settings.pinecone_dimension,
-            metric=settings.pinecone_metric,
-            cloud=settings.pinecone_cloud,
-            region=settings.pinecone_region,
+        self.code_vector_store = get_vector_store(
             namespace=annotations_namespace(org_id),
             create_if_not_exists=False,
         )
@@ -370,7 +441,7 @@ class IngestPipeline:
         )
 
         # Snippet stores are user-scoped — lazily created per user_id
-        self._snippet_stores: Dict[str, PineconeVectorStore] = {}
+        self._snippet_stores: Dict[str, BaseVectorStore] = {}
 
         # ── Weaver ────────────────────────────────────────────────────
         self.weaver = Weaver(
@@ -502,17 +573,11 @@ class IngestPipeline:
     # User-scoped snippet store
     # ------------------------------------------------------------------
 
-    def _get_snippet_store(self, user_id: str) -> PineconeVectorStore:
-        """Get or create a PineconeVectorStore for a user's snippets namespace."""
+    def _get_snippet_store(self, user_id: str) -> BaseVectorStore:
+        """Get or create a vector store for a user's snippets namespace."""
         if user_id not in self._snippet_stores:
             ns = snippets_namespace(user_id)
-            self._snippet_stores[user_id] = PineconeVectorStore(
-                api_key=settings.pinecone_api_key,
-                index_name=settings.pinecone_index_name,
-                dimension=settings.pinecone_dimension,
-                metric=settings.pinecone_metric,
-                cloud=settings.pinecone_cloud,
-                region=settings.pinecone_region,
+            self._snippet_stores[user_id] = get_vector_store(
                 namespace=ns,
                 create_if_not_exists=False,
             )

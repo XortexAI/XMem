@@ -67,6 +67,8 @@ from .base import (
 )
 
 # Import concrete implementations
+from .factory import get_vector_store
+from .local import ChromaVectorStore, PGVectorStore, SQLiteVectorStore
 from .pinecone import PineconeVectorStore
 
 # Re-export exceptions for convenience
@@ -95,7 +97,11 @@ __all__ = [
     "DistanceMetric",
     
     # Concrete implementations
+    "get_vector_store",
     "PineconeVectorStore",
+    "PGVectorStore",
+    "ChromaVectorStore",
+    "SQLiteVectorStore",
     
     # Exceptions (for convenience)
     "VectorStoreError",

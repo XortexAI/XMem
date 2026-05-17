@@ -1,0 +1,16 @@
+name: xmem
+
+services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: xmem-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/local-password
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+
+volumes:
+  neo4j_data:

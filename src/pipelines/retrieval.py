@@ -34,7 +34,8 @@ from src.graph.neo4j_client import Neo4jClient
 from src.prompts.retrieval import ANSWER_PROMPT, build_system_prompt
 from src.schemas.retrieval import RetrievalResult, SourceRecord
 from src.schemas.code import snippets_namespace
-from src.storage.pinecone import PineconeVectorStore
+from src.storage.base import BaseVectorStore
+from src.storage.factory import get_vector_store
 
 load_dotenv()
 
@@ -97,7 +98,7 @@ class RetrievalPipeline:
     def __init__(
         self,
         model: Optional[BaseChatModel] = None,
-        vector_store: Optional[PineconeVectorStore] = None,
+        vector_store: Optional[BaseVectorStore] = None,
         neo4j_client: Optional[Neo4jClient] = None,
     ) -> None:
         # ── LLM ───────────────────────────────────────────────────────
@@ -113,7 +114,7 @@ class RetrievalPipeline:
 
         # ── Vector store (Pinecone) ───────────────────────────────────
         if vector_store is None:
-            self.vector_store = PineconeVectorStore()
+            self.vector_store = get_vector_store()
         else:
             self.vector_store = vector_store
 
@@ -131,7 +132,7 @@ class RetrievalPipeline:
             self.neo4j = neo4j_client
 
         self.embed_fn = embed_fn
-        self._snippet_stores: Dict[str, PineconeVectorStore] = {}
+        self._snippet_stores: Dict[str, BaseVectorStore] = {}
 
         logger.info("RetrievalPipeline initialized")
 
@@ -437,16 +438,10 @@ class RetrievalPipeline:
 
     # -- Snippet: Pinecone semantic search ─────────────────────────────
 
-    def _get_snippet_store(self, user_id: str) -> PineconeVectorStore:
+    def _get_snippet_store(self, user_id: str) -> BaseVectorStore:
         if user_id not in self._snippet_stores:
             ns = snippets_namespace(user_id)
-            self._snippet_stores[user_id] = PineconeVectorStore(
-                api_key=settings.pinecone_api_key,
-                index_name=settings.pinecone_index_name,
-                dimension=settings.pinecone_dimension,
-                metric=settings.pinecone_metric,
-                cloud=settings.pinecone_cloud,
-                region=settings.pinecone_region,
+            self._snippet_stores[user_id] = get_vector_store(
                 namespace=ns,
                 create_if_not_exists=False,
             )

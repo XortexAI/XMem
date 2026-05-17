@@ -66,6 +66,19 @@ class Settings(BaseSettings):
         description="OpenRouter vision model name"
     )
 
+    ollama_base_url: str = Field(
+        default="http://localhost:11434",
+        description="Base URL for local Ollama models"
+    )
+    ollama_model: str = Field(
+        default="llama3.1:8b",
+        description="Ollama chat model name"
+    )
+    ollama_vision_model: str = Field(
+        default="llava:latest",
+        description="Ollama vision-capable model name"
+    )
+
     aws_access_key_id: Optional[str] = Field(
         default=None,
         description="AWS access key ID for Bedrock"
@@ -104,9 +117,9 @@ class Settings(BaseSettings):
     retrieval_model: Optional[str] = Field(default=None, description="Model for retrieval agent")
     code_model: Optional[str] = Field(default=None, description="Model for code annotation agent")
 
-    pinecone_api_key: str = Field(
-        ...,
-        description="Pinecone API key (required)"
+    pinecone_api_key: Optional[str] = Field(
+        default=None,
+        description="Pinecone API key (required when VECTOR_STORE_PROVIDER=pinecone)"
     )
     pinecone_index_name: str = Field(
         default="xmem-index",
@@ -133,6 +146,35 @@ class Settings(BaseSettings):
         description="Pinecone region for embeddings"
     )
 
+    vector_store_provider: str = Field(
+        default="pinecone",
+        description="Vector store backend: pinecone, pgvector, chroma, or sqlite",
+    )
+    pgvector_url: str = Field(
+        default="postgresql://xmem:xmem@localhost:5432/xmem",
+        description="Postgres/pgvector connection URL",
+    )
+    pgvector_table: str = Field(
+        default="xmem_vectors",
+        description="Postgres table used by the pgvector backend",
+    )
+    app_store_provider: str = Field(
+        default="mongo",
+        description="App metadata store: mongo, postgres, or memory",
+    )
+    app_postgres_url: Optional[str] = Field(
+        default=None,
+        description="Postgres URL for app metadata. Defaults to PGVECTOR_URL.",
+    )
+    chroma_persist_dir: str = Field(
+        default=".xmem/chroma",
+        description="Local Chroma persistence directory",
+    )
+    sqlite_vector_path: str = Field(
+        default=".xmem/xmem_vectors.db",
+        description="Local SQLite vector store path",
+    )
+
     ssl_ca_bundle: Optional[str] = Field(
         default=None,
         description=(
@@ -152,6 +194,18 @@ class Settings(BaseSettings):
     embedding_model: str = Field(
         default="gemini-embedding-001",
         description="Embedding model name (e.g. gemini-embedding-001, amazon.nova-2-multimodal-embeddings-v1:0)"
+    )
+    embedding_provider: str = Field(
+        default="auto",
+        description="Embedding provider: auto, gemini, bedrock, ollama, or fastembed",
+    )
+    ollama_embedding_model: Optional[str] = Field(
+        default=None,
+        description="Ollama embedding model override, e.g. nomic-embed-text",
+    )
+    fastembed_model: str = Field(
+        default="BAAI/bge-small-en-v1.5",
+        description="FastEmbed model for local embeddings",
     )
 
     mongodb_uri: str = Field(
@@ -359,7 +413,7 @@ class Settings(BaseSettings):
     @field_validator("fallback_order")
     @classmethod
     def validate_fallback_order(cls, v: List[str]) -> List[str]:
-        valid_providers = {"gemini", "claude", "openai", "openrouter", "bedrock"}
+        valid_providers = {"gemini", "claude", "openai", "openrouter", "bedrock", "ollama"}
         for provider in v:
             if provider not in valid_providers:
                 raise ValueError(
@@ -370,8 +424,11 @@ class Settings(BaseSettings):
      
     def model_post_init(self, __context) -> None:
         """Validate that at least one LLM API key is provided."""
+        if "ollama" in [p.lower() for p in self.fallback_order]:
+            return
         if not any([self.gemini_api_key, self.claude_api_key, self.openai_api_key, self.openrouter_api_key, self.aws_access_key_id]):
             raise ValueError(
                 "At least one LLM API key must be provided "
-                "(GEMINI_API_KEY, CLAUDE_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, or AWS_ACCESS_KEY_ID)"
+                "(GEMINI_API_KEY, CLAUDE_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, "
+                "AWS_ACCESS_KEY_ID, or include ollama in FALLBACK_ORDER)"
             )

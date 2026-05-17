@@ -35,6 +35,7 @@ _BUILDERS = {
     "openai": lambda **kw: _build_from_module("openai", "build_openai_model", **kw),
     "openrouter": lambda **kw: _build_from_module("openrouter", "build_openrouter_model", **kw),
     "bedrock": lambda **kw: _build_from_module("bedrock", "build_bedrock_model", **kw),
+    "ollama": lambda **kw: _build_from_module("ollama", "build_ollama_model", **kw),
 }
 
 
@@ -44,6 +45,7 @@ _KEY_MAP = {
     "openai": lambda: settings.openai_api_key,
     "openrouter": lambda: settings.openrouter_api_key,
     "bedrock": lambda: settings.aws_access_key_id,
+    "ollama": lambda: True,
 }
 
 
@@ -97,6 +99,7 @@ _VISION_MODEL_MAP = {
     "openai": lambda: settings.openai_vision_model,
     "openrouter": lambda: settings.openrouter_vision_model,
     "bedrock": lambda: settings.bedrock_vision_model,
+    "ollama": lambda: settings.ollama_vision_model,
 }
 
 

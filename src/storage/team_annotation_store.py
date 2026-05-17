@@ -1,6 +1,6 @@
-"""Team annotation store using Pinecone for vector storage and retrieval.
+"""Team annotation store using the configured vector backend.
 
-Team annotations are stored in Pinecone with metadata for semantic search.
+Team annotations are stored with metadata for semantic search.
 Each annotation is associated with a project and can target specific files/symbols.
 """
 
@@ -11,7 +11,8 @@ from typing import Dict, List, Optional, Any
 
 from src.config import settings
 from src.pipelines.ingest import embed_text
-from src.storage.pinecone import PineconeVectorStore, SearchResult
+from src.storage.base import BaseVectorStore, SearchResult
+from src.storage.factory import get_vector_store
 
 logger = logging.getLogger("xmem.storage.team_annotation_store")
 
@@ -56,17 +57,15 @@ class TeamAnnotationStore:
         self._index_name = index_name or settings.pinecone_index_name
         self._dimension = dimension or settings.pinecone_dimension
 
-        # Cache of project stores (namespace -> PineconeVectorStore)
-        self._stores: Dict[str, PineconeVectorStore] = {}
+        # Cache of project stores (namespace -> vector store)
+        self._stores: Dict[str, BaseVectorStore] = {}
 
-    def _get_store(self, project_id: str) -> PineconeVectorStore:
-        """Get or create a PineconeVectorStore for a project namespace."""
+    def _get_store(self, project_id: str) -> BaseVectorStore:
+        """Get or create a vector store for a project namespace."""
         namespace = f"annotations:{project_id}"
 
         if namespace not in self._stores:
-            self._stores[namespace] = PineconeVectorStore(
-                api_key=self._api_key,
-                index_name=self._index_name,
+            self._stores[namespace] = get_vector_store(
                 dimension=self._dimension,
                 namespace=namespace,
                 create_if_not_exists=True,

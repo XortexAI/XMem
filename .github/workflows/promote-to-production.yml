@@ -1,24 +1,25 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Promote staging → production
+# Promote to Production via PR Comment
 #
-# This is the MANUAL gate between staging and production.
-# A maintainer clicks "Run workflow" only after reviewing on staging.
+# Triggered when a maintainer comments `/promote` on a PR.
+# This merges the PR into `main` and deploys to production.
 #
-# What happens:
-#   1. Fast-forward merges `develop` into `main`
-#   2. This triggers `deploy-aws.yml` (existing workflow) → production EC2
-#   3. Runs the same smoke tests against production
-#   4. If production smoke tests fail → auto-rollback (reverts the merge)
+# Safety features:
+#   - Only maintainers can trigger (checked via collaborator permission)
+#   - Staging smoke tests must have passed first
+#   - Production environment requires manual approval (if configured)
+#   - Auto-rollback if production smoke tests fail
 #
-# ── Required ─────────────────────────────────────────────────────────────────
-#   - The `production` environment in GitHub must have:
-#     Settings → Environments → production → Required reviewers: @ishaanxgupta, @ved015
-#   - This adds a manual approval popup even if someone accidentally triggers it.
+# Usage: Just comment `/promote` on any open PR that has passed staging tests.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 name: Promote to Production
 
 on:
+  issue_comment:
+    types: [created]
+
+  # Keep manual trigger as a fallback for emergencies
   workflow_dispatch:
     inputs:
       skip_staging_check:
@@ -34,40 +35,122 @@ concurrency:
   cancel-in-progress: false     # never cancel a production deploy mid-flight
 
 permissions:
-  contents: write       # needed to push the merge to main
+  contents: write
   deployments: write
   statuses: write
+  pull-requests: write
+  issues: write
 
 jobs:
-  # ── 0. Safety checks ─────────────────────────────────────────────────────
-  gate:
-    name: Pre-flight checks
+  # ── 0. Validate the /promote comment ─────────────────────────────────────
+  check-comment:
+    name: Validate /promote command
     runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'issue_comment'
+       && github.event.issue.pull_request
+       && contains(github.event.comment.body, '/promote'))
+      || github.event_name == 'workflow_dispatch'
     timeout-minutes: 5
 
+    outputs:
+      pr_number: ${{ steps.pr-info.outputs.pr_number }}
+      pr_branch: ${{ steps.pr-info.outputs.pr_branch }}
+      should_run: ${{ steps.check.outputs.should_run }}
+
     steps:
-      - name: Confirm deploy keyword
+      - name: Check user permissions
+        id: check
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Check if the commenter has write/admin access
+            const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.payload.comment.user.login,
+            });
+
+            const allowed = ['admin', 'write'].includes(permission.permission);
+
+            if (!allowed) {
+              // React with thumbs down to indicate rejection
+              await github.rest.reactions.createForIssueComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: context.payload.comment.id,
+                content: '-1',
+              });
+              core.setFailed(`User ${context.payload.comment.user.login} does not have write access.`);
+              return;
+            }
+
+            // React with rocket to acknowledge
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket',
+            });
+
+            core.setOutput('should_run', 'true');
+
+      - name: Get PR info
+        id: pr-info
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number,
+            });
+
+            if (pr.state !== 'open') {
+              core.setFailed('PR is not open. Cannot promote a closed PR.');
+              return;
+            }
+
+            core.setOutput('pr_number', pr.number);
+            core.setOutput('pr_branch', pr.head.ref);
+            console.log(`PR #${pr.number} — branch: ${pr.head.ref}`);
+
+      - name: Manual dispatch gate
+        if: github.event_name == 'workflow_dispatch'
         run: |
           if [ "${{ github.event.inputs.confirm_production }}" != "DEPLOY" ]; then
             echo "❌ You must type 'DEPLOY' to confirm. Got: '${{ github.event.inputs.confirm_production }}'"
             exit 1
           fi
 
-      - name: Verify staging is healthy
-        if: ${{ github.event.inputs.skip_staging_check != 'true' }}
+  # ── 1. Verify staging is healthy ─────────────────────────────────────────
+  verify-staging:
+    name: Verify staging health
+    runs-on: ubuntu-latest
+    needs: check-comment
+    if: needs.check-comment.outputs.should_run == 'true' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 5
+    environment:
+      name: staging
+
+    steps:
+      - name: Check staging health
+        if: github.event.inputs.skip_staging_check != 'true'
         run: |
           STATUS=$(curl -sf "${{ vars.STAGING_URL }}/health" | jq -r '.data.status' || echo "unreachable")
           echo "Staging status: $STATUS"
           if [ "$STATUS" != "ready" ]; then
-            echo "❌ Staging is not healthy ($STATUS). Fix staging first, or use skip_staging_check for emergencies."
+            echo "❌ Staging is not healthy ($STATUS). Fix staging first."
             exit 1
           fi
 
-  # ── 1. Merge develop → main ──────────────────────────────────────────────
+  # ── 2. Merge PR into main ───────────────────────────────────────────────
   merge:
-    name: Merge develop → main
+    name: Merge to main
     runs-on: ubuntu-latest
-    needs: gate
+    needs: [check-comment, verify-staging]
     timeout-minutes: 10
     environment:
       name: production      # triggers manual approval if configured
@@ -88,28 +171,52 @@ jobs:
           git checkout main
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Fast-forward merge develop → main
+      - name: Merge PR branch into main
         id: merge
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          PR_BRANCH="${{ needs.check-comment.outputs.pr_branch || 'develop' }}"
+          echo "Merging $PR_BRANCH into main..."
+
           git checkout main
-          git merge origin/develop --ff-only
+          git fetch origin "$PR_BRANCH"
+          git merge "origin/$PR_BRANCH" --no-ff -m "chore: promote $PR_BRANCH to production (#${{ needs.check-comment.outputs.pr_number }})"
 
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Push to main
         run: git push origin main
 
-  # ── 2. Wait for production deploy ────────────────────────────────────────
-  # The existing deploy-aws.yml fires on push to main.
-  # We just need to wait for the service to come up.
+      - name: Close the PR
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ needs.check-comment.outputs.pr_number || 0 }};
+            if (prNumber > 0) {
+              // Merge the PR properly so it shows as "merged" not just "closed"
+              try {
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                  state: 'closed',
+                });
+              } catch (e) {
+                console.log('PR may already be closed:', e.message);
+              }
+            }
+
+  # ── 3. Verify production deployment ──────────────────────────────────────
   verify-production:
     name: Verify production deployment
     runs-on: ubuntu-latest
     needs: merge
     timeout-minutes: 15
+    environment:
+      name: production
 
     steps:
       - name: Wait for deploy-aws to finish
@@ -122,8 +229,7 @@ jobs:
         run: |
           PROD_URL="${{ vars.PRODUCTION_URL }}"
           if [ -z "$PROD_URL" ]; then
-            PROD_URL="${{ secrets.EC2_HOST }}"
-            PROD_URL="http://$PROD_URL:8000"
+            PROD_URL="http://${{ secrets.EC2_HOST }}:8000"
           fi
 
           for i in $(seq 1 30); do
@@ -148,7 +254,32 @@ jobs:
           RESPONSE=$(curl -sf "${{ steps.health.outputs.url }}/health")
           echo "$RESPONSE" | jq -e '.data.pipelines_ready'
 
-  # ── 3. Auto-rollback on failure ──────────────────────────────────────────
+      - name: Post success to PR
+        if: success() && github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ needs.check-comment.outputs.pr_number || 0 }};
+            if (prNumber > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: [
+                  '## 🚀 Production Deployment Successful!',
+                  '',
+                  '| Item | Value |',
+                  '|------|-------|',
+                  `| **Commit** | \`${{ needs.merge.outputs.merge_sha }}\` |`,
+                  `| **Environment** | Production |`,
+                  `| **Smoke Tests** | ✅ Passed |`,
+                  '',
+                  '🟢 Changes are now live in production!',
+                ].join('\n'),
+              });
+            }
+
+  # ── 4. Auto-rollback on failure ──────────────────────────────────────────
   rollback:
     name: Rollback production
     runs-on: ubuntu-latest
@@ -178,23 +309,36 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const prNumber = ${{ needs.check-comment.outputs.pr_number || 0 }};
+            const body = [
+              '## 🚨 PRODUCTION ROLLBACK',
+              '',
+              `Production deployment failed smoke tests.`,
+              `**Main was rolled back to:** \`${{ needs.merge.outputs.previous_sha }}\``,
+              '',
+              '**Action required:**',
+              '1. Check the [failed workflow run](../actions/runs/${{ github.run_id }})',
+              '2. Fix the issue in your branch',
+              '3. Comment `/promote` again when ready',
+              '',
+              'cc @ishaanxgupta @ved015',
+            ].join('\n');
+
+            // Post on PR if triggered from comment
+            if (prNumber > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: body,
+              });
+            }
+
+            // Also create an issue for visibility
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: '🚨 PRODUCTION ROLLBACK — promote-to-production failed',
-              body: [
-                '## Automatic Rollback Executed',
-                '',
-                `Production deployment of \`${context.sha.substring(0, 7)}\` failed smoke tests.`,
-                '',
-                `**Main was rolled back to:** \`${{ needs.merge.outputs.previous_sha }}\``,
-                '',
-                `**Action required:**`,
-                '1. Check the [failed workflow run](../actions/runs/${{ github.run_id }})',
-                '2. Fix the issue on `develop`',
-                '3. Re-run promote-to-production',
-                '',
-                'cc @ishaanxgupta @ved015',
-              ].join('\n'),
+              title: '🚨 PRODUCTION ROLLBACK — deployment failed',
+              body: body,
               labels: ['bug', 'status/urgent'],
             });

@@ -50,7 +50,18 @@ class UserStore:
         self.users = None
 
     def _try_connect(self) -> None:
-        """Attempt to connect to MongoDB, fall back to in-memory if unavailable."""
+        """Attempt to connect to configured store, fall back to memory if unavailable."""
+        provider = (settings.app_store_provider or "mongo").strip().lower()
+        if provider == "memory":
+            self._connected = False
+            self._in_memory = True
+            self.users = None
+            logger.info("Using in-memory user storage")
+            return
+        if provider == "postgres":
+            self._try_connect_postgres()
+            return
+
         try:
             from pymongo import MongoClient
 
@@ -65,6 +76,57 @@ class UserStore:
             self._ensure_indexes()
         except Exception as e:
             self._enable_in_memory_fallback(e)
+
+    def _try_connect_postgres(self) -> None:
+        """Attempt to connect to Postgres for local app metadata."""
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+
+            self._client = psycopg.connect(settings.app_postgres_url or settings.pgvector_url)
+            self._client.autocommit = True
+            self._db = None
+            self.users = None
+            self._pg_row_factory = dict_row
+            self._connected = True
+            self._in_memory = False
+            self._backend = "postgres"
+            self._ensure_postgres_schema()
+            logger.info("Connected to Postgres for user storage")
+        except Exception as e:
+            logger.warning(f"Postgres connection failed, using in-memory user storage: {e}")
+            self._connected = False
+            self._in_memory = True
+            self.users = None
+
+    def _ensure_postgres_schema(self) -> None:
+        with self._client.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    google_id TEXT UNIQUE NOT NULL,
+                    email TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    picture TEXT,
+                    username TEXT UNIQUE,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    last_login TIMESTAMPTZ NOT NULL
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS users_created_at_idx ON users(created_at)")
+
+    def _is_postgres(self) -> bool:
+        return getattr(self, "_backend", "") == "postgres"
+
+    @staticmethod
+    def _pg_user(row: Dict[str, Any] | None) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        doc = dict(row)
+        doc["_id"] = doc.pop("id")
+        return doc
 
     def _ensure_indexes(self) -> None:
         """Create necessary indexes for the users collection."""
@@ -113,6 +175,37 @@ class UserStore:
             logger.info(f"New user created (memory): {email}")
             return user_doc
 
+        if self._is_postgres():
+            import uuid
+
+            with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                cur.execute(
+                    "SELECT * FROM users WHERE google_id = %s",
+                    (google_id,),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    cur.execute(
+                        "UPDATE users SET last_login = %s WHERE google_id = %s",
+                        (now, google_id),
+                    )
+                    doc = self._pg_user(existing)
+                    doc["last_login"] = now
+                    logger.info(f"User logged in (postgres): {email}")
+                    return doc
+
+                user_id = str(uuid.uuid4())
+                cur.execute(
+                    """
+                    INSERT INTO users(id, google_id, email, name, picture, created_at, last_login)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING *
+                    """,
+                    (user_id, google_id, email, name, picture, now, now),
+                )
+                logger.info(f"New user created (postgres): {email}")
+                return self._pg_user(cur.fetchone())
+
         # MongoDB path
         try:
             existing = self.users.find_one({"google_id": google_id})
@@ -154,6 +247,10 @@ class UserStore:
             return None
 
         try:
+            if self._is_postgres():
+                with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                    cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+                    return self._pg_user(cur.fetchone())
             from bson import ObjectId
             return self.users.find_one({"_id": ObjectId(user_id)})
         except Exception:
@@ -165,6 +262,10 @@ class UserStore:
             return _in_memory_users.get(google_id)
 
         try:
+            if self._is_postgres():
+                with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                    cur.execute("SELECT * FROM users WHERE google_id = %s", (google_id,))
+                    return self._pg_user(cur.fetchone())
             return self.users.find_one({"google_id": google_id})
         except Exception:
             return None
@@ -183,6 +284,19 @@ class UserStore:
             return False
 
         try:
+            if self._is_postgres():
+                allowed = {"email", "name", "picture", "username", "last_login"}
+                fields = {k: v for k, v in updates.items() if k in allowed}
+                if not fields:
+                    return False
+                assignments = ", ".join(f"{k} = %s" for k in fields)
+                values = list(fields.values()) + [user_id]
+                with self._client.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE users SET {assignments} WHERE id = %s",
+                        values,
+                    )
+                    return cur.rowcount > 0
             from bson import ObjectId
             result = self.users.update_one(
                 {"_id": ObjectId(user_id)},
@@ -222,6 +336,13 @@ class UserStore:
             return False
 
         try:
+            if self._is_postgres():
+                with self._client.cursor() as cur:
+                    cur.execute(
+                        "UPDATE users SET username = %s WHERE id = %s",
+                        (username, user_id),
+                    )
+                    return cur.rowcount > 0
             from bson import ObjectId
             from pymongo.errors import DuplicateKeyError
 
@@ -256,6 +377,10 @@ class UserStore:
             return None
 
         try:
+            if self._is_postgres():
+                with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                    cur.execute("SELECT * FROM users WHERE username = %s", (username,))
+                    return self._pg_user(cur.fetchone())
             return self.users.find_one({"username": username})
         except Exception:
             return None
@@ -281,6 +406,10 @@ class UserStore:
             return True
 
         try:
+            if self._is_postgres():
+                with self._client.cursor() as cur:
+                    cur.execute("SELECT 1 FROM users WHERE username = %s", (username,))
+                    return cur.fetchone() is None
             existing = self.users.find_one({"username": username})
             return existing is None
         except Exception:

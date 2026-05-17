@@ -65,7 +65,18 @@ class APIKeyStore:
         self.api_keys = None
 
     def _try_connect(self) -> None:
-        """Attempt to connect to MongoDB, fall back to in-memory if unavailable."""
+        """Attempt to connect to configured store, fall back to memory if unavailable."""
+        provider = (settings.app_store_provider or "mongo").strip().lower()
+        if provider == "memory":
+            self._connected = False
+            self._in_memory = True
+            self.api_keys = None
+            logger.info("Using in-memory API key storage")
+            return
+        if provider == "postgres":
+            self._try_connect_postgres()
+            return
+
         try:
             from pymongo import MongoClient
 
@@ -79,6 +90,48 @@ class APIKeyStore:
             self._ensure_indexes()
         except Exception as e:
             self._enable_in_memory_fallback(e)
+
+    def _try_connect_postgres(self) -> None:
+        """Attempt to connect to Postgres for local API key metadata."""
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+
+            self._client = psycopg.connect(settings.app_postgres_url or settings.pgvector_url)
+            self._client.autocommit = True
+            self._pg_row_factory = dict_row
+            self._connected = True
+            self._in_memory = False
+            self._backend = "postgres"
+            self._ensure_postgres_schema()
+            logger.info("Connected to Postgres for API key storage")
+        except Exception as e:
+            logger.warning(f"Postgres connection failed, using in-memory API key storage: {e}")
+            self._connected = False
+            self._in_memory = True
+            self.api_keys = None
+
+    def _ensure_postgres_schema(self) -> None:
+        with self._client.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    key_hash TEXT UNIQUE NOT NULL,
+                    key_prefix TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    last_used TIMESTAMPTZ,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS api_keys_user_id_idx ON api_keys(user_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS api_keys_active_idx ON api_keys(is_active)")
+
+    def _is_postgres(self) -> bool:
+        return getattr(self, "_backend", "") == "postgres"
 
     def _ensure_indexes(self) -> None:
         """Create necessary indexes for the api_keys collection."""
@@ -232,6 +285,26 @@ class APIKeyStore:
                 "created_at": now,
             }
 
+        if self._is_postgres():
+            import uuid
+
+            key_id = str(uuid.uuid4())
+            with self._client.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO api_keys(id, user_id, key_hash, key_prefix, name, created_at, is_active)
+                    VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+                    """,
+                    (key_id, user_id, key_hash, key_prefix, name, now),
+                )
+            logger.info(f"Created new API key (postgres) for user {user_id}")
+            return {
+                "key": key,
+                "key_id": key_id,
+                "name": name,
+                "created_at": now,
+            }
+
         try:
             key_doc = {
                 "user_id": user_id,
@@ -280,6 +353,19 @@ class APIKeyStore:
             ]
             for key in keys:
                 key.pop("key_hash", None)
+            return keys
+
+        if self._is_postgres():
+            query = "SELECT * FROM api_keys WHERE user_id = %s"
+            params: list[Any] = [user_id]
+            if not include_inactive:
+                query += " AND is_active = TRUE"
+            query += " ORDER BY created_at ASC"
+            with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                cur.execute(query, params)
+                keys = [dict(row) for row in cur.fetchall()]
+            for key_doc in keys:
+                key_doc.pop("key_hash", None)
             return keys
 
         try:
@@ -334,6 +420,26 @@ class APIKeyStore:
                 return None
             return cached_doc
 
+        if self._is_postgres():
+            now = datetime.utcnow()
+            with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                cur.execute(
+                    "SELECT * FROM api_keys WHERE key_hash = %s AND is_active = TRUE",
+                    (key_hash,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cur.execute(
+                    "UPDATE api_keys SET last_used = %s WHERE id = %s",
+                    (now, row["id"]),
+                )
+            key_doc = dict(row)
+            key_doc["last_used"] = now
+            key_doc.pop("key_hash", None)
+            self._cache_validation(key_hash, key_doc)
+            return key_doc
+
         try:
             key_doc = self.api_keys.find_one({
                 "key_hash": key_hash,
@@ -375,6 +481,17 @@ class APIKeyStore:
                     return True
             return False
 
+        if self._is_postgres():
+            with self._client.cursor() as cur:
+                cur.execute(
+                    "UPDATE api_keys SET is_active = FALSE WHERE id = %s AND user_id = %s",
+                    (key_id, user_id),
+                )
+                success = cur.rowcount > 0
+            if success:
+                self._clear_validation_cache()
+            return success
+
         try:
             from bson import ObjectId
             result = self.api_keys.update_one(
@@ -403,6 +520,17 @@ class APIKeyStore:
                     self._clear_validation_cache()
                     return True
             return False
+
+        if self._is_postgres():
+            with self._client.cursor() as cur:
+                cur.execute(
+                    "UPDATE api_keys SET name = %s WHERE id = %s AND user_id = %s",
+                    (new_name, key_id, user_id),
+                )
+                success = cur.rowcount > 0
+            if success:
+                self._clear_validation_cache()
+            return success
 
         try:
             from bson import ObjectId

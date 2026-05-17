@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from typing import Any, Dict, List
 
@@ -16,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from src.api.dependencies import (
     enforce_rate_limit,
+    get_code_pipeline,
     get_ingest_pipeline,
     get_retrieval_pipeline,
     require_api_key,
@@ -67,6 +69,18 @@ scrape_router = APIRouter(
 # Helpers
 def _model_name(model: Any) -> str:
     return getattr(model, "model", getattr(model, "model_name", "unknown"))
+
+
+def _score_value(score: float | None) -> float:
+    if score is None:
+        return 0.0
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return round(value, 3)
 
 
 def _build_domain_result(judge: Any, weaver: Any) -> DomainResult | None:
@@ -660,7 +674,7 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
             sources=[
                 SourceRecord(
                     domain=s.domain, content=s.content,
-                    score=round(s.score, 3), metadata=s.metadata,
+                    score=_score_value(s.score), metadata=s.metadata,
                 )
                 for s in result.sources
             ],
@@ -689,16 +703,77 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
     user_id = user.get("username") or user.get("name") or user["id"]
 
     try:
-        all_results: List[SourceRecord] = []
+        if "code" in req.domains and not req.org_id:
+            elapsed = round((time.perf_counter() - start) * 1000, 2)
+            return _error(request, "org_id is required when searching the code domain.", 400, elapsed)
 
-        if "profile" in req.domains:
-            all_results.extend(_search_profile(pipeline, user_id))
-        if "temporal" in req.domains:
-            all_results.extend(_search_temporal(pipeline, req.query, user_id, req.top_k))
-        if "summary" in req.domains:
-            all_results.extend(await _search_summary(pipeline, req.query, user_id, req.top_k))
+        memory_domains = [domain for domain in req.domains if domain != "code"]
+        result = await pipeline.raw_search(
+            query=req.query,
+            user_id=user_id,
+            domains=memory_domains,
+            top_k=req.top_k,
+            include_answer=False,
+        )
+        records = list(result.sources)
 
-        data = SearchResponse(results=all_results, total=len(all_results))
+        if "code" in req.domains:
+            code_pipeline = get_code_pipeline(org_id=req.org_id or "", repo=req.repo)
+            code_results = await asyncio.gather(
+                code_pipeline._execute_tool(
+                    tool_name="search_symbols",
+                    tool_args={"query": req.query, "repo": req.repo},
+                    repo=req.repo,
+                    top_k=req.top_k,
+                    user_id=user_id,
+                ),
+                code_pipeline._execute_tool(
+                    tool_name="search_files",
+                    tool_args={"query": req.query, "repo": req.repo},
+                    repo=req.repo,
+                    top_k=req.top_k,
+                    user_id=user_id,
+                ),
+                return_exceptions=True,
+            )
+            for code_records in code_results:
+                if isinstance(code_records, Exception):
+                    logger.warning("Code search subquery failed: %s", code_records)
+                    continue
+                records.extend(code_records)
+
+        records = sorted(records, key=lambda s: s.score or 0.0, reverse=True)
+
+        answer = ""
+        if req.answer:
+            answer = await pipeline.answer_from_sources(query=req.query, sources=records)
+            pipeline._record_latency(
+                "raw_search_answer",
+                (time.perf_counter() - start) * 1000,
+            )
+        elif "code" in req.domains:
+            pipeline._record_latency(
+                "raw_search_code",
+                (time.perf_counter() - start) * 1000,
+            )
+
+        confidence = pipeline.confidence_from_sources(records)
+        data = SearchResponse(
+            results=[
+                SourceRecord(
+                    domain=s.domain,
+                    content=s.content,
+                    score=_score_value(s.score),
+                    metadata=s.metadata,
+                )
+                for s in records
+            ],
+            total=len(records),
+            answer=answer,
+            model=_model_name(pipeline.model) if req.answer else "",
+            confidence=confidence,
+            latency=pipeline.latency_snapshot(),
+        )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         return _wrap(request, data, elapsed)
 

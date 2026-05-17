@@ -1,20 +1,30 @@
 <div align="center">
+  <img 
+    src="https://github.com/user-attachments/assets/aa171a4c-074c-4082-b3d1-c70f5f7f2aca"
+    alt="XMem Logo"
+    width="100%"
+  />
+</div>
+
+<div align="center">
   <h1>XMem</h1>
   <p><strong>The Memory Layer for AI That Never Forgets</strong></p>
   <p>Give every AI agent and LLM interface persistent, cross-platform memory out of the box.</p>
 
   <br/>
 
-  <a href="#quickstart"><strong>Quickstart</strong></a> · <a href="#benchmarks">Benchmarks</a> · <a href="#architecture">Architecture</a> · <a href="#sdks">SDKs</a> · <a href="docs/api-reference.md">API Docs</a>
+<img src="https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white" alt="Python 3.11+"/>
 
+<img src="https://img.shields.io/badge/license-BSD--3--Clause-green" alt="BSD-3 License"/>
 
-  <img src="https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white" alt="Python 3.11+"/>
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License"/>
-  <img src="https://codecov.io/gh/xmemlabs/XMem/branch/main/graph/badge.svg" alt="Test Coverage"/>
-  <img src="https://img.shields.io/badge/LongMemEval--S-97.1%25-brightgreen" alt="LongMemEval-S"/>
-  <img src="https://img.shields.io/badge/LLMs-Gemini%20%7C%20Claude%20%7C%20GPT%20%7C%20Bedrock-orange" alt="Multi-LLM"/>
+<img src="https://img.shields.io/badge/FastAPI-00C7B7?logo=fastapi&logoColor=white" alt="FastAPI"/>
+
+<img src="https://img.shields.io/badge/LangGraph-6C47FF?logo=langchain&logoColor=white" alt="LangGraph"/>
+
+<img src="https://img.shields.io/badge/Multi--LLM-Gemini%20%7C%20Claude%20%7C%20GPT%20%7C%20Bedrock-orange" alt="Multi-LLM"/>
 </div>
 
+<hr>
 <br/>
 
 ## The Problem

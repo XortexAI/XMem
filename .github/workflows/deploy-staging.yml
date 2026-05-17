@@ -119,11 +119,11 @@ jobs:
             git pull origin develop
 
             echo "── Restarting XMem service ──"
-            sudo systemctl restart xmem
+            sudo systemctl restart xmem-staging
 
             echo "── Waiting for health endpoint ──"
             for i in $(seq 1 30); do
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health || true)
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/health || true)
               if [ "$HTTP_CODE" = "200" ]; then
                 echo "Health check passed (attempt $i)"
                 exit 0

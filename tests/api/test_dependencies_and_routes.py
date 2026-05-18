@@ -91,13 +91,6 @@ def test_dependency_injection_returns_configured_pipeline(dependency_app):
     assert response.json() == {"ingest": "fake-ingest"}
 
 
-@pytest.mark.asyncio
-async def test_rate_limiter_blocks_after_limit(monkeypatch):
-    limiter = deps._SlidingWindowRateLimiter(max_requests=1, window_seconds=60)
-    assert await limiter.check("user-1") == (True, 0)
-    assert await limiter.check("user-1") == (False, 0)
-
-
 def test_enforce_rate_limit_uses_control_plane_store(dependency_app, monkeypatch):
     class FakeControlPlaneStore:
         def __init__(self):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import secrets
@@ -43,19 +44,28 @@ def _random_token(prefix: str, length: int = 32) -> str:
 class ControlPlaneStore:
     """MongoDB-backed store for OAuth codes, temp tokens, sessions, and rate limits."""
 
-    def __init__(self, uri: str = None, database: str = None) -> None:
+    def __init__(self, uri: Optional[str] = None, database: Optional[str] = None) -> None:
         self._uri = uri or settings.mongodb_uri
         self._database = database or settings.mongodb_database
+        self._connection_lock = RLock()
         self._client = None
         self._db = None
         self.records = None
         self.rate_limits = None
         self._connected = False
         self._in_memory = False
-        self._try_connect()
 
     def _requires_durable_storage(self) -> bool:
         return settings.environment.lower() in {"production", "prod"}
+
+    def _ensure_ready(self) -> None:
+        if self._connected or self._in_memory:
+            return
+
+        with self._connection_lock:
+            if self._connected or self._in_memory:
+                return
+            self._try_connect()
 
     def _enable_in_memory_fallback(self, error: Exception) -> None:
         message = f"MongoDB connection failed for control-plane storage: {error}"
@@ -122,6 +132,7 @@ class ControlPlaneStore:
         ttl_seconds: int,
         metadata: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        self._ensure_ready()
         token = _random_token(prefix)
         now = _utc_now()
         expires_at = now + timedelta(seconds=ttl_seconds)
@@ -143,6 +154,7 @@ class ControlPlaneStore:
         return {"token": token, "expires_at": expires_at}
 
     def consume_single_use_token(self, record_type: str, token: str) -> Optional[str]:
+        self._ensure_ready()
         now = _utc_now()
         if self._in_memory:
             with _memory_lock:
@@ -161,6 +173,7 @@ class ControlPlaneStore:
         return record["user_id"] if record else None
 
     def create_admin_session(self, user: dict[str, Any], ttl_seconds: int) -> dict[str, Any]:
+        self._ensure_ready()
         token = _random_token("adm-", 48)
         now = _utc_now()
         expires_at = now + timedelta(seconds=ttl_seconds)
@@ -181,6 +194,7 @@ class ControlPlaneStore:
         return {"token": token, "expires_at": expires_at}
 
     def get_admin_session(self, token: str) -> Optional[dict[str, Any]]:
+        self._ensure_ready()
         now = _utc_now()
         if self._in_memory:
             key = self._record_key("admin_session", token)
@@ -201,6 +215,7 @@ class ControlPlaneStore:
         return record["user"] if record else None
 
     def delete_admin_session(self, token: str) -> None:
+        self._ensure_ready()
         if self._in_memory:
             with _memory_lock:
                 _memory_records.pop(self._record_key("admin_session", token), None)
@@ -220,36 +235,100 @@ class ControlPlaneStore:
         cutoff = now - window_seconds
 
         if self._in_memory:
-            with _memory_lock:
-                hits = [hit for hit in _memory_rate_limits[identity] if hit > cutoff]
-                if len(hits) >= max_requests:
-                    _memory_rate_limits[identity] = hits
-                    return False, 0
-                hits.append(now)
-                _memory_rate_limits[identity] = hits
-                return True, max(max_requests - len(hits), 0)
+            return self._check_rate_limit_memory(identity, max_requests, now, cutoff)
 
-        record = self.rate_limits.find_one({"identity": identity}) or {}
-        hits = [float(hit) for hit in record.get("hits", []) if float(hit) > cutoff]
-        if len(hits) >= max_requests:
-            self._save_rate_limit(identity, hits, window_seconds)
+        return await asyncio.to_thread(
+            self._check_rate_limit_sync,
+            identity,
+            max_requests,
+            window_seconds,
+            now,
+            cutoff,
+        )
+
+    def _check_rate_limit_sync(
+        self,
+        identity: str,
+        max_requests: int,
+        window_seconds: int,
+        now: float,
+        cutoff: float,
+    ) -> tuple[bool, int]:
+        self._ensure_ready()
+        if self._in_memory:
+            return self._check_rate_limit_memory(identity, max_requests, now, cutoff)
+        return self._check_rate_limit_mongo(
+            identity,
+            max_requests,
+            window_seconds,
+            now,
+            cutoff,
+        )
+
+    def _check_rate_limit_memory(
+        self,
+        identity: str,
+        max_requests: int,
+        now: float,
+        cutoff: float,
+    ) -> tuple[bool, int]:
+        with _memory_lock:
+            hits = [hit for hit in _memory_rate_limits[identity] if hit > cutoff]
+            if len(hits) >= max_requests:
+                _memory_rate_limits[identity] = hits
+                return False, 0
+            hits.append(now)
+            _memory_rate_limits[identity] = hits
+            return True, max(max_requests - len(hits), 0)
+
+    def _check_rate_limit_mongo(
+        self,
+        identity: str,
+        max_requests: int,
+        window_seconds: int,
+        now: float,
+        cutoff: float,
+    ) -> tuple[bool, int]:
+        from pymongo import ReturnDocument
+
+        record = self.rate_limits.find_one_and_update(
+            {"identity": identity},
+            [
+                {
+                    "$set": {
+                        "identity": identity,
+                        "hits": {
+                            "$filter": {
+                                "input": {"$ifNull": ["$hits", []]},
+                                "as": "hit",
+                                "cond": {"$gt": ["$$hit", cutoff]},
+                            }
+                        },
+                    }
+                },
+                {"$set": {"allowed": {"$lt": [{"$size": "$hits"}, max_requests]}}},
+                {
+                    "$set": {
+                        "hits": {
+                            "$cond": [
+                                "$allowed",
+                                {"$concatArrays": ["$hits", [now]]},
+                                "$hits",
+                            ]
+                        },
+                        "expires_at": _utc_now() + timedelta(seconds=window_seconds),
+                    }
+                },
+            ],
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+
+        if not record or not record.get("allowed"):
             return False, 0
 
-        hits.append(now)
-        self._save_rate_limit(identity, hits, window_seconds)
+        hits = record.get("hits", [])
         return True, max(max_requests - len(hits), 0)
-
-    def _save_rate_limit(self, identity: str, hits: list[float], window_seconds: int) -> None:
-        self.rate_limits.update_one(
-            {"identity": identity},
-            {
-                "$set": {
-                    "hits": hits,
-                    "expires_at": _utc_now() + timedelta(seconds=window_seconds),
-                }
-            },
-            upsert=True,
-        )
 
     def _record_key(self, record_type: str, token: str) -> str:
         return f"{record_type}:{_hash_secret(token)}"

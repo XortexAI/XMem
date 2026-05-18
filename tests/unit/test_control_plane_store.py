@@ -20,6 +20,15 @@ def _memory_store() -> ControlPlaneStore:
     return store
 
 
+def test_control_plane_store_does_not_connect_during_init(monkeypatch):
+    def fail_connect(self):
+        raise AssertionError("should not connect during init")
+
+    monkeypatch.setattr(ControlPlaneStore, "_try_connect", fail_connect)
+
+    ControlPlaneStore(uri="mongodb://example.invalid:27017", database="xmem-test")
+
+
 def test_single_use_tokens_are_consumed_once():
     _memory_records.clear()
     store = _memory_store()

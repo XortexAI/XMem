@@ -10,8 +10,6 @@ import asyncio
 import hashlib
 import hmac
 import logging
-import time
-from collections import defaultdict
 from typing import TYPE_CHECKING, Optional
 
 from fastapi import Depends, HTTPException, Request, status
@@ -291,38 +289,6 @@ async def require_user(current_user: Optional[dict] = Depends(get_current_user))
 # ═══════════════════════════════════════════════════════════════════════════
 # Sliding-window rate limiter
 # ═══════════════════════════════════════════════════════════════════════════
-
-class _SlidingWindowRateLimiter:
-    """Thread-safe sliding-window counter keyed by API identity."""
-
-    def __init__(self, max_requests: int, window_seconds: int = 60):
-        self.max_requests = max_requests
-        self.window = window_seconds
-        self._hits: dict[str, list[float]] = defaultdict(list)
-        self._lock = asyncio.Lock()
-
-    async def check(self, key: str) -> tuple[bool, int]:
-        """Return (allowed, remaining) for *key*."""
-        now = time.monotonic()
-        cutoff = now - self.window
-
-        async with self._lock:
-            timestamps = self._hits[key]
-            self._hits[key] = [t for t in timestamps if t > cutoff]
-
-            if len(self._hits[key]) >= self.max_requests:
-                return False, 0
-
-            self._hits[key].append(now)
-            remaining = self.max_requests - len(self._hits[key])
-            return True, remaining
-
-
-_rate_limiter = _SlidingWindowRateLimiter(
-    max_requests=settings.rate_limit,
-    window_seconds=60,
-)
-
 
 async def enforce_rate_limit(
     request: Request,

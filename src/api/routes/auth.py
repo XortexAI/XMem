@@ -31,9 +31,9 @@ MCP_TEMP_TOKEN_RECORD = "mcp_temp_token"
 OAUTH_AUTH_CODE_RECORD = "oauth_auth_code"
 
 
-def _create_mcp_temp_token(user_id: str) -> dict:
+async def _create_mcp_temp_token(user_id: str) -> dict:
     """Create and store a temporary token for the user."""
-    return control_plane_store.create_single_use_token(
+    return await control_plane_store.create_single_use_token_async(
         record_type=MCP_TEMP_TOKEN_RECORD,
         user_id=user_id,
         prefix=TEMP_TOKEN_PREFIX,
@@ -41,26 +41,34 @@ def _create_mcp_temp_token(user_id: str) -> dict:
     )
 
 
-def _get_and_invalidate_mcp_token(token: str) -> Optional[str]:
+async def _get_and_invalidate_mcp_token(token: str) -> Optional[str]:
     """Validate temp token and return user_id if valid, None otherwise."""
-    return control_plane_store.consume_single_use_token(MCP_TEMP_TOKEN_RECORD, token)
+    return await control_plane_store.consume_single_use_token_async(
+        MCP_TEMP_TOKEN_RECORD,
+        token,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Standard OAuth 2.0 Store (for ChatGPT UI)
 # ═══════════════════════════════════════════════════════════════════════════
-def _generate_auth_code(user_id: str) -> str:
+async def _generate_auth_code(user_id: str) -> str:
     """Generate a standard OAuth 2.0 authorization code."""
-    return control_plane_store.create_single_use_token(
+    created = await control_plane_store.create_single_use_token_async(
         record_type=OAUTH_AUTH_CODE_RECORD,
         user_id=user_id,
         prefix="",
         ttl_seconds=10 * 60,
-    )["token"]
+    )
+    return created["token"]
 
-def _get_and_invalidate_auth_code(code: str) -> Optional[str]:
+
+async def _get_and_invalidate_auth_code(code: str) -> Optional[str]:
     """Validate auth code and return user_id if valid."""
-    return control_plane_store.consume_single_use_token(OAUTH_AUTH_CODE_RECORD, code)
+    return await control_plane_store.consume_single_use_token_async(
+        OAUTH_AUTH_CODE_RECORD,
+        code,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -414,10 +422,10 @@ async def generate_mcp_temp_token(current_user: dict = Depends(require_user)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required"
-        )
+    )
 
     user_id = str(current_user.get("id"))
-    temp_token = _create_mcp_temp_token(user_id)
+    temp_token = await _create_mcp_temp_token(user_id)
 
     return MCPTempTokenResponse(
         temp_token=temp_token["token"],
@@ -437,7 +445,7 @@ async def exchange_mcp_token(request: MCPExchangeRequest):
     The temp token is single-use and invalidated after exchange.
     """
     # Validate and consume the temp token
-    user_id = _get_and_invalidate_mcp_token(request.temp_token)
+    user_id = await _get_and_invalidate_mcp_token(request.temp_token)
 
     if not user_id:
         raise HTTPException(
@@ -488,7 +496,7 @@ async def oauth_approve(request: OAuthApproveRequest, current_user: dict = Depen
         raise HTTPException(status_code=401, detail="Authentication required")
         
     user_id = str(current_user.get("id"))
-    code = _generate_auth_code(user_id)
+    code = await _generate_auth_code(user_id)
     return OAuthApproveResponse(code=code)
 
 
@@ -509,7 +517,7 @@ async def oauth_token(
     if not code:
         return JSONResponse(status_code=400, content={"error": "invalid_request", "error_description": "code is required"})
         
-    user_id = _get_and_invalidate_auth_code(code)
+    user_id = await _get_and_invalidate_auth_code(code)
     if not user_id:
         return JSONResponse(status_code=400, content={"error": "invalid_grant", "error_description": "Invalid or expired authorization code"})
         

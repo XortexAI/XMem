@@ -153,6 +153,23 @@ class ControlPlaneStore:
 
         return {"token": token, "expires_at": expires_at}
 
+    async def create_single_use_token_async(
+        self,
+        record_type: str,
+        user_id: str,
+        prefix: str,
+        ttl_seconds: int,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self.create_single_use_token,
+            record_type,
+            user_id,
+            prefix,
+            ttl_seconds,
+            metadata,
+        )
+
     def consume_single_use_token(self, record_type: str, token: str) -> Optional[str]:
         self._ensure_ready()
         now = _utc_now()
@@ -171,6 +188,13 @@ class ControlPlaneStore:
             }
         )
         return record["user_id"] if record else None
+
+    async def consume_single_use_token_async(
+        self,
+        record_type: str,
+        token: str,
+    ) -> Optional[str]:
+        return await asyncio.to_thread(self.consume_single_use_token, record_type, token)
 
     def create_admin_session(self, user: dict[str, Any], ttl_seconds: int) -> dict[str, Any]:
         self._ensure_ready()
@@ -193,6 +217,13 @@ class ControlPlaneStore:
 
         return {"token": token, "expires_at": expires_at}
 
+    async def create_admin_session_async(
+        self,
+        user: dict[str, Any],
+        ttl_seconds: int,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(self.create_admin_session, user, ttl_seconds)
+
     def get_admin_session(self, token: str) -> Optional[dict[str, Any]]:
         self._ensure_ready()
         now = _utc_now()
@@ -214,6 +245,9 @@ class ControlPlaneStore:
         )
         return record["user"] if record else None
 
+    async def get_admin_session_async(self, token: str) -> Optional[dict[str, Any]]:
+        return await asyncio.to_thread(self.get_admin_session, token)
+
     def delete_admin_session(self, token: str) -> None:
         self._ensure_ready()
         if self._in_memory:
@@ -224,6 +258,9 @@ class ControlPlaneStore:
         self.records.delete_one(
             {"record_type": "admin_session", "token_hash": _hash_secret(token)}
         )
+
+    async def delete_admin_session_async(self, token: str) -> None:
+        await asyncio.to_thread(self.delete_admin_session, token)
 
     async def check_rate_limit(
         self,

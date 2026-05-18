@@ -79,7 +79,7 @@ class AdminLoginRequest(BaseModel):
     password: str
 
 
-def _verify_admin_token(request: Request) -> Dict[str, Any]:
+async def _verify_admin_token(request: Request) -> Dict[str, Any]:
     """Validate admin session token from cookie or Authorization header."""
     token = request.cookies.get("xmem_admin_token")
     if not token:
@@ -90,7 +90,7 @@ def _verify_admin_token(request: Request) -> Dict[str, Any]:
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    user = control_plane_store.get_admin_session(token)
+    user = await control_plane_store.get_admin_session_async(token)
     if not user:
         raise HTTPException(status_code=401, detail="Session expired")
 
@@ -113,7 +113,7 @@ async def admin_login(req: AdminLoginRequest):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Generate session token
-    session = control_plane_store.create_admin_session(
+    session = await control_plane_store.create_admin_session_async(
         user={"username": user["username"], "role": user.get("role", "admin")},
         ttl_seconds=24 * 60 * 60,
     )
@@ -134,7 +134,7 @@ async def admin_login(req: AdminLoginRequest):
 async def admin_logout(request: Request):
     token = request.cookies.get("xmem_admin_token")
     if token:
-        control_plane_store.delete_admin_session(token)
+        await control_plane_store.delete_admin_session_async(token)
     response = JSONResponse({"status": "ok"})
     response.delete_cookie("xmem_admin_token")
     return response
@@ -218,7 +218,7 @@ async def ws_live_logs(websocket: WebSocket):
 
     # Validate auth token from query param
     token = websocket.query_params.get("token", "")
-    if not token or not control_plane_store.get_admin_session(token):
+    if not token or not (await control_plane_store.get_admin_session_async(token)):
         await websocket.close(code=4001, reason="Not authenticated")
         return
 

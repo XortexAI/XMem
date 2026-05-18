@@ -33,6 +33,7 @@ from pydantic import BaseModel
 
 from src.config import settings
 from src.config.analytics import analytics
+from src.database.control_plane_store import control_plane_store
 
 logger = logging.getLogger("xmem.api.admin")
 
@@ -44,7 +45,6 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # ═══════════════════════════════════════════════════════════════════════════
 
 _admin_collection = None
-_admin_sessions: Dict[str, Dict[str, Any]] = {}  # token → {user, expires}
 
 
 def _get_admin_collection():
@@ -87,15 +87,14 @@ def _verify_admin_token(request: Request) -> Dict[str, Any]:
         if auth.startswith("Bearer "):
             token = auth[7:]
 
-    if not token or token not in _admin_sessions:
+    if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    session = _admin_sessions[token]
-    if datetime.now(timezone.utc) > session["expires"]:
-        del _admin_sessions[token]
+    user = control_plane_store.get_admin_session(token)
+    if not user:
         raise HTTPException(status_code=401, detail="Session expired")
 
-    return session["user"]
+    return user
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -114,11 +113,11 @@ async def admin_login(req: AdminLoginRequest):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Generate session token
-    token = hashlib.sha256(f"{req.username}{time.time()}".encode()).hexdigest()
-    _admin_sessions[token] = {
-        "user": {"username": user["username"], "role": user.get("role", "admin")},
-        "expires": datetime.now(timezone.utc) + timedelta(hours=24),
-    }
+    session = control_plane_store.create_admin_session(
+        user={"username": user["username"], "role": user.get("role", "admin")},
+        ttl_seconds=24 * 60 * 60,
+    )
+    token = session["token"]
 
     response = JSONResponse({"status": "ok", "token": token, "username": user["username"]})
     response.set_cookie(
@@ -134,8 +133,8 @@ async def admin_login(req: AdminLoginRequest):
 @router.post("/api/logout")
 async def admin_logout(request: Request):
     token = request.cookies.get("xmem_admin_token")
-    if token and token in _admin_sessions:
-        del _admin_sessions[token]
+    if token:
+        control_plane_store.delete_admin_session(token)
     response = JSONResponse({"status": "ok"})
     response.delete_cookie("xmem_admin_token")
     return response
@@ -219,7 +218,7 @@ async def ws_live_logs(websocket: WebSocket):
 
     # Validate auth token from query param
     token = websocket.query_params.get("token", "")
-    if token not in _admin_sessions:
+    if not token or not control_plane_store.get_admin_session(token):
         await websocket.close(code=4001, reason="Not authenticated")
         return
 
@@ -313,7 +312,7 @@ async def sse_system_logs(request: Request, user: dict = Depends(_verify_admin_t
 
                 if not line:
                     # journalctl exited — send error event and stop
-                    yield f"event: error\ndata: journalctl process exited\n\n"
+                    yield "event: error\ndata: journalctl process exited\n\n"
                     break
 
                 text = line.decode("utf-8", errors="replace").rstrip("\n")
@@ -385,8 +384,6 @@ async def analytics_summary(request: Request, user: dict = Depends(_verify_admin
         now = datetime.now(timezone.utc)
         last_24h = now - timedelta(hours=24)
         last_7d = now - timedelta(days=7)
-        last_30d = now - timedelta(days=30)
-
         # API call stats (last 24h)
         api_calls_24h = list(collection.aggregate([
             {"$match": {"event": "api_call", "ts": {"$gte": last_24h}}},

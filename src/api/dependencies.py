@@ -19,6 +19,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
 from src.config import settings
+from src.database.control_plane_store import control_plane_store
 from src.database.api_key_store import APIKeyStore
 from src.database.user_store import UserStore
 from src.pipelines.ingest import IngestPipeline
@@ -288,7 +289,7 @@ async def require_user(current_user: Optional[dict] = Depends(get_current_user))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Sliding-window rate limiter (in-process, per-key)
+# Sliding-window rate limiter
 # ═══════════════════════════════════════════════════════════════════════════
 
 class _SlidingWindowRateLimiter:
@@ -329,7 +330,11 @@ async def enforce_rate_limit(
 ) -> dict:
     """Raise 429 if the caller has exceeded their per-minute quota."""
     identity = user.get("id", "anonymous")
-    allowed, remaining = await _rate_limiter.check(identity)
+    allowed, remaining = await control_plane_store.check_rate_limit(
+        identity,
+        max_requests=settings.rate_limit,
+        window_seconds=60,
+    )
 
     request.state.rate_limit_remaining = remaining
 

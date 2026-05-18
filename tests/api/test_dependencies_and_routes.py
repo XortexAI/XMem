@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -53,6 +52,13 @@ def dependency_app(monkeypatch):
     async def pipeline(_ready=Depends(deps.require_ready)):
         return {"ingest": deps.get_ingest_pipeline().model.model}
 
+    @app.get("/limited")
+    async def limited(user: dict = Depends(deps.enforce_rate_limit)):
+        return {
+            "user_id": user["id"],
+            "remaining": getattr(deps, "_test_remaining", None),
+        }
+
     return app
 
 
@@ -90,3 +96,25 @@ async def test_rate_limiter_blocks_after_limit(monkeypatch):
     limiter = deps._SlidingWindowRateLimiter(max_requests=1, window_seconds=60)
     assert await limiter.check("user-1") == (True, 0)
     assert await limiter.check("user-1") == (False, 0)
+
+
+def test_enforce_rate_limit_uses_control_plane_store(dependency_app, monkeypatch):
+    class FakeControlPlaneStore:
+        def __init__(self):
+            self.calls = 0
+
+        async def check_rate_limit(self, identity: str, max_requests: int, window_seconds: int):
+            self.calls += 1
+            assert identity
+            assert max_requests == deps.settings.rate_limit
+            assert window_seconds == 60
+            return self.calls == 1, 0
+
+    fake_store = FakeControlPlaneStore()
+    monkeypatch.setattr(deps, "control_plane_store", fake_store)
+
+    client = TestClient(dependency_app)
+    headers = {"Authorization": "Bearer test-static-key"}
+
+    assert client.get("/limited", headers=headers).status_code == 200
+    assert client.get("/limited", headers=headers).status_code == 429

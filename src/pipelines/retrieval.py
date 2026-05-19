@@ -21,7 +21,11 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import math
+import time
+from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -33,7 +37,7 @@ from src.config import settings
 from src.graph.neo4j_client import Neo4jClient
 from src.prompts.retrieval import ANSWER_PROMPT, build_system_prompt
 from src.schemas.retrieval import RetrievalResult, SourceRecord
-from src.schemas.code import snippets_namespace
+from src.schemas.code import annotations_namespace, snippets_namespace
 from src.storage.base import BaseVectorStore
 from src.storage.factory import get_vector_store
 
@@ -42,9 +46,16 @@ load_dotenv()
 logger = logging.getLogger("xmem.pipelines.retrieval")
 
 
+_CACHE_TTL_SECONDS = 60.0
+_PROFILE_CATALOG_CACHE_LIMIT = 256
+_RETRIEVAL_PLAN_CACHE_LIMIT = 512
+_LATENCY_SAMPLE_LIMIT = 200
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Tool schemas — These are the "function signatures" exposed to the LLM
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class SearchProfile(BaseModel):
     """Look up user profile facts by topic.
@@ -59,21 +70,28 @@ class SearchTemporal(BaseModel):
     """Search for date-based events like appointments, birthdays, milestones.
     Use when the question involves 'when', dates, schedules, or events."""
 
-    query: str = Field(description="Short search query describing the event, e.g. 'dentist appointment'")
+    query: str = Field(
+        description="Short search query describing the event, e.g. 'dentist appointment'"
+    )
 
 
 class SearchSummary(BaseModel):
     """Search general conversation summaries for broad context.
     Use as a fallback for questions that don't fit profile or temporal domains."""
 
-    query: str = Field(description="Short search query, e.g. 'what does the user enjoy'")
+    query: str = Field(
+        description="Short search query, e.g. 'what does the user enjoy'"
+    )
 
 
 class SearchSnippet(BaseModel):
     """Search for personal code snippets previously saved by the user.
-    Use when the question asks about a specific piece of code, script, or technical configuration the user wrote."""
+    Use when the question asks about a specific piece of code, script, or technical configuration the user wrote.
+    """
 
-    query: str = Field(description="Short search query, e.g. 'python database connection script'")
+    query: str = Field(
+        description="Short search query, e.g. 'python database connection script'"
+    )
 
 
 TOOLS = [SearchProfile, SearchTemporal, SearchSummary, SearchSnippet]
@@ -83,14 +101,17 @@ TOOLS = [SearchProfile, SearchTemporal, SearchSummary, SearchSnippet]
 # Embedding helper (reuses the cached model from ingest)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def _get_embed_fn() -> Callable[[str], List[float]]:
     from src.pipelines.ingest import embed_text
+
     return embed_text
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # RetrievalPipeline
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class RetrievalPipeline:
     """Two-step agentic retrieval: tool-call → fetch → answer."""
@@ -100,10 +121,13 @@ class RetrievalPipeline:
         model: Optional[BaseChatModel] = None,
         vector_store: Optional[BaseVectorStore] = None,
         neo4j_client: Optional[Neo4jClient] = None,
+        code_vector_store: Optional[BaseVectorStore] = None,
+        org_id: str = "default",
     ) -> None:
         # ── LLM ───────────────────────────────────────────────────────
         if model is None:
             from src.models import get_model
+
             override = settings.retrieval_model
             self.model = get_model(model_name=override) if override else get_model()
         else:
@@ -117,6 +141,15 @@ class RetrievalPipeline:
             self.vector_store = get_vector_store()
         else:
             self.vector_store = vector_store
+        if code_vector_store is not None:
+            self.code_vector_store = code_vector_store
+        elif vector_store is None:
+            self.code_vector_store = get_vector_store(
+                namespace=annotations_namespace(org_id),
+                create_if_not_exists=False,
+            )
+        else:
+            self.code_vector_store = self.vector_store
 
         # ── Graph store (Neo4j) ───────────────────────────────────────
         embed_fn = _get_embed_fn()
@@ -133,6 +166,13 @@ class RetrievalPipeline:
 
         self.embed_fn = embed_fn
         self._snippet_stores: Dict[str, BaseVectorStore] = {}
+        self._profile_catalog_cache: OrderedDict[
+            str, tuple[float, List[Dict[str, str]], List[Any]]
+        ] = OrderedDict()
+        self._retrieval_plan_cache: OrderedDict[
+            tuple[str, str, int, str], tuple[float, Any]
+        ] = OrderedDict()
+        self._latency_samples: Dict[str, List[float]] = {}
 
         logger.info("RetrievalPipeline initialized")
 
@@ -155,7 +195,7 @@ class RetrievalPipeline:
         logger.info("=" * 60)
 
         # ── Step 0: Fetch available profile catalog for this user ─────
-        profile_catalog, profile_records = self._fetch_profile_catalog(user_id)
+        profile_catalog, profile_records = await self._get_profile_catalog(user_id)
         catalog_text = self._format_catalog(profile_catalog)
         logger.info("Available profiles: %s", catalog_text)
 
@@ -169,8 +209,15 @@ class RetrievalPipeline:
             HumanMessage(content=query),
         ]
 
-        ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
-        logger.info("LLM response received (tool_calls=%d)", len(ai_response.tool_calls or []))
+        catalog_hash = hashlib.sha256(catalog_text.encode("utf-8")).hexdigest()
+        plan_key = (user_id, query.strip(), top_k, catalog_hash)
+        ai_response = self._get_cached_retrieval_plan(plan_key)
+        if ai_response is None:
+            ai_response = await self.model_with_tools.ainvoke(messages)
+            self._cache_retrieval_plan(plan_key, ai_response)
+        logger.info(
+            "LLM response received (tool_calls=%d)", len(ai_response.tool_calls or [])
+        )
 
         # ── Step 2: Execute tool calls ────────────────────────────────
         sources: List[SourceRecord] = []
@@ -185,11 +232,16 @@ class RetrievalPipeline:
                 tool_id = tc["id"]
                 logger.info("  Tool call: %s(%s)", tool_name, tool_args)
                 records = await self._execute_tool(
-                    tool_name, tool_args, user_id, top_k,
+                    tool_name,
+                    tool_args,
+                    user_id,
+                    top_k,
                 )
                 return tool_name, tool_args, tool_id, records
 
-            tool_results = await asyncio.gather(*[_process_tool_call(tc) for tc in ai_response.tool_calls])
+            tool_results = await asyncio.gather(
+                *[_process_tool_call(tc) for tc in ai_response.tool_calls]
+            )
 
             for tool_name, tool_args, tool_id, records in tool_results:
                 sources.extend(records)
@@ -206,7 +258,9 @@ class RetrievalPipeline:
             if "searchsummary" not in called_tools:
                 logger.info("  Auto-adding summary context (top_k=5)")
                 extra = await self._search_summary(
-                    query=query, user_id=user_id, top_k=20,
+                    query=query,
+                    user_id=user_id,
+                    top_k=20,
                 )
                 if extra:
                     sources.extend(extra)
@@ -237,23 +291,16 @@ class RetrievalPipeline:
             answer = ai_response.content
             logger.info("LLM answered without tool calls")
 
-        if isinstance(answer, list):
-            parts = []
-            for c in answer:
-                if isinstance(c, dict) and "text" in c:
-                    parts.append(c["text"])
-                elif isinstance(c, str):
-                    parts.append(c)
-                else:
-                    parts.append(str(c))
-            answer = "\n".join(parts)
+        answer = self._coerce_answer(answer)
 
         confidence = min(1.0, len(sources) * 0.2) if sources else 0.1
 
         logger.info("=" * 60)
         logger.info("RETRIEVAL PIPELINE COMPLETE")
         logger.info("  sources: %d", len(sources))
-        logger.info("  answer: %s", answer[:100] + "..." if len(answer) > 100 else answer)
+        logger.info(
+            "  answer: %s", answer[:100] + "..." if len(answer) > 100 else answer
+        )
         logger.info("=" * 60)
 
         return RetrievalResult(
@@ -262,6 +309,66 @@ class RetrievalPipeline:
             sources=sources,
             confidence=confidence,
         )
+
+    async def search_raw(
+        self,
+        query: str,
+        user_id: str,
+        domains: List[str],
+        top_k: int = 10,
+    ) -> List[SourceRecord]:
+        """Return ranked memory hits without asking the LLM for a retrieval plan."""
+
+        domain_set = set(domains)
+        tasks = []
+        if "profile" in domain_set:
+            tasks.append(self._search_profile_raw(query, user_id, top_k))
+        if "temporal" in domain_set:
+            tasks.append(self._search_temporal(query, user_id, top_k))
+        if "summary" in domain_set:
+            tasks.append(self._search_summary(query, user_id, top_k))
+        if "snippet" in domain_set:
+            tasks.append(self._search_snippet(query, user_id, top_k))
+        if "code" in domain_set:
+            tasks.append(self._search_code(query, user_id, top_k))
+
+        if not tasks:
+            return []
+
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = [
+            record
+            for domain_results in task_results
+            if not self._log_search_error(domain_results)
+            for record in domain_results
+        ]
+        for record in results:
+            record.score = self._score_value(record.score)
+
+        return sorted(results, key=lambda record: record.score, reverse=True)
+
+    async def answer_from_sources(self, query: str, sources: List[SourceRecord]) -> str:
+        """Generate an answer from already-fetched sources without tool selection."""
+
+        context_text = self._format_tool_results(sources)
+        answer_prompt = ANSWER_PROMPT.format(context=context_text, query=query)
+        final_response = await self.model.ainvoke([HumanMessage(content=answer_prompt)])
+        return self._coerce_answer(final_response.content)
+
+    def record_latency(self, mode: str, elapsed_ms: float) -> None:
+        """Track bounded latency samples for raw, answer, and agentic modes."""
+
+        samples = self._latency_samples.setdefault(mode, [])
+        samples.append(float(elapsed_ms))
+        if len(samples) > _LATENCY_SAMPLE_LIMIT:
+            del samples[0 : len(samples) - _LATENCY_SAMPLE_LIMIT]
+
+    def get_latency_snapshot(self) -> Dict[str, Dict[str, float | int]]:
+        return {
+            mode: self._percentiles(samples)
+            for mode, samples in self._latency_samples.items()
+            if samples
+        }
 
     # ------------------------------------------------------------------
     # Tool execution
@@ -332,22 +439,55 @@ class RetrievalPipeline:
             parts = main_content.split("_", 1)
             sub_topic = parts[1] if len(parts) == 2 else ""
 
-            records.append(SourceRecord(
-                domain="profile",
-                content=r.content,
-                score=r.score,
-                metadata={
-                    "id": r.id,
-                    "topic": topic,
-                    "sub_topic": sub_topic,
-                    **r.metadata,
-                },
-            ))
+            records.append(
+                SourceRecord(
+                    domain="profile",
+                    content=r.content,
+                    score=self._score_value(r.score),
+                    metadata={
+                        "id": r.id,
+                        "topic": topic,
+                        "sub_topic": sub_topic,
+                        **r.metadata,
+                    },
+                )
+            )
 
         logger.info("  → Profile [%s]: %d results", topic, len(records))
         return records
 
     # -- Temporal: Neo4j semantic search ───────────────────────────────
+
+    async def _search_profile_raw(
+        self,
+        query: str,
+        user_id: str,
+        top_k: int = 10,
+    ) -> List[SourceRecord]:
+        """Semantic profile search for the low-latency raw search endpoint."""
+
+        try:
+            results = await self.vector_store.search_by_text(
+                query_text=query,
+                top_k=top_k,
+                filters={"user_id": user_id, "domain": "profile"},
+            )
+        except Exception as exc:
+            logger.warning("Profile raw search failed, using cached catalog: %s", exc)
+            _, results = await self._get_profile_catalog(user_id)
+
+        records = []
+        for r in results[:top_k]:
+            records.append(
+                SourceRecord(
+                    domain="profile",
+                    content=r.content,
+                    score=self._score_value(r.score),
+                    metadata={"id": r.id, **r.metadata},
+                )
+            )
+        logger.info("Profile raw [%s]: %d results", query, len(records))
+        return records
 
     async def _search_temporal(
         self,
@@ -368,7 +508,7 @@ class RetrievalPipeline:
                 query_text=query,
                 top_k=top_k,
                 similarity_threshold=0.15,
-            )
+            ),
         )
 
         records = []
@@ -395,12 +535,14 @@ class RetrievalPipeline:
 
             content = " | ".join(content_parts)
 
-            records.append(SourceRecord(
-                domain="temporal",
-                content=content,
-                score=ev.get("similarity_score", 0.0),
-                metadata=ev,
-            ))
+            records.append(
+                SourceRecord(
+                    domain="temporal",
+                    content=content,
+                    score=self._score_value(ev.get("similarity_score", 0.0)),
+                    metadata=ev,
+                )
+            )
 
         logger.info("  → Temporal [%s]: %d results", query, len(records))
         return records
@@ -426,14 +568,63 @@ class RetrievalPipeline:
 
         records = []
         for r in results:
-            records.append(SourceRecord(
-                domain="summary",
-                content=r.content,
-                score=r.score,
-                metadata={"id": r.id, **r.metadata},
-            ))
+            records.append(
+                SourceRecord(
+                    domain="summary",
+                    content=r.content,
+                    score=self._score_value(r.score),
+                    metadata={"id": r.id, **r.metadata},
+                )
+            )
 
         logger.info("  → Summary [%s]: %d results", query, len(records))
+        return records
+
+    # -- Code: Pinecone semantic search --------------------------------
+
+    async def _search_code(
+        self,
+        query: str,
+        user_id: str,
+        top_k: int = 10,
+    ) -> List[SourceRecord]:
+        """Semantic search over stored code annotations."""
+
+        results = await self.code_vector_store.search_by_text(
+            query_text=query,
+            top_k=top_k,
+            filters={
+                "user_id": user_id,
+                "domain": "code",
+            },
+        )
+
+        records = []
+        for r in results:
+            metadata = dict(r.metadata)
+            detail_parts = []
+            for label, key in (
+                ("repo", "repo"),
+                ("file", "target_file"),
+                ("symbol", "target_symbol"),
+                ("type", "annotation_type"),
+                ("severity", "severity"),
+            ):
+                value = metadata.get(key)
+                if value:
+                    detail_parts.append(f"{label}={value}")
+
+            prefix = f"[{'; '.join(detail_parts)}] " if detail_parts else ""
+            records.append(
+                SourceRecord(
+                    domain="code",
+                    content=f"{prefix}{r.content}",
+                    score=self._score_value(r.score),
+                    metadata={"id": r.id, **metadata},
+                )
+            )
+
+        logger.info("  -> Code [%s]: %d results", query, len(records))
         return records
 
     # -- Snippet: Pinecone semantic search ─────────────────────────────
@@ -455,7 +646,7 @@ class RetrievalPipeline:
     ) -> List[SourceRecord]:
         """Semantic search over user code snippets (sandboxed namespace)."""
         store = self._get_snippet_store(user_id)
-        
+
         # In the sandboxed namespace, we can just search. We pass domain filter just in case.
         results = await store.search_by_text(
             query_text=query,
@@ -472,12 +663,14 @@ class RetrievalPipeline:
                 lang = r.metadata.get("language", "")
                 content += f"\n```{lang}\n{snippet}\n```"
 
-            records.append(SourceRecord(
-                domain="snippet",
-                content=content,
-                score=r.score,
-                metadata={"id": r.id, **r.metadata},
-            ))
+            records.append(
+                SourceRecord(
+                    domain="snippet",
+                    content=content,
+                    score=self._score_value(r.score),
+                    metadata={"id": r.id, **r.metadata},
+                )
+            )
 
         logger.info("  → Snippet [%s]: %d results", query, len(records))
         return records
@@ -485,6 +678,32 @@ class RetrievalPipeline:
     # ------------------------------------------------------------------
     # Profile catalog (tells the LLM what profile keys exist)
     # ------------------------------------------------------------------
+
+    async def _get_profile_catalog(self, user_id: str):
+        cached = self._profile_catalog_cache.get(user_id)
+        now = time.monotonic()
+        if cached and cached[0] > now:
+            self._profile_catalog_cache.move_to_end(user_id)
+            return cached[1], cached[2]
+        if cached:
+            self._profile_catalog_cache.pop(user_id, None)
+
+        catalog, results = await asyncio.to_thread(self._fetch_profile_catalog, user_id)
+        self._profile_catalog_cache[user_id] = (
+            now + _CACHE_TTL_SECONDS,
+            catalog,
+            results,
+        )
+        self._trim_cache(self._profile_catalog_cache, _PROFILE_CATALOG_CACHE_LIMIT)
+        return catalog, results
+
+    def invalidate_profile_cache(self, user_id: str) -> None:
+        """Clear cached profile records after a user's memories are ingested."""
+
+        self._profile_catalog_cache.pop(user_id, None)
+        for key in list(self._retrieval_plan_cache):
+            if key[0] == user_id:
+                self._retrieval_plan_cache.pop(key, None)
 
     def _fetch_profile_catalog(self, user_id: str):
         """Fetch all profile entries for a user.
@@ -514,15 +733,19 @@ class RetrievalPipeline:
 
             parts = main_content.split("_", 1)
             if len(parts) == 2:
-                catalog.append({
-                    "topic": parts[0],
-                    "sub_topic": parts[1],
-                })
+                catalog.append(
+                    {
+                        "topic": parts[0],
+                        "sub_topic": parts[1],
+                    }
+                )
             else:
-                catalog.append({
-                    "topic": main_content,
-                    "sub_topic": "",
-                })
+                catalog.append(
+                    {
+                        "topic": main_content,
+                        "sub_topic": "",
+                    }
+                )
 
         return catalog, results
 
@@ -538,6 +761,77 @@ class RetrievalPipeline:
             lines.append(f"  - {t} / {st}")
         return "\n".join(lines)
 
+    def _get_cached_retrieval_plan(
+        self,
+        key: tuple[str, str, int, str],
+    ) -> AIMessage | None:
+        cached = self._retrieval_plan_cache.get(key)
+        if not cached:
+            return None
+        expires_at, response = cached
+        if expires_at <= time.monotonic():
+            self._retrieval_plan_cache.pop(key, None)
+            return None
+        self._retrieval_plan_cache.move_to_end(key)
+        return response
+
+    def _cache_retrieval_plan(
+        self,
+        key: tuple[str, str, int, str],
+        response: AIMessage,
+    ) -> None:
+        self._retrieval_plan_cache[key] = (
+            time.monotonic() + _CACHE_TTL_SECONDS,
+            response,
+        )
+        self._trim_cache(self._retrieval_plan_cache, _RETRIEVAL_PLAN_CACHE_LIMIT)
+
+    def _trim_cache(self, cache: OrderedDict, limit: int) -> None:
+        while len(cache) > limit:
+            cache.popitem(last=False)
+
+    def _log_search_error(self, domain_results: Any) -> bool:
+        if isinstance(domain_results, Exception):
+            logger.warning("Raw search domain failed: %s", domain_results)
+            return True
+        return False
+
+    def _score_value(self, score: Any) -> float:
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            return 0.0
+        return value if math.isfinite(value) else 0.0
+
+    def _coerce_answer(self, answer: Any) -> str:
+        if isinstance(answer, list):
+            parts = []
+            for c in answer:
+                if isinstance(c, dict) and "text" in c:
+                    parts.append(c["text"])
+                elif isinstance(c, str):
+                    parts.append(c)
+                else:
+                    parts.append(str(c))
+            return "\n".join(parts)
+        return str(answer)
+
+    def _percentiles(self, samples: List[float]) -> Dict[str, float | int]:
+        ordered = sorted(samples)
+
+        def pick(percentile: float) -> float:
+            if not ordered:
+                return 0.0
+            index = min(len(ordered) - 1, round((len(ordered) - 1) * percentile))
+            return round(ordered[index], 2)
+
+        return {
+            "count": len(ordered),
+            "p50": pick(0.50),
+            "p95": pick(0.95),
+            "p99": pick(0.99),
+        }
+
     # ------------------------------------------------------------------
     # Formatting helpers
     # ------------------------------------------------------------------
@@ -549,7 +843,8 @@ class RetrievalPipeline:
 
         lines = []
         for i, rec in enumerate(records, 1):
-            score_str = f" (score: {rec.score:.2f})" if rec.score > 0 else ""
+            score = self._score_value(rec.score)
+            score_str = f" (score: {score:.2f})" if score > 0 else ""
             lines.append(f"{i}. [{rec.domain}]{score_str} {rec.content}")
         return "\n".join(lines)
 

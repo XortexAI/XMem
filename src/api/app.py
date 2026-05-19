@@ -33,6 +33,7 @@ from src.api.routes.code import router as code_router
 from src.api.routes.enterprise import router as enterprise_router
 from src.api.routes.health import router as health_router
 from src.api.routes.memory import router as memory_router
+from src.api.routes.memory import search_router as memory_search_router
 from src.api.routes.memory import scrape_router as memory_scrape_router
 from src.api.routes.memory_graph import router as memory_graph_router
 from src.api.routes.scanner import router as scanner_router
@@ -155,6 +156,7 @@ def create_app() -> FastAPI:
     # ── Routes ────────────────────────────────────────────────────────
     app.include_router(health_router)
     app.include_router(memory_scrape_router)
+    app.include_router(memory_search_router)
     app.include_router(memory_router)
     app.include_router(memory_graph_router)
     app.include_router(code_router)
@@ -188,7 +190,7 @@ def create_app() -> FastAPI:
     async def sentry_debug():
         """Intentionally raises an error to verify Sentry is capturing exceptions."""
         try:
-            division_by_zero = 1 / 0
+            1 / 0
         except ZeroDivisionError as exc:
             from src.config.monitoring import capture_exception
             capture_exception(exc)

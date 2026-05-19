@@ -29,7 +29,7 @@ jobs:
           cache: pip
 
       - name: Install bandit
-        run: pip install bandit[toml]
+        run: pip install bandit[toml] bandit-sarif-formatter
 
       - name: Run Bandit
         run: |
@@ -41,6 +41,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Bandit SARIF
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: bandit-results.sarif

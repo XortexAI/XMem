@@ -190,7 +190,7 @@ def create_app() -> FastAPI:
     async def sentry_debug():
         """Intentionally raises an error to verify Sentry is capturing exceptions."""
         try:
-            division_by_zero = 1 / 0
+            1 / 0
         except ZeroDivisionError as exc:
             from src.config.monitoring import capture_exception
             capture_exception(exc)

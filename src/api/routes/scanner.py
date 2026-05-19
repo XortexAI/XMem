@@ -39,12 +39,21 @@ from pydantic import BaseModel, Field
 
 from src.api.dependencies import require_api_key
 from src.config import settings
+from src.jobs.durable import (
+    FAILED,
+    QUEUED,
+    get_default_job_store,
+    new_attempt_id,
+    run_job,
+    serialize_job,
+)
 
 logger = logging.getLogger("xmem.api.routes.scanner")
 
 router = APIRouter(prefix="/v1/scanner", tags=["scanner"])
 
 _code_store_singleton: Any = None
+SCANNER_DURABLE_TIMEOUT_SECONDS = 1800.0
 
 
 def _get_code_store():
@@ -57,6 +66,33 @@ def _get_code_store():
             database=settings.mongodb_database,
         )
     return _code_store_singleton
+
+
+def _schedule_durable_job(job: Dict[str, Any], handler) -> None:
+    if job.get("status") in {QUEUED, FAILED}:
+        asyncio.create_task(run_job(get_default_job_store(), job["job_id"], handler))
+
+
+def _durable_timeout_seconds(job: Dict[str, Any]) -> float:
+    return float(job.get("timeout_seconds") or SCANNER_DURABLE_TIMEOUT_SECONDS)
+
+
+async def _public_durable_job(job_id: str) -> Optional[Dict[str, Any]]:
+    job = await asyncio.to_thread(get_default_job_store().get, job_id)
+    public = serialize_job(job)
+    if not public:
+        return None
+    return {
+        "job_id": public.get("job_id"),
+        "status": public.get("status"),
+        "retry_count": public.get("retry_count", 0),
+        "max_attempts": public.get("max_attempts", 0),
+        "timeout_seconds": public.get("timeout_seconds"),
+        "error": public.get("error"),
+        "error_state": public.get("error_state"),
+        "updated_at": public.get("updated_at"),
+        "dead_lettered_at": public.get("dead_lettered_at"),
+    }
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -583,6 +619,46 @@ async def _run_phase2_pipeline_only(
 
     _cleanup_clone(org, repo)
 
+
+async def _run_scan_job(
+    job_id: str,
+    username: str,
+    org: str,
+    repo: str,
+    url: str,
+    branch: str,
+    pat: str,
+    force_full: bool,
+) -> Dict[str, Any]:
+    await _run_scan_pipeline(job_id, username, org, repo, url, branch, pat, force_full)
+    job = _get_code_store().get_scanner_job(job_id) or {}
+    if job.get("phase1_status") == "failed" or job.get("phase2_status") == "failed":
+        raise RuntimeError(job.get("error") or "Scanner job failed")
+    return {
+        "scanner_job_id": job_id,
+        "phase1_status": job.get("phase1_status"),
+        "phase2_status": job.get("phase2_status"),
+    }
+
+
+async def _run_phase2_job(
+    job_id: str,
+    username: str,
+    org: str,
+    repo: str,
+    url: str,
+    branch: str,
+) -> Dict[str, Any]:
+    await _run_phase2_pipeline_only(job_id, username, org, repo, url, branch)
+    job = _get_code_store().get_scanner_job(job_id) or {}
+    if job.get("phase2_status") == "failed":
+        raise RuntimeError(job.get("error") or "Scanner Phase 2 job failed")
+    return {
+        "scanner_job_id": job_id,
+        "phase1_status": job.get("phase1_status"),
+        "phase2_status": job.get("phase2_status"),
+    }
+
 @router.post(
     "/validate-url",
     summary="Validate a GitHub URL and check accessibility",
@@ -659,7 +735,8 @@ class PauseScanRequest(BaseModel):
 
 @router.post("/pause", summary="Pause an in-progress scan")
 async def pause_scan(req: PauseScanRequest, user: dict = Depends(require_api_key)):
-    job_id = f"{req.username}:{req.org_id}:{req.repo}"
+    username = user.get("username") or user.get("name") or user["id"]
+    job_id = f"{username}:{req.org_id}:{req.repo}"
     store = _get_code_store()
     job = store.get_scanner_job(job_id)
 
@@ -697,7 +774,8 @@ class ResumeScanRequest(BaseModel):
 
 @router.post("/resume", summary="Resume a paused scan")
 async def resume_scan(req: ResumeScanRequest, user: dict = Depends(require_api_key)):
-    job_id = f"{req.username}:{req.org_id}:{req.repo}"
+    username = user.get("username") or user.get("name") or user["id"]
+    job_id = f"{username}:{req.org_id}:{req.repo}"
     store = _get_code_store()
     job = store.get_scanner_job(job_id)
 
@@ -721,35 +799,83 @@ async def resume_scan(req: ResumeScanRequest, user: dict = Depends(require_api_k
     started_at = job.get("started_at", time.time())
 
     if p1 == "paused":
-        store.upsert_scanner_job(
-            job_id=job_id, username=req.username, org=req.org_id, repo=req.repo,
-            branch=branch, url=url, phase1_status="running", phase2_status="pending",
-            started_at=started_at, error=None,
+        durable_job, _ = await asyncio.to_thread(
+            get_default_job_store().enqueue,
+            job_type="scanner_scan_resume",
+            payload={
+                "scanner_job_id": job_id,
+                "org": req.org_id,
+                "repo": req.repo,
+                "branch": branch,
+                "github_url": url,
+            },
+            idempotency_fields={
+                "resume_attempt_id": new_attempt_id(),
+                "scanner_job_id": job_id,
+            },
+            user_id=username,
+            timeout_seconds=SCANNER_DURABLE_TIMEOUT_SECONDS,
+            max_attempts=2,
         )
-        asyncio.create_task(
-            _run_scan_pipeline(job_id, req.username, req.org_id, req.repo, url, branch, ""),
+        store.upsert_scanner_job(
+            job_id=job_id, username=username, org=req.org_id, repo=req.repo,
+            branch=branch, url=url, phase1_status="running", phase2_status="pending",
+            started_at=started_at, error=None, durable_job_id=durable_job["job_id"],
+            retry_count=int(durable_job.get("retry_count") or 0),
+            timeout_seconds=_durable_timeout_seconds(durable_job),
+        )
+        _schedule_durable_job(
+            durable_job,
+            lambda: _run_scan_job(
+                job_id, username, req.org_id, req.repo, url, branch, "", True,
+            ),
         )
         logger.info("Resumed Phase 1 for %s/%s", req.org_id, req.repo)
         return JSONResponse({
             "status": "ok",
             "message": "Scan resumed from Phase 1.",
+            "durable_job_id": durable_job["job_id"],
+            "durable_status": durable_job.get("status"),
             "phase1_status": "running",
             "phase2_status": "pending",
         })
 
     # p2 == "paused"
-    store.upsert_scanner_job(
-        job_id=job_id, username=req.username, org=req.org_id, repo=req.repo,
-        branch=branch, url=url, phase1_status="complete", phase2_status="running",
-        started_at=started_at, error=None,
+    durable_job, _ = await asyncio.to_thread(
+        get_default_job_store().enqueue,
+        job_type="scanner_phase2_resume",
+        payload={
+            "scanner_job_id": job_id,
+            "org": req.org_id,
+            "repo": req.repo,
+            "branch": branch,
+            "github_url": url,
+        },
+        idempotency_fields={
+            "resume_attempt_id": new_attempt_id(),
+            "scanner_job_id": job_id,
+        },
+        user_id=username,
+        timeout_seconds=SCANNER_DURABLE_TIMEOUT_SECONDS,
+        max_attempts=2,
     )
-    asyncio.create_task(
-        _run_phase2_pipeline_only(job_id, req.username, req.org_id, req.repo, url, branch),
+    store.upsert_scanner_job(
+        job_id=job_id, username=username, org=req.org_id, repo=req.repo,
+        branch=branch, url=url, phase1_status="complete", phase2_status="running",
+        started_at=started_at, error=None, durable_job_id=durable_job["job_id"],
+        retry_count=int(durable_job.get("retry_count") or 0),
+        timeout_seconds=_durable_timeout_seconds(durable_job),
+    )
+    _schedule_durable_job(
+        durable_job,
+        lambda: _run_phase2_job(job_id, username, req.org_id, req.repo, url, branch),
     )
     logger.info("Resumed Phase 2 for %s/%s", req.org_id, req.repo)
     return JSONResponse({
         "status": "ok",
         "message": "Scan resumed from Phase 2.",
+        "durable_job_id": durable_job["job_id"],
+        "durable_status": durable_job.get("status"),
         "phase1_status": "complete",
         "phase2_status": "running",
     })
@@ -832,6 +958,33 @@ async def start_scan(req: ScanRequest, user: dict = Depends(require_api_key)):
         })
 
     started_at = time.time()
+    durable_type = "scanner_phase2" if phase2_only else "scanner_scan"
+    durable_payload = {
+        "scanner_job_id": job_id,
+        "org": org,
+        "repo": repo,
+        "branch": branch,
+        "github_url": clone_url,
+        "force_full": req.force_full,
+        "remote_sha": remote_sha,
+    }
+    durable_job, _ = await asyncio.to_thread(
+        get_default_job_store().enqueue,
+        job_type=durable_type,
+        payload=durable_payload,
+        idempotency_fields={
+            "user_id": username,
+            "org": org,
+            "repo": repo,
+            "branch": branch,
+            "remote_sha": remote_sha,
+            "phase2_only": phase2_only,
+            "force_full": req.force_full,
+        },
+        user_id=username,
+        timeout_seconds=SCANNER_DURABLE_TIMEOUT_SECONDS,
+        max_attempts=2,
+    )
     store.upsert_scanner_job(
         job_id=job_id,
         username=username,
@@ -843,18 +996,22 @@ async def start_scan(req: ScanRequest, user: dict = Depends(require_api_key)):
         phase2_status="running" if phase2_only else "pending",
         started_at=started_at,
         error=None,
+        durable_job_id=durable_job["job_id"],
+        retry_count=int(durable_job.get("retry_count") or 0),
+        timeout_seconds=_durable_timeout_seconds(durable_job),
     )
     store.upsert_user_repo_entry(username, org, repo, branch)
 
     if phase2_only:
-        asyncio.create_task(
-            _run_phase2_pipeline_only(
-                job_id, username, org, repo, clone_url, branch,
-            ),
+        _schedule_durable_job(
+            durable_job,
+            lambda: _run_phase2_job(job_id, username, org, repo, clone_url, branch),
         )
         return JSONResponse({
             "status": "ok",
             "job_id": job_id,
+            "durable_job_id": durable_job["job_id"],
+            "durable_status": durable_job.get("status"),
             "org": org,
             "repo": repo,
             "reused": False,
@@ -864,8 +1021,9 @@ async def start_scan(req: ScanRequest, user: dict = Depends(require_api_key)):
             "phase2_status": "running",
         })
 
-    asyncio.create_task(
-        _run_scan_pipeline(
+    _schedule_durable_job(
+        durable_job,
+        lambda: _run_scan_job(
             job_id, username, org, repo, clone_url, branch, req.pat, req.force_full,
         ),
     )
@@ -873,6 +1031,8 @@ async def start_scan(req: ScanRequest, user: dict = Depends(require_api_key)):
     return JSONResponse({
         "status": "ok",
         "job_id": job_id,
+        "durable_job_id": durable_job["job_id"],
+        "durable_status": durable_job.get("status"),
         "org": org,
         "repo": repo,
         "reused": False,
@@ -906,7 +1066,13 @@ async def scan_status(
         "phase2_status": job.get("phase2_status", "not_started"),
         "elapsed_seconds": round(elapsed, 1),
         "error": job.get("error"),
+        "error_state": job.get("error_state"),
+        "retry_count": job.get("retry_count", 0),
+        "timeout_seconds": job.get("timeout_seconds"),
+        "durable_job_id": job.get("durable_job_id"),
     }
+    if job.get("durable_job_id"):
+        resp["durable_job"] = await _public_durable_job(job["durable_job_id"])
 
     pr = job.get("phase1_result")
     if isinstance(pr, dict) and pr.get("stats"):

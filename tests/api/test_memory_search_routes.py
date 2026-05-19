@@ -18,6 +18,7 @@ class FakeSearchPipeline:
 
     def __init__(self) -> None:
         self.answer_calls = 0
+        self.invalidated_users: list[str] = []
         self.search_calls: list[dict[str, object]] = []
         self.latencies: dict[str, list[float]] = {}
 
@@ -69,6 +70,16 @@ class FakeSearchPipeline:
             for mode, samples in self.latencies.items()
         }
 
+    def invalidate_profile_cache(self, user_id: str) -> None:
+        self.invalidated_users.append(user_id)
+
+
+class FakeIngestPipeline:
+    model = SimpleNamespace(model="fake-ingest")
+
+    async def run(self, **kwargs):
+        return {"classification_result": SimpleNamespace(classifications=[])}
+
 
 @pytest.fixture
 def memory_search_app(monkeypatch):
@@ -76,7 +87,7 @@ def memory_search_app(monkeypatch):
     monkeypatch.setattr(deps.settings, "api_keys", ["test-static-key"], raising=False)
     deps._init_error = None
     deps._pipelines_ready.set()
-    deps.set_pipelines(SimpleNamespace(), pipeline)
+    deps.set_pipelines(FakeIngestPipeline(), pipeline)
 
     app = FastAPI()
     app.add_middleware(RequestContextMiddleware)
@@ -152,3 +163,19 @@ def test_memory_search_route_accepts_code_domain(memory_search_app):
     assert payload["data"]["results"][0]["domain"] == "code"
     assert payload["data"]["results"][0]["metadata"]["target_file"] == "src/retry.py"
     assert pipeline.search_calls[0]["domains"] == ["code"]
+
+
+def test_memory_ingest_invalidates_retrieval_profile_cache(memory_search_app):
+    app, pipeline = memory_search_app
+    response = TestClient(app).post(
+        "/v1/memory/ingest",
+        headers={"Authorization": "Bearer test-static-key"},
+        json={
+            "user_query": "Remember that I work at XMem",
+            "agent_response": "Acknowledged.",
+            "user_id": "ignored-by-auth",
+        },
+    )
+
+    assert response.status_code == 200
+    assert pipeline.invalidated_users == ["Static Key User"]

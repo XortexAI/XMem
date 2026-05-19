@@ -193,6 +193,7 @@ async def _run_ingest_payload(
             image_url=payload.get("image_url", ""),
             effort_level=payload.get("effort_level", "low"),
         )
+    _invalidate_profile_cache(user_id)
     data = IngestResponse(
         model=_model_name(pipeline.model),
         classification=_safe_classifications(result),
@@ -762,6 +763,13 @@ def _safe_classifications(result: Dict[str, Any]) -> list:
     if cr and getattr(cr, "classifications", None):
         return cr.classifications
     return []
+
+
+def _invalidate_profile_cache(user_id: str) -> None:
+    try:
+        get_retrieval_pipeline().invalidate_profile_cache(user_id)
+    except Exception as exc:
+        logger.warning("Failed to invalidate profile cache for user=%s: %s", user_id, exc)
 
 
 async def _read_user_job(job_id: str, user_id: str) -> Dict[str, Any] | None:

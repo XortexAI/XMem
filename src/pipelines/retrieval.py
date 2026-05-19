@@ -697,6 +697,14 @@ class RetrievalPipeline:
         self._trim_cache(self._profile_catalog_cache, _PROFILE_CATALOG_CACHE_LIMIT)
         return catalog, results
 
+    def invalidate_profile_cache(self, user_id: str) -> None:
+        """Clear cached profile records after a user's memories are ingested."""
+
+        self._profile_catalog_cache.pop(user_id, None)
+        for key in list(self._retrieval_plan_cache):
+            if key[0] == user_id:
+                self._retrieval_plan_cache.pop(key, None)
+
     def _fetch_profile_catalog(self, user_id: str):
         """Fetch all profile entries for a user.
 

@@ -332,6 +332,33 @@ def test_retrieval_plan_cache_evicts_oldest_entry(vector_store, neo4j_client):
     assert pipeline._get_cached_retrieval_plan(first_key) is None
 
 
+def test_invalidate_profile_cache_clears_user_profile_and_plan_entries(
+    vector_store, neo4j_client
+):
+    model = FakeChatModel()
+    pipeline = RetrievalPipeline(
+        model=model, vector_store=vector_store, neo4j_client=neo4j_client
+    )
+
+    pipeline._profile_catalog_cache["alice"] = (999999999.0, [], [])
+    pipeline._profile_catalog_cache["bob"] = (999999999.0, [], [])
+    pipeline._cache_retrieval_plan(
+        ("alice", "where do I work?", 5, "catalog-a"),
+        FakeLLMResponse("alice-plan"),
+    )
+    pipeline._cache_retrieval_plan(
+        ("bob", "where do I work?", 5, "catalog-b"),
+        FakeLLMResponse("bob-plan"),
+    )
+
+    pipeline.invalidate_profile_cache("alice")
+
+    assert "alice" not in pipeline._profile_catalog_cache
+    assert "bob" in pipeline._profile_catalog_cache
+    assert not any(key[0] == "alice" for key in pipeline._retrieval_plan_cache)
+    assert any(key[0] == "bob" for key in pipeline._retrieval_plan_cache)
+
+
 @pytest.mark.asyncio
 async def test_answer_from_sources_skips_tool_selection(vector_store, neo4j_client):
     model = FakeChatModel(responses=["Alice works at XMem."])

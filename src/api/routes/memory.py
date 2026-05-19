@@ -585,6 +585,7 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
                 ),
                 timeout=120.0
             )
+        _invalidate_profile_cache(user_id)
         data = IngestResponse(
             model=_model_name(pipeline.model),
             classification=_safe_classifications(result),
@@ -607,6 +608,13 @@ def _safe_classifications(result: Dict[str, Any]) -> list:
     if cr and getattr(cr, "classifications", None):
         return cr.classifications
     return []
+
+
+def _invalidate_profile_cache(user_id: str) -> None:
+    try:
+        get_retrieval_pipeline().invalidate_profile_cache(user_id)
+    except Exception as exc:
+        logger.warning("Failed to invalidate profile cache for user=%s: %s", user_id, exc)
 
 
 # POST /v1/memory/batch-ingest
@@ -634,6 +642,7 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
             ),
             timeout=120.0
         )
+        _invalidate_profile_cache(user_id)
         
         data = IngestResponse(
             model=_model_name(pipeline.model),

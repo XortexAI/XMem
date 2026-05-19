@@ -10,8 +10,6 @@ import asyncio
 import hashlib
 import hmac
 import logging
-import time
-from collections import defaultdict
 from typing import TYPE_CHECKING, Optional
 
 from fastapi import Depends, HTTPException, Request, status
@@ -19,6 +17,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
 from src.config import settings
+from src.database.control_plane_store import control_plane_store
 from src.database.api_key_store import APIKeyStore
 from src.database.user_store import UserStore
 from src.pipelines.ingest import IngestPipeline
@@ -288,40 +287,8 @@ async def require_user(current_user: Optional[dict] = Depends(get_current_user))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Sliding-window rate limiter (in-process, per-key)
+# Sliding-window rate limiter
 # ═══════════════════════════════════════════════════════════════════════════
-
-class _SlidingWindowRateLimiter:
-    """Thread-safe sliding-window counter keyed by API identity."""
-
-    def __init__(self, max_requests: int, window_seconds: int = 60):
-        self.max_requests = max_requests
-        self.window = window_seconds
-        self._hits: dict[str, list[float]] = defaultdict(list)
-        self._lock = asyncio.Lock()
-
-    async def check(self, key: str) -> tuple[bool, int]:
-        """Return (allowed, remaining) for *key*."""
-        now = time.monotonic()
-        cutoff = now - self.window
-
-        async with self._lock:
-            timestamps = self._hits[key]
-            self._hits[key] = [t for t in timestamps if t > cutoff]
-
-            if len(self._hits[key]) >= self.max_requests:
-                return False, 0
-
-            self._hits[key].append(now)
-            remaining = self.max_requests - len(self._hits[key])
-            return True, remaining
-
-
-_rate_limiter = _SlidingWindowRateLimiter(
-    max_requests=settings.rate_limit,
-    window_seconds=60,
-)
-
 
 async def enforce_rate_limit(
     request: Request,
@@ -329,7 +296,11 @@ async def enforce_rate_limit(
 ) -> dict:
     """Raise 429 if the caller has exceeded their per-minute quota."""
     identity = user.get("id", "anonymous")
-    allowed, remaining = await _rate_limiter.check(identity)
+    allowed, remaining = await control_plane_store.check_rate_limit(
+        identity,
+        max_requests=settings.rate_limit,
+        window_seconds=60,
+    )
 
     request.state.rate_limit_remaining = remaining
 

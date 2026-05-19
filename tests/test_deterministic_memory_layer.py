@@ -23,6 +23,12 @@ sys.modules.setdefault("langchain_core.language_models", language_models)
 sys.modules.setdefault("langchain_core.messages", messages)
 
 from src.agents.judge import JudgeAgent
+from src.schemas.code import (
+    code_annotation_fields_from_storage_content,
+    code_annotation_pinecone_metadata,
+    snippet_fields_from_storage_content,
+    snippet_pinecone_metadata,
+)
 from src.schemas.judge import JudgeDomain, OperationType
 from src.schemas.weaver import OpStatus
 from src.storage.base import SearchResult
@@ -379,3 +385,151 @@ async def test_temporal_memory_layer_updates_same_date_changed_details():
     assert weaver_result.executed[0].status == OpStatus.SUCCESS
     assert graph.updated[0][1] == "04-24"
     assert graph.events[("04-24", "demo")]["desc"] == "Updated product demo"
+
+
+@pytest.mark.asyncio
+async def test_snippet_deterministic_judge_noops_same_snippet_across_sessions():
+    store = FakeVectorStore()
+    content = "Binary search helper | def bs():\\n    return 1 | python | utility | search"
+    fields = snippet_fields_from_storage_content(content)
+    store.seed(
+        "snippet-1",
+        "Binary search helper",
+        snippet_pinecone_metadata("user-1", fields),
+    )
+    judge = JudgeAgent(model=ModelMustNotBeCalled(), vector_store=store)
+
+    judge_result = await judge.arun_deterministic({
+        "domain": "snippet",
+        "new_items": [
+            "Same helper pasted later | def bs():\n    return 1 | Python | utility | dsa"
+        ],
+        "user_id": "user-1",
+    })
+
+    assert judge_result.confidence == 1.0
+    assert judge_result.operations[0].type == OperationType.NOOP
+    assert judge_result.operations[0].embedding_id == "snippet-1"
+
+    weaver = Weaver(vector_store=store, embed_fn=fake_embed)
+    weaver_result = await weaver.execute(
+        judge_result,
+        JudgeDomain.SNIPPET,
+        "user-1",
+    )
+
+    assert weaver_result.total == 0
+    assert not store.add_calls
+
+
+@pytest.mark.asyncio
+async def test_snippet_deterministic_judge_deduplicates_incoming_batch():
+    store = FakeVectorStore()
+    judge = JudgeAgent(model=ModelMustNotBeCalled(), vector_store=store)
+
+    judge_result = await judge.arun_deterministic({
+        "domain": "snippet",
+        "new_items": [
+            "Binary search helper | def bs():\n    return 1 | python | utility | search",
+            "Binary search helper again | def bs():\n    return 1 | Python | utility | dsa",
+        ],
+        "user_id": "user-1",
+    })
+
+    assert judge_result.confidence == 1.0
+    assert len(judge_result.operations) == 1
+    assert judge_result.operations[0].type == OperationType.ADD
+
+
+@pytest.mark.asyncio
+async def test_snippet_weaver_stores_identity_hash_and_search_text():
+    store = FakeVectorStore()
+    judge_result = await JudgeAgent(
+        model=ModelMustNotBeCalled(),
+        vector_store=store,
+    ).arun_deterministic({
+        "domain": "snippet",
+        "new_items": [
+            "Binary search helper | def bs():\\n    return 1 | python | utility | search,array"
+        ],
+        "user_id": "user-1",
+    })
+
+    weaver = Weaver(vector_store=store, embed_fn=fake_embed)
+    weaver_result = await weaver.execute(
+        judge_result,
+        JudgeDomain.SNIPPET,
+        "user-1",
+    )
+
+    assert weaver_result.succeeded == 1
+    record = store.records[weaver_result.executed[0].new_id]
+    assert record["text"] == "Binary search helper\nlanguage: python\ntags: search,array"
+    assert record["metadata"]["domain"] == "snippet"
+    assert len(record["metadata"]["snippet_hash"]) == 64
+    assert record["metadata"]["code_snippet"] == "def bs():\n    return 1"
+
+
+@pytest.mark.asyncio
+async def test_code_deterministic_judge_updates_same_target_annotation():
+    store = FakeVectorStore()
+    existing = (
+        "bug_report | Auth.login | src/auth.py | api | high | "
+        "Token refresh can fail"
+    )
+    store.seed(
+        "code-1",
+        existing,
+        code_annotation_pinecone_metadata(
+            "user-1",
+            code_annotation_fields_from_storage_content(existing),
+        ),
+    )
+    judge = JudgeAgent(model=ModelMustNotBeCalled(), vector_store=store)
+
+    changed = (
+        "bug_report | Auth.login | src/auth.py | api | high | "
+        "Token refresh can fail after session rotation"
+    )
+    judge_result = await judge.arun_deterministic({
+        "domain": "code",
+        "new_items": [changed],
+        "user_id": "user-1",
+    })
+
+    assert judge_result.operations[0].type == OperationType.UPDATE
+    assert judge_result.operations[0].embedding_id == "code-1"
+
+    weaver = Weaver(vector_store=store, embed_fn=fake_embed)
+    weaver_result = await weaver.execute(judge_result, JudgeDomain.CODE, "user-1")
+
+    assert weaver_result.succeeded == 1
+    assert store.records["code-1"]["metadata"]["annotation_key"] == (
+        "api|src/auth.py|auth.login|bug_report"
+    )
+    assert len(store.records["code-1"]["metadata"]["annotation_hash"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_code_deterministic_judge_deduplicates_incoming_batch():
+    store = FakeVectorStore()
+    judge = JudgeAgent(model=ModelMustNotBeCalled(), vector_store=store)
+
+    first = (
+        "bug_report | Auth.login | src/auth.py | api | high | "
+        "Token refresh can fail"
+    )
+    changed = (
+        "bug_report | Auth.login | src/auth.py | api | high | "
+        "Token refresh can fail after session rotation"
+    )
+    judge_result = await judge.arun_deterministic({
+        "domain": "code",
+        "new_items": [first, changed],
+        "user_id": "user-1",
+    })
+
+    assert judge_result.confidence == 1.0
+    assert len(judge_result.operations) == 1
+    assert judge_result.operations[0].type == OperationType.ADD
+    assert judge_result.operations[0].content == changed

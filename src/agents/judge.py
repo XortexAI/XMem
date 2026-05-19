@@ -31,6 +31,13 @@ from src.schemas.judge import (
     Operation,
     OperationType,
 )
+from src.schemas.code import (
+    code_annotation_content_hash,
+    code_annotation_fields_from_storage_content,
+    code_annotation_identity_key,
+    snippet_fields_from_storage_content,
+    snippet_identity_hash,
+)
 from src.storage.base import BaseVectorStore, SearchResult
 
 
@@ -193,6 +200,10 @@ class JudgeAgent(BaseAgent):
             result = await self._deterministic_profile(new_items, user_id)
         elif domain == JudgeDomain.TEMPORAL:
             result = await self._deterministic_temporal(new_items, user_id)
+        elif domain == JudgeDomain.CODE:
+            result = await self._deterministic_code(new_items, user_id)
+        elif domain == JudgeDomain.SNIPPET:
+            result = await self._deterministic_snippet(new_items, user_id)
         else:
             self.logger.warning(
                 "Deterministic judge unsupported for %s; falling back to LLM judge.",
@@ -481,6 +492,97 @@ class JudgeAgent(BaseAgent):
                 ))
 
         return JudgeResult(operations=operations, confidence=1.0)
+
+    async def _deterministic_code(
+        self, new_items: list, user_id: str,
+    ) -> JudgeResult:
+        unique_items: dict[str, tuple[str, dict[str, Any]]] = {}
+        for item in new_items:
+            content = str(item)
+            fields = code_annotation_fields_from_storage_content(content)
+            unique_items[code_annotation_identity_key(fields)] = (content, fields)
+
+        async def _process_one(content: str, fields: dict[str, Any]) -> Operation:
+            match = await self._lookup_metadata_match({
+                "user_id": user_id,
+                "domain": JudgeDomain.CODE.value,
+                "annotation_key": code_annotation_identity_key(fields),
+            })
+
+            if match is None:
+                return Operation(
+                    type=OperationType.ADD,
+                    content=content,
+                    reason="No code annotation with the same repo/target/type key.",
+                )
+
+            incoming_hash = code_annotation_content_hash(fields)
+            existing_hash = str((match.metadata or {}).get("annotation_hash", ""))
+            if incoming_hash == existing_hash:
+                return Operation(
+                    type=OperationType.NOOP,
+                    content=content,
+                    embedding_id=match.id,
+                    reason="Existing code annotation is unchanged.",
+                )
+            return Operation(
+                type=OperationType.UPDATE,
+                content=content,
+                embedding_id=match.id,
+                reason="Existing code annotation target has updated content.",
+            )
+
+        operations = await asyncio.gather(*(
+            _process_one(content, fields)
+            for content, fields in unique_items.values()
+        ))
+        return JudgeResult(operations=operations, confidence=1.0)
+
+    async def _deterministic_snippet(
+        self, new_items: list, user_id: str,
+    ) -> JudgeResult:
+        unique_items: dict[str, tuple[str, dict[str, Any]]] = {}
+        for item in new_items:
+            content = str(item)
+            fields = snippet_fields_from_storage_content(content)
+            unique_items[snippet_identity_hash(fields)] = (content, fields)
+
+        async def _process_one(content: str, fields: dict[str, Any]) -> Operation:
+            match = await self._lookup_metadata_match({
+                "user_id": user_id,
+                "domain": JudgeDomain.SNIPPET.value,
+                "snippet_hash": snippet_identity_hash(fields),
+            })
+
+            if match is None:
+                return Operation(
+                    type=OperationType.ADD,
+                    content=content,
+                    reason="No snippet with the same normalized code/content identity.",
+                )
+            return Operation(
+                type=OperationType.NOOP,
+                content=content,
+                embedding_id=match.id,
+                reason="Same snippet was already stored for this user.",
+            )
+
+        operations = await asyncio.gather(*(
+            _process_one(content, fields)
+            for content, fields in unique_items.values()
+        ))
+        return JudgeResult(operations=operations, confidence=1.0)
+
+    async def _lookup_metadata_match(
+        self, filters: Dict[str, Any],
+    ) -> Optional[SearchResult]:
+        if not self.vector_store:
+            return None
+        search_fn = getattr(self.vector_store, "search_by_metadata", None)
+        if search_fn is None:
+            return None
+        results = await asyncio.to_thread(search_fn, filters=filters, top_k=1)
+        return _first_match(results or [])
 
     # -- Response parsing --------------------------------------------------
 

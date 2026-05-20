@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from functools import partial
+import hashlib
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -27,6 +28,36 @@ from src.schemas.weaver import ExecutedOp, OpStatus, WeaverResult
 from src.storage.base import BaseVectorStore
 
 logger = logging.getLogger("xmem.weaver")
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+
+
+def _is_inactive_memory(metadata: Dict[str, Any]) -> bool:
+    return metadata.get("is_current") is False or bool(metadata.get("forgotten_at"))
+
+
+def _memory_metadata(
+    content: str,
+    domain: JudgeDomain,
+    user_id: str,
+    *,
+    version: int = 1,
+    parent_memory_id: Optional[str] = None,
+    is_current: bool = True,
+) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {
+        "user_id": user_id,
+        "domain": domain.value,
+        "content_hash": _content_hash(content),
+        "version": version,
+        "is_current": is_current,
+    }
+    if parent_memory_id:
+        metadata["parent_memory_id"] = parent_memory_id
+    metadata.update(_extract_structured_metadata(content))
+    return metadata
 
 
 # ---------------------------------------------------------------------------
@@ -140,8 +171,23 @@ class Weaver:
                     continue
 
                 try:
-                    meta = {"user_id": user_id, "domain": domain.value}
-                    meta.update(_extract_structured_metadata(op.content))
+                    duplicate = self._find_active_duplicate(op, domain, user_id)
+                    if duplicate:
+                        logger.info(
+                            "Skipping duplicate %s memory with content_hash=%s",
+                            domain.value,
+                            duplicate.metadata.get("content_hash"),
+                        )
+                        executed_ops.append(ExecutedOp(
+                            type=op.type,
+                            status=OpStatus.SKIPPED,
+                            content=op.content,
+                            embedding_id=duplicate.id,
+                            error="Duplicate content hash",
+                        ))
+                        continue
+
+                    meta = _memory_metadata(op.content, domain, user_id)
 
                     valid_ops.append(op)
                     texts.append(op.content)
@@ -193,6 +239,7 @@ class Weaver:
                         )
                         # Map IDs back to ops
                         for op, new_id in zip(successful_ops, ids):
+                            self._set_parent_memory_id(new_id)
                             executed_ops.append(ExecutedOp(
                                 type=op.type, status=OpStatus.SUCCESS,
                                 content=op.content, new_id=new_id,
@@ -212,8 +259,6 @@ class Weaver:
                 return
 
             valid_ops = []
-            ids_to_delete = []
-
             for op in delete_batch_ops:
                 if not op.embedding_id:
                      logger.warning("DELETE missing embedding_id — skipping.")
@@ -224,25 +269,10 @@ class Weaver:
                      continue
 
                 valid_ops.append(op)
-                ids_to_delete.append(op.embedding_id)
 
             if valid_ops:
-                loop = asyncio.get_running_loop()
-                try:
-                    success = await loop.run_in_executor(None, partial(self.vector_store.delete, ids=ids_to_delete))
-                    status = OpStatus.SUCCESS if success else OpStatus.FAILED
-                    for op in valid_ops:
-                        executed_ops.append(ExecutedOp(
-                            type=op.type, status=status,
-                            embedding_id=op.embedding_id
-                        ))
-                except Exception as exc:
-                    logger.error("Vector batch DELETE failed: %s", exc)
-                    for op in valid_ops:
-                        executed_ops.append(ExecutedOp(
-                            type=op.type, status=OpStatus.FAILED,
-                            embedding_id=op.embedding_id, error=str(exc)
-                        ))
+                for op in valid_ops:
+                    executed_ops.append(await self._vector_delete(op))
 
             delete_batch_ops.clear()
 
@@ -379,12 +409,18 @@ class Weaver:
                 content=op.content, error="No embed_fn provided",
             )
 
-        embedding = self.embed_fn(op.content)
-        metadata = {"user_id": user_id, "domain": domain.value}
+        duplicate = self._find_active_duplicate(op, domain, user_id)
+        if duplicate:
+            return ExecutedOp(
+                type=op.type,
+                status=OpStatus.SKIPPED,
+                content=op.content,
+                embedding_id=duplicate.id,
+                error="Duplicate content hash",
+            )
 
-        # Store structured metadata for deterministic lookups
-        structured = _extract_structured_metadata(op.content)
-        metadata.update(structured)
+        embedding = self.embed_fn(op.content)
+        metadata = _memory_metadata(op.content, domain, user_id)
 
         ids = self.vector_store.add(
             texts=[op.content],
@@ -392,6 +428,8 @@ class Weaver:
             metadata=[metadata],
         )
         new_id = ids[0] if ids else None
+        if new_id:
+            self._set_parent_memory_id(new_id)
         return ExecutedOp(
             type=op.type, status=OpStatus.SUCCESS,
             content=op.content, new_id=new_id,
@@ -406,37 +444,152 @@ class Weaver:
                 content=op.content, error="No embed_fn provided",
             )
 
-        embedding = self.embed_fn(op.content)
-        metadata = {"user_id": user_id, "domain": domain.value}
-
-        # Store structured metadata for deterministic lookups
-        structured = _extract_structured_metadata(op.content)
-        metadata.update(structured)
-
-        success = self.vector_store.update(
-            id=op.embedding_id,
-            text=op.content,
-            embedding=embedding,
-            metadata=metadata,
-        )
-        if success:
-            return ExecutedOp(
-                type=op.type, status=OpStatus.SUCCESS,
-                content=op.content, embedding_id=op.embedding_id,
-            )
-        else:
+        previous = self._get_vector_doc(op.embedding_id)
+        if not previous:
             logger.warning(
                 "UPDATE target %s not found — falling back to ADD.", op.embedding_id,
             )
             return await self._vector_add(op, domain, user_id)
 
+        previous_meta = dict(previous.get("metadata") or {})
+        new_hash = _content_hash(op.content)
+        if previous_meta.get("content_hash") == new_hash and not _is_inactive_memory(previous_meta):
+            return ExecutedOp(
+                type=op.type,
+                status=OpStatus.SKIPPED,
+                content=op.content,
+                embedding_id=op.embedding_id,
+                error="Duplicate content hash",
+            )
+
+        embedding = self.embed_fn(op.content)
+        parent_memory_id = str(
+            previous_meta.get("parent_memory_id") or op.embedding_id
+        )
+        version = int(previous_meta.get("version") or 1) + 1
+        metadata = _memory_metadata(
+            op.content,
+            domain,
+            user_id,
+            version=version,
+            parent_memory_id=parent_memory_id,
+        )
+
+        ids = self.vector_store.add(
+            texts=[op.content],
+            embeddings=[embedding],
+            metadata=[metadata],
+        )
+        new_id = ids[0] if ids else None
+        if not new_id:
+            return ExecutedOp(
+                type=op.type,
+                status=OpStatus.FAILED,
+                content=op.content,
+                embedding_id=op.embedding_id,
+                error="Vector store did not return a new version id",
+            )
+
+        self._mark_memory_superseded(op.embedding_id, previous, new_id)
+
+        return ExecutedOp(
+            type=op.type,
+            status=OpStatus.SUCCESS,
+            content=op.content,
+            embedding_id=op.embedding_id,
+            new_id=new_id,
+        )
+
     async def _vector_delete(self, op: Operation) -> ExecutedOp:
-        success = self.vector_store.delete(ids=[op.embedding_id])
+        ids = self._lineage_ids_for_forget(op.embedding_id)
+        success = self.vector_store.delete(ids=ids)
         return ExecutedOp(
             type=op.type,
             status=OpStatus.SUCCESS if success else OpStatus.FAILED,
             embedding_id=op.embedding_id,
         )
+
+    def _find_active_duplicate(
+        self,
+        op: Operation,
+        domain: JudgeDomain,
+        user_id: str,
+    ) -> Optional[Any]:
+        search_fn = getattr(self.vector_store, "search_by_metadata", None)
+        if not search_fn or not op.content:
+            return None
+
+        try:
+            matches = search_fn(
+                filters={
+                    "user_id": user_id,
+                    "domain": domain.value,
+                    "content_hash": _content_hash(op.content),
+                },
+                top_k=10,
+            )
+        except Exception as exc:
+            logger.warning("Duplicate lookup failed; proceeding with ADD: %s", exc)
+            return None
+        for match in matches or []:
+            if not _is_inactive_memory(match.metadata):
+                return match
+        return None
+
+    def _get_vector_doc(self, embedding_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not embedding_id:
+            return None
+        docs = self.vector_store.get(ids=[embedding_id])
+        return docs[0] if docs else None
+
+    def _set_parent_memory_id(self, memory_id: Optional[str]) -> None:
+        if not memory_id:
+            return
+        try:
+            self.vector_store.update(
+                id=memory_id,
+                metadata={"parent_memory_id": memory_id},
+            )
+        except Exception as exc:
+            logger.warning("Could not set parent_memory_id for %s: %s", memory_id, exc)
+
+    def _mark_memory_superseded(
+        self,
+        memory_id: Optional[str],
+        previous: Dict[str, Any],
+        superseded_by: str,
+    ) -> None:
+        if not memory_id:
+            return
+        self.vector_store.update(
+            id=memory_id,
+            text=previous.get("content"),
+            embedding=previous.get("embedding"),
+            metadata={
+                "is_current": False,
+                "superseded_by": superseded_by,
+            },
+        )
+
+    def _lineage_ids_for_forget(self, memory_id: Optional[str]) -> List[str]:
+        if not memory_id:
+            return []
+        target = self._get_vector_doc(memory_id)
+        if not target:
+            return [memory_id]
+
+        metadata = dict(target.get("metadata") or {})
+        parent_memory_id = str(metadata.get("parent_memory_id") or memory_id)
+        ids = {memory_id, parent_memory_id}
+        search_fn = getattr(self.vector_store, "search_by_metadata", None)
+        if search_fn:
+            for match in search_fn(
+                filters={"parent_memory_id": parent_memory_id},
+                top_k=100,
+            ) or []:
+                ids.add(match.id)
+
+        return list(ids)
 
     # ------------------------------------------------------------------
     # Temporal → Neo4j

@@ -122,7 +122,7 @@ class InMemoryVectorStore:
         if embedding is not None:
             current["embedding"] = embedding
         if metadata is not None:
-            current["metadata"] = metadata
+            current["metadata"] = {**current["metadata"], **metadata}
         return True
 
     def delete(self, ids):

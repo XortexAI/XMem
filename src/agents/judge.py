@@ -87,6 +87,15 @@ def _format_similar_block(
     return "\n".join(lines)
 
 
+def _active_memory_results(results: List[SearchResult], limit: int) -> List[SearchResult]:
+    active = [
+        result for result in results
+        if result.metadata.get("is_current") is not False
+        and not result.metadata.get("forgotten_at")
+    ]
+    return active[:limit]
+
+
 # ---------------------------------------------------------------------------
 # Type alias for the Neo4j event search callable that the pipeline injects.
 #
@@ -264,7 +273,7 @@ class JudgeAgent(BaseAgent):
                     query_text=item_str,
                     filters=filters if filters else None,
                 )
-                return item_str, results
+                return item_str, _active_memory_results(results, self.top_k)
             except Exception as exc:
                 self.logger.warning(
                     "Vector search failed for '%s': %s", item_str[:60], exc
@@ -306,9 +315,9 @@ class JudgeAgent(BaseAgent):
                 if search_fn is not None:
                     # search_by_metadata is sync — run in thread pool
                     results = await asyncio.to_thread(
-                        search_fn, filters=filters, top_k=self.top_k,
+                        search_fn, filters=filters, top_k=max(self.top_k * 5, 10),
                     )
-                    return item_str, results if results else []
+                    return item_str, _active_memory_results(results or [], self.top_k)
                 else:
                     self.logger.debug(
                         "Vector store has no search_by_metadata — "
@@ -318,7 +327,7 @@ class JudgeAgent(BaseAgent):
                         query_text=item_str,
                         filters={"user_id": user_id, "domain": "profile"} if user_id else None,
                     )
-                    return item_str, results
+                    return item_str, _active_memory_results(results, self.top_k)
             except Exception as exc:
                 self.logger.warning(
                     "Profile metadata search failed for '%s': %s",
@@ -344,7 +353,11 @@ class JudgeAgent(BaseAgent):
 
         search_fn = getattr(self.vector_store, "search_by_text", None)
         if search_fn is not None:
-            return await search_fn(query_text, top_k=self.top_k, filters=filters)
+            return await search_fn(
+                query_text,
+                top_k=max(self.top_k * 5, 10),
+                filters=filters,
+            )
 
         self.logger.debug(
             "Vector store has no search_by_text — skipping search for this item."

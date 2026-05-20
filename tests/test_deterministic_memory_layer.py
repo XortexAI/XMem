@@ -67,19 +67,20 @@ class FakeVectorStore:
                 ))
         return matches[:top_k]
 
-    def add(self, texts, embeddings, metadata):
+    def add(self, texts, embeddings, ids=None, metadata=None):
         self.add_calls.append((texts, embeddings, metadata))
-        ids = []
-        for text, embedding, meta in zip(texts, embeddings, metadata):
-            record_id = f"vec-{self.next_id}"
-            self.next_id += 1
+        created_ids = []
+        for idx, (text, embedding, meta) in enumerate(zip(texts, embeddings, metadata)):
+            record_id = ids[idx] if ids else f"vec-{self.next_id}"
+            if not ids:
+                self.next_id += 1
             self.records[record_id] = {
                 "text": text,
                 "metadata": meta,
                 "embedding": embedding,
             }
-            ids.append(record_id)
-        return ids
+            created_ids.append(record_id)
+        return created_ids
 
     def update(self, id, text=None, embedding=None, metadata=None):
         self.update_calls.append((id, text, embedding, metadata))
@@ -287,6 +288,7 @@ async def test_weaver_skips_duplicate_memory_by_content_hash():
     assert second.executed[0].status == OpStatus.SKIPPED
     assert second.executed[0].embedding_id == first.executed[0].new_id
     assert len(store.add_calls) == 1
+    assert not store.update_calls
 
 
 @pytest.mark.asyncio
@@ -323,6 +325,53 @@ async def test_forget_deletes_all_versions_in_lineage():
 
     assert deleted.executed[0].status == OpStatus.SUCCESS
     assert store.records == {}
+
+
+@pytest.mark.asyncio
+async def test_stale_update_supersedes_current_lineage_version():
+    store = FakeVectorStore()
+    weaver = Weaver(vector_store=store, embed_fn=fake_embed)
+
+    first = await weaver.execute(
+        JudgeResult(operations=[
+            Operation(type=OperationType.ADD, content="work / company = Google"),
+        ]),
+        JudgeDomain.PROFILE,
+        "user-1",
+    )
+    first_id = first.executed[0].new_id
+    second = await weaver.execute(
+        JudgeResult(operations=[
+            Operation(
+                type=OperationType.UPDATE,
+                embedding_id=first_id,
+                content="work / company = OpenAI",
+            ),
+        ]),
+        JudgeDomain.PROFILE,
+        "user-1",
+    )
+
+    stale = await weaver.execute(
+        JudgeResult(operations=[
+            Operation(
+                type=OperationType.UPDATE,
+                embedding_id=first_id,
+                content="work / company = Anthropic",
+            ),
+        ]),
+        JudgeDomain.PROFILE,
+        "user-1",
+    )
+
+    second_id = second.executed[0].new_id
+    third_id = stale.executed[0].new_id
+
+    assert stale.executed[0].embedding_id == second_id
+    assert store.records[first_id]["metadata"]["is_current"] is False
+    assert store.records[second_id]["metadata"]["is_current"] is False
+    assert store.records[third_id]["metadata"]["is_current"] is True
+    assert store.records[third_id]["metadata"]["version"] == 3
 
 
 @pytest.mark.asyncio

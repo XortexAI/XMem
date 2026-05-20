@@ -91,7 +91,6 @@ def _active_memory_results(results: List[SearchResult], limit: int) -> List[Sear
     active = [
         result for result in results
         if result.metadata.get("is_current") is not False
-        and not result.metadata.get("forgotten_at")
     ]
     return active[:limit]
 

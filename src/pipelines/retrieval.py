@@ -43,7 +43,7 @@ logger = logging.getLogger("xmem.pipelines.retrieval")
 
 
 def _is_active_memory(metadata: Dict[str, Any]) -> bool:
-    return metadata.get("is_current") is not False and not metadata.get("forgotten_at")
+    return metadata.get("is_current") is not False
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -16,6 +16,7 @@ import asyncio
 from functools import partial
 import hashlib
 import logging
+import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from src.schemas.judge import (
@@ -28,6 +29,7 @@ from src.schemas.weaver import ExecutedOp, OpStatus, WeaverResult
 from src.storage.base import BaseVectorStore
 
 logger = logging.getLogger("xmem.weaver")
+LINEAGE_SEARCH_TOP_K = 10_000
 
 
 def _content_hash(content: str) -> str:
@@ -35,7 +37,7 @@ def _content_hash(content: str) -> str:
 
 
 def _is_inactive_memory(metadata: Dict[str, Any]) -> bool:
-    return metadata.get("is_current") is False or bool(metadata.get("forgotten_at"))
+    return metadata.get("is_current") is False
 
 
 def _memory_metadata(
@@ -159,6 +161,7 @@ class Weaver:
             # Prepare data for batch add
             valid_ops = []
             texts = []
+            ids = []
             metadatas = []
 
             for op in add_batch_ops:
@@ -187,10 +190,17 @@ class Weaver:
                         ))
                         continue
 
-                    meta = _memory_metadata(op.content, domain, user_id)
+                    new_id = self._new_memory_id()
+                    meta = _memory_metadata(
+                        op.content,
+                        domain,
+                        user_id,
+                        parent_memory_id=new_id,
+                    )
 
                     valid_ops.append(op)
                     texts.append(op.content)
+                    ids.append(new_id)
                     metadatas.append(meta)
                 except Exception as exc:
                     logger.error("Metadata extraction failed for ADD: %s", exc)
@@ -210,10 +220,13 @@ class Weaver:
 
                 successful_ops = []
                 successful_texts = []
+                successful_ids = []
                 successful_embeddings = []
                 successful_metadatas = []
 
-                for op, text, meta, res in zip(valid_ops, texts, metadatas, results):
+                for op, text, new_id, meta, res in zip(
+                    valid_ops, texts, ids, metadatas, results
+                ):
                     if isinstance(res, Exception):
                         logger.error("Embedding generation failed for ADD: %s", res)
                         executed_ops.append(ExecutedOp(
@@ -223,6 +236,7 @@ class Weaver:
                     else:
                         successful_ops.append(op)
                         successful_texts.append(text)
+                        successful_ids.append(new_id)
                         successful_embeddings.append(res)
                         successful_metadatas.append(meta)
 
@@ -234,12 +248,12 @@ class Weaver:
                                 self.vector_store.add,
                                 texts=successful_texts,
                                 embeddings=successful_embeddings,
+                                ids=successful_ids,
                                 metadata=successful_metadatas,
                             )
                         )
                         # Map IDs back to ops
-                        for op, new_id in zip(successful_ops, ids):
-                            self._set_parent_memory_id(new_id)
+                        for op, new_id in zip(successful_ops, successful_ids):
                             executed_ops.append(ExecutedOp(
                                 type=op.type, status=OpStatus.SUCCESS,
                                 content=op.content, new_id=new_id,
@@ -420,16 +434,21 @@ class Weaver:
             )
 
         embedding = self.embed_fn(op.content)
-        metadata = _memory_metadata(op.content, domain, user_id)
+        new_id = self._new_memory_id()
+        metadata = _memory_metadata(
+            op.content,
+            domain,
+            user_id,
+            parent_memory_id=new_id,
+        )
 
         ids = self.vector_store.add(
             texts=[op.content],
             embeddings=[embedding],
+            ids=[new_id],
             metadata=[metadata],
         )
         new_id = ids[0] if ids else None
-        if new_id:
-            self._set_parent_memory_id(new_id)
         return ExecutedOp(
             type=op.type, status=OpStatus.SUCCESS,
             content=op.content, new_id=new_id,
@@ -452,6 +471,15 @@ class Weaver:
             return await self._vector_add(op, domain, user_id)
 
         previous_meta = dict(previous.get("metadata") or {})
+        parent_memory_id = str(
+            previous_meta.get("parent_memory_id") or op.embedding_id
+        )
+        lineage = self._lineage_matches(parent_memory_id)
+        current = self._current_lineage_doc(lineage)
+        if current:
+            previous = current
+            previous_meta = dict(previous.get("metadata") or {})
+
         new_hash = _content_hash(op.content)
         if previous_meta.get("content_hash") == new_hash and not _is_inactive_memory(previous_meta):
             return ExecutedOp(
@@ -463,10 +491,8 @@ class Weaver:
             )
 
         embedding = self.embed_fn(op.content)
-        parent_memory_id = str(
-            previous_meta.get("parent_memory_id") or op.embedding_id
-        )
-        version = int(previous_meta.get("version") or 1) + 1
+        version = self._next_lineage_version(parent_memory_id, lineage)
+        new_id = self._new_memory_id()
         metadata = _memory_metadata(
             op.content,
             domain,
@@ -478,6 +504,7 @@ class Weaver:
         ids = self.vector_store.add(
             texts=[op.content],
             embeddings=[embedding],
+            ids=[new_id],
             metadata=[metadata],
         )
         new_id = ids[0] if ids else None
@@ -490,13 +517,17 @@ class Weaver:
                 error="Vector store did not return a new version id",
             )
 
-        self._mark_memory_superseded(op.embedding_id, previous, new_id)
+        self._mark_lineage_superseded(
+            matches=lineage,
+            previous=previous,
+            superseded_by=new_id,
+        )
 
         return ExecutedOp(
             type=op.type,
             status=OpStatus.SUCCESS,
             content=op.content,
-            embedding_id=op.embedding_id,
+            embedding_id=previous.get("id") or op.embedding_id,
             new_id=new_id,
         )
 
@@ -542,34 +573,72 @@ class Weaver:
         docs = self.vector_store.get(ids=[embedding_id])
         return docs[0] if docs else None
 
-    def _set_parent_memory_id(self, memory_id: Optional[str]) -> None:
-        if not memory_id:
-            return
-        try:
-            self.vector_store.update(
-                id=memory_id,
-                metadata={"parent_memory_id": memory_id},
-            )
-        except Exception as exc:
-            logger.warning("Could not set parent_memory_id for %s: %s", memory_id, exc)
+    def _new_memory_id(self) -> str:
+        return str(uuid.uuid4())
 
-    def _mark_memory_superseded(
+    def _lineage_matches(self, parent_memory_id: str) -> List[Any]:
+        search_fn = getattr(self.vector_store, "search_by_metadata", None)
+        if not search_fn:
+            return []
+        try:
+            return search_fn(
+                filters={"parent_memory_id": parent_memory_id},
+                top_k=LINEAGE_SEARCH_TOP_K,
+            ) or []
+        except Exception as exc:
+            logger.warning("Lineage lookup failed for %s: %s", parent_memory_id, exc)
+            return []
+
+    def _current_lineage_doc(self, matches: List[Any]) -> Optional[Dict[str, Any]]:
+        active_matches = [
+            match for match in matches
+            if not _is_inactive_memory(match.metadata)
+        ]
+        if not active_matches:
+            return None
+        current = max(
+            active_matches,
+            key=lambda match: int((match.metadata or {}).get("version") or 1),
+        )
+        return self._get_vector_doc(current.id)
+
+    def _next_lineage_version(self, parent_memory_id: str, matches: List[Any]) -> int:
+        versions = [
+            int((match.metadata or {}).get("version") or 1)
+            for match in matches
+        ]
+        if not versions:
+            parent = self._get_vector_doc(parent_memory_id)
+            if parent:
+                metadata = dict(parent.get("metadata") or {})
+                versions.append(int(metadata.get("version") or 1))
+        return max(versions or [0]) + 1
+
+    def _mark_lineage_superseded(
         self,
-        memory_id: Optional[str],
+        matches: List[Any],
         previous: Dict[str, Any],
         superseded_by: str,
     ) -> None:
-        if not memory_id:
-            return
-        self.vector_store.update(
-            id=memory_id,
-            text=previous.get("content"),
-            embedding=previous.get("embedding"),
-            metadata={
-                "is_current": False,
-                "superseded_by": superseded_by,
-            },
-        )
+        ids_to_mark = {
+            match.id for match in matches
+            if match.id != superseded_by and not _is_inactive_memory(match.metadata)
+        }
+        if (
+            previous.get("id")
+            and previous["id"] != superseded_by
+            and not _is_inactive_memory(dict(previous.get("metadata") or {}))
+        ):
+            ids_to_mark.add(previous["id"])
+
+        for memory_id in ids_to_mark:
+            self.vector_store.update(
+                id=memory_id,
+                metadata={
+                    "is_current": False,
+                    "superseded_by": superseded_by,
+                },
+            )
 
     def _lineage_ids_for_forget(self, memory_id: Optional[str]) -> List[str]:
         if not memory_id:
@@ -581,13 +650,8 @@ class Weaver:
         metadata = dict(target.get("metadata") or {})
         parent_memory_id = str(metadata.get("parent_memory_id") or memory_id)
         ids = {memory_id, parent_memory_id}
-        search_fn = getattr(self.vector_store, "search_by_metadata", None)
-        if search_fn:
-            for match in search_fn(
-                filters={"parent_memory_id": parent_memory_id},
-                top_k=100,
-            ) or []:
-                ids.add(match.id)
+        for match in self._lineage_matches(parent_memory_id):
+            ids.add(match.id)
 
         return list(ids)
 

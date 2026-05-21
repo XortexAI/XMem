@@ -1088,35 +1088,24 @@ async def _search_code(
     top_k: int,
 ) -> List[SourceRecord]:
     code_pipeline = get_code_pipeline(org_id=org_id, repo=repo)
-    tool_results = await asyncio.gather(
-        code_pipeline._execute_tool(
-            tool_name="search_symbols",
-            tool_args={"query": query, "repo": repo},
-            repo=repo,
-            top_k=top_k,
-            user_id=user_id,
-        ),
-        code_pipeline._execute_tool(
-            tool_name="search_files",
-            tool_args={"query": query, "repo": repo},
-            repo=repo,
-            top_k=top_k,
-            user_id=user_id,
-        ),
+    raw_records = await code_pipeline.raw_search(
+        query=query,
+        user_id=user_id,
+        repo=repo,
+        top_k=top_k,
     )
 
     results: List[SourceRecord] = []
-    for records in tool_results:
-        for source in records:
-            metadata = {"source_domain": source.domain, **source.metadata}
-            results.append(
-                SourceRecord(
-                    domain="code",
-                    content=source.content,
-                    score=source.score,
-                    metadata=metadata,
-                )
+    for source in raw_records:
+        metadata = {"source_domain": source.domain, **source.metadata}
+        results.append(
+            SourceRecord(
+                domain="code",
+                content=source.content,
+                score=source.score,
+                metadata=metadata,
             )
+        )
     return results
 
 

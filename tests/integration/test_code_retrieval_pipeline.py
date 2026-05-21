@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from src.pipelines.code_retrieval import CodeRetrievalPipeline, _rrf_fuse
+from src.schemas.retrieval import SourceRecord
 from tests.conftest import FakeChatModel
 
 
@@ -20,10 +21,12 @@ class FakeCodeStore:
 
 
 def test_rrf_fuse_ranks_items_seen_in_multiple_lists_higher():
-    fused = _rrf_fuse([
-        [{"qualified_name": "A"}, {"qualified_name": "B"}],
-        [{"qualified_name": "B"}, {"qualified_name": "C"}],
-    ])
+    fused = _rrf_fuse(
+        [
+            [{"qualified_name": "A"}, {"qualified_name": "B"}],
+            [{"qualified_name": "B"}, {"qualified_name": "C"}],
+        ]
+    )
 
     assert fused[0]["qualified_name"] == "B"
     assert fused[0]["rrf_score"] > fused[-1]["rrf_score"]
@@ -31,7 +34,10 @@ def test_rrf_fuse_ranks_items_seen_in_multiple_lists_higher():
 
 @pytest.mark.asyncio
 async def test_code_retrieval_fast_path_reads_sample_codebase_file(monkeypatch):
-    monkeypatch.setattr("src.pipelines.code_retrieval._get_embed_fn", lambda: (lambda text: [1.0, 0.0, 0.0]))
+    monkeypatch.setattr(
+        "src.pipelines.code_retrieval._get_embed_fn",
+        lambda: (lambda text: [1.0, 0.0, 0.0]),
+    )
     pipeline = CodeRetrievalPipeline(
         org_id="acme",
         repos=["sample"],
@@ -44,3 +50,52 @@ async def test_code_retrieval_fast_path_reads_sample_codebase_file(monkeypatch):
     assert result.confidence == 1.0
     assert "def handler" in result.answer
     assert result.sources[0].domain == "file_code"
+
+
+@pytest.mark.asyncio
+async def test_code_retrieval_raw_search_queries_symbols_and_files(monkeypatch):
+    monkeypatch.setattr(
+        "src.pipelines.code_retrieval._get_embed_fn",
+        lambda: (lambda text: [1.0, 0.0, 0.0]),
+    )
+    pipeline = CodeRetrievalPipeline(
+        org_id="acme",
+        repos=["sample"],
+        model=FakeChatModel(),
+        store=FakeCodeStore(),
+    )
+    calls = []
+
+    async def fake_execute_tool(tool_name, tool_args, repo, top_k, user_id=""):
+        calls.append(
+            {
+                "tool_name": tool_name,
+                "tool_args": tool_args,
+                "repo": repo,
+                "top_k": top_k,
+                "user_id": user_id,
+            }
+        )
+        return [
+            SourceRecord(
+                domain=tool_name,
+                content=f"{tool_name} result",
+                score=0.9,
+                metadata={"repo": repo},
+            )
+        ]
+
+    monkeypatch.setattr(pipeline, "_execute_tool", fake_execute_tool)
+
+    results = await pipeline.raw_search(
+        "handler", user_id="alice", repo="sample", top_k=3
+    )
+
+    assert [call["tool_name"] for call in calls] == ["search_symbols", "search_files"]
+    assert all(
+        call["tool_args"] == {"query": "handler", "repo": "sample"} for call in calls
+    )
+    assert all(call["repo"] == "sample" for call in calls)
+    assert all(call["top_k"] == 3 for call in calls)
+    assert all(call["user_id"] == "alice" for call in calls)
+    assert [source.domain for source in results] == ["search_symbols", "search_files"]

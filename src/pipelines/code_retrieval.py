@@ -491,6 +491,36 @@ class CodeRetrievalPipeline:
     # Public entry point
     # ------------------------------------------------------------------
 
+    async def raw_search(
+        self,
+        query: str,
+        user_id: str = "",
+        repo: str = "",
+        top_k: int = 10,
+    ) -> List[SourceRecord]:
+        """Return direct code search hits without LLM answer synthesis."""
+        tool_results = await asyncio.gather(
+            self._execute_tool(
+                tool_name="search_symbols",
+                tool_args={"query": query, "repo": repo},
+                repo=repo,
+                top_k=top_k,
+                user_id=user_id,
+            ),
+            self._execute_tool(
+                tool_name="search_files",
+                tool_args={"query": query, "repo": repo},
+                repo=repo,
+                top_k=top_k,
+                user_id=user_id,
+            ),
+        )
+
+        results: List[SourceRecord] = []
+        for records in tool_results:
+            results.extend(records)
+        return results
+
     async def run(
         self,
         query: str,

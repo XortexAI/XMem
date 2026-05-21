@@ -195,6 +195,13 @@ def _job_accepted(
     return _wrap(request, data, elapsed_ms)
 
 
+def _invalidate_retrieval_cache(user_id: str) -> None:
+    try:
+        get_retrieval_pipeline().invalidate_user_cache(user_id)
+    except Exception:
+        logger.debug("Retrieval cache invalidation skipped", exc_info=True)
+
+
 async def _run_ingest_payload(
     payload: Dict[str, Any],
     user_id: str,
@@ -229,6 +236,7 @@ async def _run_ingest_payload(
             result.get("image_weaver"),
         ),
     )
+    _invalidate_retrieval_cache(user_id)
     return data.model_dump()
 
 
@@ -1030,6 +1038,7 @@ async def search_memory(
             )
 
         all_results.sort(key=lambda source: source.score, reverse=True)
+        all_results = all_results[: req.top_k]
         answer = ""
         confidence = 0.0
         mode = "raw"

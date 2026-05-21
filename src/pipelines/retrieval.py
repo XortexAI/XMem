@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -46,6 +46,7 @@ logger = logging.getLogger("xmem.pipelines.retrieval")
 
 DEFAULT_RAW_SEARCH_DOMAINS = ("profile", "temporal", "summary", "snippet")
 PROFILE_CATALOG_CACHE_TTL_SECONDS = 60.0
+PROFILE_CATALOG_CACHE_MAX = 256
 RETRIEVAL_PLAN_CACHE_TTL_SECONDS = 60.0
 RETRIEVAL_PLAN_CACHE_MAX = 256
 
@@ -187,12 +188,13 @@ class RetrievalPipeline:
         self.embed_fn = embed_fn
         self._snippet_stores: Dict[str, BaseVectorStore] = {}
         self._cached_profile_records: List[Any] = []
-        self._profile_catalog_cache: Dict[
+        self._profile_catalog_cache: OrderedDict[
             str, Tuple[float, List[Dict[str, str]], List[Any]]
-        ] = {}
+        ] = OrderedDict()
         self._retrieval_plan_cache: Dict[
             Tuple[Any, ...], Tuple[float, List[Dict[str, Any]]]
         ] = {}
+        self._user_memory_versions: Dict[str, int] = {}
         self._latency_tracker = _LatencyTracker()
 
         logger.info("RetrievalPipeline initialized")
@@ -379,6 +381,7 @@ class RetrievalPipeline:
                 results.extend(records)
 
         results.sort(key=lambda record: record.score, reverse=True)
+        results = results[:top_k]
         latency = self.record_latency("raw", (time.perf_counter() - start) * 1000)
         logger.info(
             "Raw retrieval complete (domains=%s results=%d p50=%sms p95=%sms p99=%sms)",
@@ -413,6 +416,20 @@ class RetrievalPipeline:
             stats["p99_ms"],
         )
         return stats
+
+    def invalidate_user_cache(self, user_id: str) -> None:
+        """Drop cached retrieval state for a user after memory writes."""
+        self._user_memory_versions[user_id] = (
+            self._user_memory_versions.get(user_id, 0) + 1
+        )
+        self._profile_catalog_cache.pop(user_id, None)
+        stale_plan_keys = [
+            cache_key
+            for cache_key in self._retrieval_plan_cache
+            if cache_key and cache_key[0] == user_id
+        ]
+        for cache_key in stale_plan_keys:
+            self._retrieval_plan_cache.pop(cache_key, None)
 
     async def _generate_answer(self, query: str, context_text: str) -> str:
         answer_prompt = ANSWER_PROMPT.format(
@@ -669,6 +686,9 @@ class RetrievalPipeline:
 
     def _raw_profile_records(self, user_id: str, top_k: int) -> List[SourceRecord]:
         _, raw_records = self._fetch_profile_catalog(user_id)
+        ranked_records = sorted(
+            raw_records, key=lambda record: record.score, reverse=True
+        )
         return [
             SourceRecord(
                 domain="profile",
@@ -676,7 +696,7 @@ class RetrievalPipeline:
                 score=r.score,
                 metadata={"id": r.id, **r.metadata},
             )
-            for r in raw_records[:top_k]
+            for r in ranked_records[:top_k]
         ]
 
     def _retrieval_plan_cache_key(
@@ -692,7 +712,13 @@ class RetrievalPipeline:
                 for entry in profile_catalog
             )
         )
-        return (user_id, query.strip().lower(), top_k, catalog_key)
+        return (
+            user_id,
+            query.strip().lower(),
+            top_k,
+            self._user_memory_versions.get(user_id, 0),
+            catalog_key,
+        )
 
     def _get_cached_retrieval_plan(
         self,
@@ -752,6 +778,7 @@ class RetrievalPipeline:
         now = time.monotonic()
         cached = self._profile_catalog_cache.get(user_id)
         if cached and now - cached[0] <= PROFILE_CATALOG_CACHE_TTL_SECONDS:
+            self._profile_catalog_cache.move_to_end(user_id)
             return cached[1], cached[2]
 
         try:
@@ -789,6 +816,9 @@ class RetrievalPipeline:
                 )
 
         self._profile_catalog_cache[user_id] = (now, catalog, results)
+        self._profile_catalog_cache.move_to_end(user_id)
+        if len(self._profile_catalog_cache) > PROFILE_CATALOG_CACHE_MAX:
+            self._profile_catalog_cache.popitem(last=False)
         return catalog, results
 
     def _format_catalog(self, catalog: List[Dict[str, str]]) -> str:

@@ -173,6 +173,52 @@ async def test_raw_search_returns_ranked_domains_and_latency_without_llm(
 
 
 @pytest.mark.asyncio
+async def test_raw_search_limits_results_and_invalidates_profile_cache(
+    vector_store, neo4j_client
+):
+    vector_store.seed(
+        "profile-old",
+        "work / company = OldCo",
+        {"user_id": "alice", "domain": "profile", "main_content": "work_company"},
+        score=0.7,
+    )
+    pipeline = RetrievalPipeline(
+        model=FakeChatModel(), vector_store=vector_store, neo4j_client=neo4j_client
+    )
+
+    first, _ = await pipeline.raw_search(
+        "company",
+        "alice",
+        domains=["profile"],
+        top_k=1,
+    )
+    vector_store.seed(
+        "profile-new",
+        "work / company = XMem",
+        {"user_id": "alice", "domain": "profile", "main_content": "work_company"},
+        score=0.95,
+    )
+    cached, _ = await pipeline.raw_search(
+        "company",
+        "alice",
+        domains=["profile"],
+        top_k=1,
+    )
+    pipeline.invalidate_user_cache("alice")
+    fresh, _ = await pipeline.raw_search(
+        "company",
+        "alice",
+        domains=["profile"],
+        top_k=1,
+    )
+
+    assert len(fresh) == 1
+    assert "OldCo" in first[0].content
+    assert "OldCo" in cached[0].content
+    assert "XMem" in fresh[0].content
+
+
+@pytest.mark.asyncio
 async def test_retrieval_pipeline_caches_tool_plans(vector_store, neo4j_client):
     vector_store.seed(
         "profile-1",
@@ -190,9 +236,19 @@ async def test_retrieval_pipeline_caches_tool_plans(vector_store, neo4j_client):
                         "id": "call-profile",
                     },
                 ],
-            )
+            ),
+            FakeLLMResponse(
+                "",
+                tool_calls=[
+                    {
+                        "name": "search_profile",
+                        "args": {"topic": "work"},
+                        "id": "call-profile-2",
+                    },
+                ],
+            ),
         ],
-        responses=["first answer", "second answer"],
+        responses=["first answer", "second answer", "third answer"],
     )
     pipeline = RetrievalPipeline(
         model=model, vector_store=vector_store, neo4j_client=neo4j_client
@@ -200,7 +256,10 @@ async def test_retrieval_pipeline_caches_tool_plans(vector_store, neo4j_client):
 
     first = await pipeline.run("Where does Alice work?", "alice")
     second = await pipeline.run("Where does Alice work?", "alice")
+    pipeline.invalidate_user_cache("alice")
+    third = await pipeline.run("Where does Alice work?", "alice")
 
     assert first.answer == "first answer"
     assert second.answer == "second answer"
-    assert len(pipeline.model_with_tools.calls) == 1
+    assert third.answer == "third answer"
+    assert len(pipeline.model_with_tools.calls) == 2

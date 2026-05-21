@@ -7,11 +7,12 @@ All routes require a valid Bearer API key and respect the per-key rate limit.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 import time
 from collections import defaultdict, deque
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import JSONResponse
@@ -264,13 +265,19 @@ def _latency_stats() -> Dict[str, Dict[str, float]]:
     return stats
 
 
-async def _timed(mode: str, func, *args, threaded: bool = False, **kwargs):
+async def _timed(
+    mode: str,
+    func: Callable[..., Any],
+    *args: Any,
+    threaded: bool = False,
+    **kwargs: Any,
+) -> tuple[Any, float]:
     start = time.perf_counter()
     if threaded:
         result = await asyncio.to_thread(func, *args, **kwargs)
     else:
         result = func(*args, **kwargs)
-        if hasattr(result, "__await__"):
+        if inspect.isawaitable(result):
             result = await result
     elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
     _record_latency(mode, elapsed_ms)

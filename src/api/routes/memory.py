@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from src.api.dependencies import (
     enforce_rate_limit,
+    get_code_pipeline,
     get_ingest_pipeline,
     get_retrieval_pipeline,
     require_api_key,
@@ -41,7 +42,6 @@ from src.api.schemas import (
     StatusEnum,
     WeaverSummary,
 )
-from src.pipelines.retrieval import RetrievalPipeline
 
 from bs4 import BeautifulSoup
 import json
@@ -49,7 +49,12 @@ import re
 from playwright.sync_api import sync_playwright
 
 from src.config import settings
-from src.jobs.durable import serialize_job
+from src.jobs.durable import (
+    QUEUED,
+    get_default_job_store,
+    run_job,
+    serialize_job,
+)
 
 logger = logging.getLogger("xmem.api.routes.memory")
 
@@ -64,6 +69,18 @@ router = APIRouter(
 
 scrape_router = APIRouter(
     prefix="/v1/memory",
+    tags=["memory"],
+    dependencies=[Depends(enforce_rate_limit)],
+)
+
+v2_router = APIRouter(
+    prefix="/v2/memory",
+    tags=["memory"],
+    dependencies=[Depends(require_ready), Depends(enforce_rate_limit)],
+)
+
+v2_scrape_router = APIRouter(
+    prefix="/v2/memory",
     tags=["memory"],
     dependencies=[Depends(enforce_rate_limit)],
 )
@@ -84,7 +101,9 @@ def _build_domain_result(judge: Any, weaver: Any) -> DomainResult | None:
     ws = None
     if weaver:
         ws = WeaverSummary(
-            succeeded=weaver.succeeded, skipped=weaver.skipped, failed=weaver.failed,
+            succeeded=weaver.succeeded,
+            skipped=weaver.skipped,
+            failed=weaver.failed,
         )
     return DomainResult(confidence=judge.confidence, operations=ops, weaver=ws)
 
@@ -241,7 +260,11 @@ def _detect_chat_provider(*urls: str) -> str:
         lowered = (url or "").lower()
         if not lowered:
             continue
-        if "chatgpt.com" in lowered or "chat.openai.com" in lowered or "openai.com" in lowered:
+        if (
+            "chatgpt.com" in lowered
+            or "chat.openai.com" in lowered
+            or "openai.com" in lowered
+        ):
             return "chatgpt"
         if "claude.ai" in lowered or "claude.com" in lowered:
             return "claude"
@@ -303,7 +326,10 @@ def _get_or_create_browser():
                 if channel:
                     kwargs["channel"] = channel
                 _browser_instance = _pw_instance.chromium.launch(**kwargs)
-                logger.info("[scrape] Playwright browser launched (channel=%s)", channel or "bundled")
+                logger.info(
+                    "[scrape] Playwright browser launched (channel=%s)",
+                    channel or "bundled",
+                )
                 return _browser_instance
             except Exception as exc:
                 launch_errors.append(f"{channel or 'bundled chromium'}: {exc}")
@@ -387,10 +413,12 @@ def _extract_chat_pairs(
         user_msgs = soup.find_all("div", {"data-message-author-role": "user"})
         asst_msgs = soup.find_all("div", {"data-message-author-role": "assistant"})
         for u, a in zip(user_msgs, asst_msgs):
-            pairs.append(MessagePair(
-                user_query=u.get_text(separator="\n").strip(),
-                agent_response=a.get_text(separator="\n").strip(),
-            ))
+            pairs.append(
+                MessagePair(
+                    user_query=u.get_text(separator="\n").strip(),
+                    agent_response=a.get_text(separator="\n").strip(),
+                )
+            )
         if pairs:
             extraction_method = "dom"
 
@@ -411,10 +439,12 @@ def _extract_chat_pairs(
                         if msg.get("sender") == "human":
                             current_user = msg.get("text", "")
                         elif msg.get("sender") == "assistant":
-                            pairs.append(MessagePair(
-                                user_query=current_user,
-                                agent_response=msg.get("text", ""),
-                            ))
+                            pairs.append(
+                                MessagePair(
+                                    user_query=current_user,
+                                    agent_response=msg.get("text", ""),
+                                )
+                            )
                             current_user = ""
                     if pairs:
                         extraction_method = "structured"
@@ -425,10 +455,12 @@ def _extract_chat_pairs(
         user_blocks = soup.select("message-content[role='user'], div.user-query")
         model_blocks = soup.select("message-content[role='model'], div.model-response")
         for u, m in zip(user_blocks, model_blocks):
-            pairs.append(MessagePair(
-                user_query=u.get_text(separator="\n").strip(),
-                agent_response=m.get_text(separator="\n").strip(),
-            ))
+            pairs.append(
+                MessagePair(
+                    user_query=u.get_text(separator="\n").strip(),
+                    agent_response=m.get_text(separator="\n").strip(),
+                )
+            )
         if pairs:
             extraction_method = "dom"
 
@@ -445,10 +477,12 @@ def _extract_chat_pairs(
 
         if unique_paras:
             text = "\n\n".join(unique_paras[:50])
-            pairs.append(MessagePair(
-                user_query="Extracted text from link",
-                agent_response=text[:10000],
-            ))
+            pairs.append(
+                MessagePair(
+                    user_query="Extracted text from link",
+                    agent_response=text[:10000],
+                )
+            )
             extraction_method = "fallback"
 
     return provider, extraction_method, pairs
@@ -456,7 +490,7 @@ def _extract_chat_pairs(
 
 def _parse_cursor_transcript(text: str) -> List[MessagePair]:
     """Parse a Cursor-exported markdown transcript into message pairs.
-    
+
     Cursor transcripts have the format:
     _Exported on ... from Cursor_
     ---
@@ -469,41 +503,47 @@ def _parse_cursor_transcript(text: str) -> List[MessagePair]:
     ...
     """
     pairs: List[MessagePair] = []
-    
+
     # Split by --- separator
     sections = text.split("---")
-    
+
     # Skip the first section if it's the header (contains "Exported on")
     start_idx = 0
     if sections and "Exported on" in sections[0]:
         start_idx = 1
-    
+
     current_user_query = None
-    
+
     for section in sections[start_idx:]:
         section = section.strip()
         if not section:
             continue
-        
+
         # Check if this is a User message
         if section.startswith("**User**"):
             # Extract the user message (remove the **User** header)
             content = section.replace("**User**", "", 1).strip()
             current_user_query = content
-        
+
         # Check if this is a Cursor/Agent message
         elif section.startswith("**Cursor**") or section.startswith("**Assistant**"):
             # Extract the agent response
-            content = section.replace("**Cursor**", "", 1).replace("**Assistant**", "", 1).strip()
-            
+            content = (
+                section.replace("**Cursor**", "", 1)
+                .replace("**Assistant**", "", 1)
+                .strip()
+            )
+
             # If we have a user query, create a pair
             if current_user_query:
-                pairs.append(MessagePair(
-                    user_query=current_user_query,
-                    agent_response=content,
-                ))
+                pairs.append(
+                    MessagePair(
+                        user_query=current_user_query,
+                        agent_response=content,
+                    )
+                )
                 current_user_query = None
-    
+
     return pairs
 
 
@@ -552,10 +592,12 @@ def _parse_antigravity_transcript(text: str) -> List[MessagePair]:
         if re.match(r"###\s+User Input", block, re.IGNORECASE):
             # Flush any pending planner chunks as a completed pair
             if current_user_query and planner_chunks:
-                pairs.append(MessagePair(
-                    user_query=current_user_query,
-                    agent_response="\n\n".join(planner_chunks).strip(),
-                ))
+                pairs.append(
+                    MessagePair(
+                        user_query=current_user_query,
+                        agent_response="\n\n".join(planner_chunks).strip(),
+                    )
+                )
                 planner_chunks = []
             # The next block (index i+1) is the content of this user turn
             current_user_query = None  # will be filled by the content block below
@@ -572,10 +614,12 @@ def _parse_antigravity_transcript(text: str) -> List[MessagePair]:
                 if re.match(r"###\s+User Input", prev_heading, re.IGNORECASE):
                     # New user turn — flush previous pair first
                     if current_user_query and planner_chunks:
-                        pairs.append(MessagePair(
-                            user_query=current_user_query,
-                            agent_response="\n\n".join(planner_chunks).strip(),
-                        ))
+                        pairs.append(
+                            MessagePair(
+                                user_query=current_user_query,
+                                agent_response="\n\n".join(planner_chunks).strip(),
+                            )
+                        )
                         planner_chunks = []
                     current_user_query = block
 
@@ -586,10 +630,12 @@ def _parse_antigravity_transcript(text: str) -> List[MessagePair]:
 
     # Flush last pair
     if current_user_query and planner_chunks:
-        pairs.append(MessagePair(
-            user_query=current_user_query,
-            agent_response="\n\n".join(planner_chunks).strip(),
-        ))
+        pairs.append(
+            MessagePair(
+                user_query=current_user_query,
+                agent_response="\n\n".join(planner_chunks).strip(),
+            )
+        )
 
     return pairs
 
@@ -597,14 +643,14 @@ def _parse_antigravity_transcript(text: str) -> List[MessagePair]:
 async def _parse_transcript_with_llm(text: str) -> List[MessagePair]:
     """Use an LLM to parse transcript text when format detection fails."""
     from src.models import get_model
-    
+
     # Limit text size to avoid token issues
     max_chars = 50000
     if len(text) > max_chars:
         text = text[:max_chars]
-    
+
     model = get_model(temperature=0.0)
-    
+
     prompt = f"""You are parsing a chat transcript. Extract all user-agent message pairs from the following text.
 
 Return a JSON array of objects with this structure:
@@ -618,24 +664,27 @@ Only return valid JSON, nothing else.
 Transcript:
 {text}
 """
-    
+
     try:
         response = await model.ainvoke(prompt)
         content = response.content if hasattr(response, "content") else str(response)
-        
+
         # Try to extract JSON from the response
-        json_match = re.search(r'\[.*\]', content, re.DOTALL)
+        json_match = re.search(r"\[.*\]", content, re.DOTALL)
         if json_match:
             data = json.loads(json_match.group(0))
             pairs = [
-                MessagePair(user_query=item.get("user_query", ""), agent_response=item.get("agent_response", ""))
+                MessagePair(
+                    user_query=item.get("user_query", ""),
+                    agent_response=item.get("agent_response", ""),
+                )
                 for item in data
                 if isinstance(item, dict)
             ]
             return pairs
     except Exception as exc:
         logger.warning("LLM transcript parsing failed: %s", exc)
-    
+
     return []
 
 
@@ -649,7 +698,9 @@ def _parse_transcript_text(text: str) -> tuple[str, List[MessagePair]]:
             return "cursor", pairs
 
     # Detect Antigravity format
-    if "# Chat Conversation" in text and ("### User Input" in text or "### Planner Response" in text):
+    if "# Chat Conversation" in text and (
+        "### User Input" in text or "### Planner Response" in text
+    ):
         pairs = _parse_antigravity_transcript(text)
         if pairs:
             return "antigravity", pairs
@@ -659,7 +710,9 @@ def _parse_transcript_text(text: str) -> tuple[str, List[MessagePair]]:
 
 async def _scrape_chat_share(url: str) -> Dict[str, Any]:
     html, final_url = await _render_chat_share(url)
-    provider, extraction_method, pairs = _extract_chat_pairs(final_url or url, html, url)
+    provider, extraction_method, pairs = _extract_chat_pairs(
+        final_url or url, html, url
+    )
 
     return {
         "provider": provider,
@@ -678,7 +731,9 @@ async def _scrape_chat_share(url: str) -> Dict[str, Any]:
     response_model=APIResponse,
     summary="Ingest a conversation turn into long-term memory",
 )
-async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depends(require_api_key)):
+async def ingest_memory(
+    req: IngestRequest, request: Request, user: dict = Depends(require_api_key)
+):
     start = time.perf_counter()
     user_id = _current_user_id(user, req.user_id)
     payload = req.model_dump()
@@ -697,6 +752,57 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
         return _error(request, str(exc), 500, elapsed)
 
 
+# POST /v2/memory/ingest
+@v2_router.post(
+    "/ingest",
+    response_model=APIResponse,
+    summary="Start an async durable memory ingest job",
+)
+async def ingest_memory_v2(
+    req: IngestRequest, request: Request, user: dict = Depends(require_api_key)
+):
+    start = time.perf_counter()
+    user_id = _current_user_id(user, req.user_id)
+    job_user_id = _current_user_id(user)
+    payload = req.model_dump()
+    payload["user_id"] = user_id
+
+    try:
+        store = get_default_job_store()
+        job, created = await asyncio.to_thread(
+            store.enqueue,
+            job_type="memory_ingest",
+            payload=payload,
+            idempotency_fields={
+                "user_id": user_id,
+                "user_query": req.user_query,
+                "agent_response": req.agent_response or "",
+                "session_datetime": req.session_datetime,
+                "image_url": req.image_url,
+                "effort_level": req.effort_level,
+            },
+            user_id=job_user_id,
+            timeout_seconds=float(settings.memory_ingest_timeout_seconds),
+            max_attempts=3,
+        )
+        _schedule_job(
+            job,
+            lambda: _run_ingest_payload(payload, user_id),
+        )
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _job_accepted(
+            request,
+            job,
+            created,
+            f"/v2/memory/ingest/{job['job_id']}/status",
+            elapsed,
+        )
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Ingest enqueue failed for user=%s", user_id)
+        return _error(request, str(exc), 500, elapsed)
+
 def _safe_classifications(result: Dict[str, Any]) -> list:
     cr = result.get("classification_result")
     if cr and getattr(cr, "classifications", None):
@@ -713,6 +819,38 @@ async def _read_user_job(job_id: str, user_id: str) -> Dict[str, Any] | None:
     return job
 
 
+@v2_router.get(
+    "/ingest/{job_id}/status",
+    response_model=APIResponse,
+    summary="Poll an async memory ingest job",
+)
+async def ingest_job_status(
+    job_id: str, request: Request, user: dict = Depends(require_api_key)
+):
+    start = time.perf_counter()
+    job = await _read_user_job(job_id, _current_user_id(user))
+    if not job:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _error(request, "Job not found.", 404, elapsed)
+    elapsed = round((time.perf_counter() - start) * 1000, 2)
+    return _wrap(request, _job_status_data(job), elapsed)
+
+
+@v2_router.get(
+    "/jobs/{job_id}/status",
+    response_model=APIResponse,
+    summary="Poll an async memory job",
+)
+async def memory_job_status(
+    job_id: str, request: Request, user: dict = Depends(require_api_key)
+):
+    start = time.perf_counter()
+    job = await _read_user_job(job_id, _current_user_id(user))
+    if not job:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _error(request, "Job not found.", 404, elapsed)
+    elapsed = round((time.perf_counter() - start) * 1000, 2)
+    return _wrap(request, _job_status_data(job), elapsed)
 
 
 # POST /v1/memory/batch-ingest
@@ -721,7 +859,9 @@ async def _read_user_job(job_id: str, user_id: str) -> Dict[str, Any] | None:
     response_model=APIResponse,
     summary="Ingest multiple conversation turns into long-term memory sequentially",
 )
-async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: dict = Depends(require_api_key)):
+async def batch_ingest_memory(
+    req: BatchIngestRequest, request: Request, user: dict = Depends(require_api_key)
+):
     start = time.perf_counter()
     user_id = _current_user_id(user)
 
@@ -745,6 +885,56 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
         return _error(request, str(exc), 500, elapsed)
 
 
+# POST /v2/memory/batch-ingest
+@v2_router.post(
+    "/batch-ingest",
+    response_model=APIResponse,
+    summary="Start an async durable batch memory ingest job",
+)
+async def batch_ingest_memory_v2(
+    req: BatchIngestRequest, request: Request, user: dict = Depends(require_api_key)
+):
+    start = time.perf_counter()
+    user_id = _current_user_id(user)
+    payload = req.model_dump()
+    payload["user_id"] = user_id
+    payload["items"] = [_scoped_ingest_payload(user, item) for item in req.items]
+
+    try:
+        store = get_default_job_store()
+        job, created = await asyncio.to_thread(
+            store.enqueue,
+            job_type="memory_batch_ingest",
+            payload=payload,
+            idempotency_fields={
+                "user_id": user_id,
+                "items": payload["items"],
+            },
+            user_id=user_id,
+            timeout_seconds=max(
+                float(settings.memory_ingest_timeout_seconds),
+                min(len(req.items) * float(settings.memory_ingest_timeout_seconds), 3600.0),
+            ),
+            max_attempts=3,
+        )
+        _schedule_job(
+            job,
+            lambda: _run_batch_ingest_payload(payload),
+        )
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _job_accepted(
+            request,
+            job,
+            created,
+            f"/v2/memory/jobs/{job['job_id']}/status",
+            elapsed,
+        )
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Batch ingest enqueue failed for user=%s", user_id)
+        return _error(request, str(exc), 500, elapsed)
+
 
 # POST /v1/memory/retrieve
 @router.post(
@@ -752,10 +942,12 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
     response_model=APIResponse,
     summary="Retrieve an LLM-generated answer backed by stored memories",
 )
-async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = Depends(require_api_key)):
+async def retrieve_memory(
+    req: RetrieveRequest, request: Request, user: dict = Depends(require_api_key)
+):
     start = time.perf_counter()
     pipeline = get_retrieval_pipeline()
-    
+
     # Get username from authenticated user
     user_id = _current_user_id(user, req.user_id)
 
@@ -766,8 +958,10 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
             answer=result.answer,
             sources=[
                 SourceRecord(
-                    domain=s.domain, content=s.content,
-                    score=round(s.score, 3), metadata=s.metadata,
+                    domain=s.domain,
+                    content=s.content,
+                    score=round(s.score, 3),
+                    metadata=s.metadata,
                 )
                 for s in result.sources
             ],
@@ -786,26 +980,79 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
 @router.post(
     "/search",
     response_model=APIResponse,
-    summary="Raw semantic search across memory domains (no LLM answer)",
+    summary="Raw semantic search across memory domains with optional LLM answer",
 )
-async def search_memory(req: SearchRequest, request: Request, user: dict = Depends(require_api_key)):
+async def search_memory(
+    req: SearchRequest, request: Request, user: dict = Depends(require_api_key)
+):
     start = time.perf_counter()
     pipeline = get_retrieval_pipeline()
-    
+
     # Get username from authenticated user
     user_id = _current_user_id(user, req.user_id)
 
     try:
-        all_results: List[SourceRecord] = []
+        memory_domains = [domain for domain in req.domains if domain != "code"]
+        all_results = []
+        latency: Dict[str, Any] = {}
 
-        if "profile" in req.domains:
-            all_results.extend(_search_profile(pipeline, user_id))
-        if "temporal" in req.domains:
-            all_results.extend(_search_temporal(pipeline, req.query, user_id, req.top_k))
-        if "summary" in req.domains:
-            all_results.extend(await _search_summary(pipeline, req.query, user_id, req.top_k))
+        if memory_domains:
+            memory_results, raw_latency = await pipeline.raw_search(
+                query=req.query,
+                user_id=user_id,
+                domains=memory_domains,
+                top_k=req.top_k,
+            )
+            all_results.extend(memory_results)
+            latency["raw"] = raw_latency
 
-        data = SearchResponse(results=all_results, total=len(all_results))
+        if "code" in req.domains:
+            if not req.org_id:
+                elapsed = round((time.perf_counter() - start) * 1000, 2)
+                return _error(
+                    request,
+                    "org_id is required when searching the code domain",
+                    400,
+                    elapsed,
+                )
+
+            code_start = time.perf_counter()
+            code_results = await _search_code(
+                query=req.query,
+                user_id=user_id,
+                org_id=req.org_id,
+                repo=req.repo or "",
+                top_k=req.top_k,
+            )
+            all_results.extend(code_results)
+            latency["code"] = pipeline.record_latency(
+                "code", (time.perf_counter() - code_start) * 1000
+            )
+
+        all_results.sort(key=lambda source: source.score, reverse=True)
+        answer = ""
+        confidence = 0.0
+        mode = "raw"
+
+        if req.answer:
+            answer_start = time.perf_counter()
+            answer = await pipeline.synthesize_answer(req.query, all_results)
+            confidence = min(1.0, len(all_results) * 0.2) if all_results else 0.1
+            mode = "answer"
+            latency["answer"] = pipeline.record_latency(
+                "answer",
+                (time.perf_counter() - answer_start) * 1000,
+            )
+
+        api_results = [_to_api_source(source) for source in all_results]
+        data = SearchResponse(
+            results=api_results,
+            total=len(api_results),
+            answer=answer,
+            confidence=confidence,
+            mode=mode,
+            latency=latency,
+        )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         return _wrap(request, data, elapsed)
 
@@ -815,59 +1062,53 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
         return _error(request, str(exc), 500, elapsed)
 
 
-def _search_profile(pipeline: RetrievalPipeline, user_id: str) -> List[SourceRecord]:
-    try:
-        raw = pipeline.vector_store.search_by_metadata(
-            filters={"user_id": user_id, "domain": "profile"}, top_k=100,
-        )
-        return [SourceRecord(domain="profile", content=r.content, score=r.score, metadata=r.metadata) for r in raw]
-    except Exception as exc:
-        logger.warning("Profile search error: %s", exc)
-        return []
+def _to_api_source(source: Any) -> SourceRecord:
+    return SourceRecord(
+        domain=source.domain,
+        content=source.content,
+        score=round(float(source.score or 0.0), 3),
+        metadata=source.metadata,
+    )
 
 
-def _search_temporal(pipeline: RetrievalPipeline, query: str, user_id: str, top_k: int) -> List[SourceRecord]:
-    try:
-        events = pipeline.neo4j.search_events_by_embedding(
-            user_id=user_id, query_text=query, top_k=top_k, similarity_threshold=0.15,
-        )
-        results = []
-        for ev in events:
-            parts = []
-            if ev.get("date"):
-                d = ev["date"]
-                if ev.get("year"):
-                    d += f", {ev['year']}"
-                parts.append(f"Date: {d}")
-            if ev.get("event_name"):
-                parts.append(f"Event: {ev['event_name']}")
-            if ev.get("desc"):
-                parts.append(f"Description: {ev['desc']}")
-            if ev.get("time"):
-                parts.append(f"Time: {ev['time']}")
-            results.append(SourceRecord(
-                domain="temporal", content=" | ".join(parts),
-                score=ev.get("similarity_score", 0.0), metadata=ev,
-            ))
-        return results
-    except Exception as exc:
-        logger.warning("Temporal search error: %s", exc)
-        return []
+async def _search_code(
+    query: str,
+    user_id: str,
+    org_id: str,
+    repo: str,
+    top_k: int,
+) -> List[SourceRecord]:
+    code_pipeline = get_code_pipeline(org_id=org_id, repo=repo)
+    tool_results = await asyncio.gather(
+        code_pipeline._execute_tool(
+            tool_name="search_symbols",
+            tool_args={"query": query, "repo": repo},
+            repo=repo,
+            top_k=top_k,
+            user_id=user_id,
+        ),
+        code_pipeline._execute_tool(
+            tool_name="search_files",
+            tool_args={"query": query, "repo": repo},
+            repo=repo,
+            top_k=top_k,
+            user_id=user_id,
+        ),
+    )
 
-
-async def _search_summary(pipeline: RetrievalPipeline, query: str, user_id: str, top_k: int) -> List[SourceRecord]:
-    try:
-        raw = await pipeline.vector_store.search_by_text(
-            query_text=query, top_k=top_k,
-            filters={"user_id": user_id, "domain": "summary"},
-        )
-        return [
-            SourceRecord(domain="summary", content=r.content, score=r.score, metadata={"id": r.id, **r.metadata})
-            for r in raw
-        ]
-    except Exception as exc:
-        logger.warning("Summary search error: %s", exc)
-        return []
+    results: List[SourceRecord] = []
+    for records in tool_results:
+        for source in records:
+            metadata = {"source_domain": source.domain, **source.metadata}
+            results.append(
+                SourceRecord(
+                    domain="code",
+                    content=source.content,
+                    score=source.score,
+                    metadata=metadata,
+                )
+            )
+    return results
 
 
 # POST /v1/memory/scrape
@@ -898,6 +1139,57 @@ async def scrape_chat_link(req: ScrapeRequest, request: Request):
         return _error(request, str(exc) or repr(exc), 500, elapsed)
 
 
+# POST /v2/memory/scrape
+@v2_scrape_router.post(
+    "/scrape",
+    response_model=APIResponse,
+    summary="Start an async durable scrape job",
+)
+async def scrape_chat_link_v2(req: ScrapeRequest, request: Request):
+    start = time.perf_counter()
+    payload = req.model_dump()
+
+    try:
+        store = get_default_job_store()
+        job, created = await asyncio.to_thread(
+            store.enqueue,
+            job_type="memory_scrape",
+            payload=payload,
+            idempotency_fields={"url": req.url},
+            user_id="anonymous",
+            timeout_seconds=60.0,
+            max_attempts=2,
+        )
+        _schedule_job(job, lambda: _run_scrape_payload(payload))
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _job_accepted(
+            request,
+            job,
+            created,
+            f"/v2/memory/scrape/{job['job_id']}/status",
+            elapsed,
+        )
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Scrape enqueue failed for url=%s", req.url)
+        return _error(request, str(exc) or repr(exc), 500, elapsed)
+
+
+@v2_scrape_router.get(
+    "/scrape/{job_id}/status",
+    response_model=APIResponse,
+    summary="Poll an async scrape job",
+)
+async def scrape_job_status(job_id: str, request: Request):
+    start = time.perf_counter()
+    job = await asyncio.to_thread(get_default_job_store().get, job_id)
+    if not job or job.get("user_id") != "anonymous":
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _error(request, "Job not found.", 404, elapsed)
+    elapsed = round((time.perf_counter() - start) * 1000, 2)
+    return _wrap(request, _job_status_data(job), elapsed)
+
 
 # POST /v1/memory/parse_transcript
 @scrape_router.post(
@@ -907,36 +1199,40 @@ async def scrape_chat_link(req: ScrapeRequest, request: Request):
 )
 async def parse_transcript(
     request: Request,
-    file: UploadFile = File(..., description="Chat transcript file (.txt, .md, .json)")
+    file: UploadFile = File(..., description="Chat transcript file (.txt, .md, .json)"),
 ):
     start = time.perf_counter()
-    
+
     try:
         # Read file content
         content_bytes = await file.read()
         text = content_bytes.decode("utf-8", errors="ignore")
-        
+
         if not text.strip():
             return _error(request, "Uploaded file is empty.", 400)
-        
+
         # Try to parse the transcript
         format_detected, pairs = _parse_transcript_text(text)
-        
+
         # If no pairs found, try LLM fallback
         if not pairs:
             logger.info("Format detection failed, trying LLM fallback")
             pairs = await _parse_transcript_with_llm(text)
-        
+
         if not pairs:
-            return _error(request, "Could not extract message pairs from the transcript.", 400)
-        
+            return _error(
+                request, "Could not extract message pairs from the transcript.", 400
+            )
+
         data = ScrapeResponse(pairs=pairs)
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         return _wrap(request, data, elapsed)
-    
+
     except UnicodeDecodeError:
         elapsed = round((time.perf_counter() - start) * 1000, 2)
-        return _error(request, "Could not decode file. Please upload a text file.", 400, elapsed)
+        return _error(
+            request, "Could not decode file. Please upload a text file.", 400, elapsed
+        )
     except Exception as exc:
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         logger.exception("Transcript parsing failed for file=%s", file.filename)

@@ -7,7 +7,6 @@ OpenAPI docs, input validation, and serialization are fully type-safe.
 
 from __future__ import annotations
 
-from datetime import datetime
 from enum import Enum
 import re
 from typing import Any, Dict, List, Optional
@@ -34,6 +33,7 @@ class UserScopedModel(BaseModel):
 
 # ── Shared envelope ────────────────────────────────────────────────────────
 
+
 class StatusEnum(str, Enum):
     OK = "ok"
     ERROR = "error"
@@ -41,6 +41,7 @@ class StatusEnum(str, Enum):
 
 class APIResponse(BaseModel):
     """Standard wrapper returned by every endpoint."""
+
     status: StatusEnum = StatusEnum.OK
     request_id: Optional[str] = None
     data: Optional[Any] = None
@@ -49,6 +50,7 @@ class APIResponse(BaseModel):
 
 
 # ── Health ─────────────────────────────────────────────────────────────────
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -62,16 +64,22 @@ class HealthResponse(BaseModel):
 
 class IngestRequest(UserScopedModel):
     """Store a new memory from a conversation turn."""
+
     user_query: str = Field(
-        ..., min_length=1, max_length=10_000,
+        ...,
+        min_length=1,
+        max_length=10_000,
         description="The user's message to memorize",
     )
     agent_response: str = Field(
-        default="", max_length=10_000,
+        default="",
+        max_length=10_000,
         description="The assistant's reply (used for summary extraction)",
     )
     user_id: str = Field(
-        ..., min_length=1, max_length=256,
+        ...,
+        min_length=1,
+        max_length=256,
         description="User identifier. Friendly names are normalized internally.",
     )
     session_datetime: str = Field(
@@ -79,7 +87,8 @@ class IngestRequest(UserScopedModel):
         description="ISO-8601 datetime context for temporal event extraction",
     )
     image_url: str = Field(
-        default="", max_length=50_000,
+        default="",
+        max_length=50_000,
         description="URL or base64 data-URI of an attached image",
     )
     effort_level: str = Field(
@@ -121,27 +130,36 @@ class IngestResponse(BaseModel):
 
 class BatchIngestRequest(BaseModel):
     """Store multiple new memories in a single batch."""
+
     items: List[IngestRequest] = Field(
-        ..., min_length=1, max_length=100,
-        description="List of conversation turns to ingest"
+        ...,
+        min_length=1,
+        max_length=100,
+        description="List of conversation turns to ingest",
     )
+
 
 class BatchIngestResponse(BaseModel):
     """Response for a batch ingest operation."""
-    results: List[IngestResponse] = Field(default_factory=list)
 
+    results: List[IngestResponse] = Field(default_factory=list)
 
 
 # ── Retrieve (answer a question from memory) ──────────────────────────────
 
 class RetrieveRequest(UserScopedModel):
     """Ask a question answered from stored memories."""
+
     query: str = Field(
-        ..., min_length=1, max_length=5_000,
+        ...,
+        min_length=1,
+        max_length=5_000,
         description="The question to answer from memory",
     )
     user_id: str = Field(
-        ..., min_length=1, max_length=256,
+        ...,
+        min_length=1,
+        max_length=256,
     )
     top_k: int = Field(default=5, ge=1, le=50)
 
@@ -167,23 +185,43 @@ class RetrieveResponse(BaseModel):
 # ── Search (raw vector / graph search without LLM answer) ─────────────────
 
 class SearchRequest(UserScopedModel):
-    """Raw semantic search across memory domains."""
+    """Raw semantic search across memory domains, optionally with answer synthesis."""
+
     query: str = Field(
-        ..., min_length=1, max_length=5_000,
+        ...,
+        min_length=1,
+        max_length=5_000,
     )
     user_id: str = Field(
-        ..., min_length=1, max_length=256,
+        ...,
+        min_length=1,
+        max_length=256,
     )
     domains: List[str] = Field(
-        default=["profile", "temporal", "summary"],
+        default=["profile", "temporal", "summary", "snippet"],
         description="Which memory domains to search",
     )
     top_k: int = Field(default=10, ge=1, le=100)
+    answer: bool = Field(
+        default=False,
+        description="When true, synthesize an LLM answer from raw search hits.",
+    )
+    org_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="Organization id required when the code domain is requested.",
+    )
+    repo: Optional[str] = Field(
+        default=None,
+        max_length=256,
+        description="Optional repository filter for code search.",
+    )
 
     @field_validator("domains")
     @classmethod
     def validate_domains(cls, v: List[str]) -> List[str]:
-        allowed = {"profile", "temporal", "summary"}
+        allowed = {"profile", "temporal", "summary", "snippet", "code"}
         for d in v:
             if d not in allowed:
                 raise ValueError(f"Invalid domain '{d}'. Allowed: {allowed}")
@@ -193,20 +231,30 @@ class SearchRequest(UserScopedModel):
 class SearchResponse(BaseModel):
     results: List[SourceRecord] = Field(default_factory=list)
     total: int = 0
+    answer: str = ""
+    confidence: float = 0.0
+    mode: str = "raw"
+    latency: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ── Scrape (extract from shared chat links) ────────────────────────────────
 
+
 class ScrapeRequest(BaseModel):
     """Request to scrape a shared AI chat link."""
+
     url: str = Field(
-        ..., min_length=1, max_length=2000,
-        description="Public share link (ChatGPT, Claude, Gemini)"
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="Public share link (ChatGPT, Claude, Gemini)",
     )
+
 
 class MessagePair(BaseModel):
     user_query: str
     agent_response: str
+
 
 class ScrapeResponse(BaseModel):
     pairs: List[MessagePair] = Field(default_factory=list)
@@ -217,6 +265,7 @@ class ScrapeResponse(BaseModel):
 
 class CodeQueryRequest(UserScopedModel):
     """Query a codebase via the code retrieval pipeline."""
+
     org_id: str = Field(..., min_length=1, max_length=256)
     repo: str = Field(..., min_length=1, max_length=256)
     query: str = Field(..., min_length=1, max_length=5_000)
@@ -237,6 +286,7 @@ class CodeQueryResponse(BaseModel):
 
 class ExecuteToolRequest(UserScopedModel):
     """Execute a specific raw code retrieval tool natively."""
+
     org_id: str = Field(..., min_length=1, max_length=256)
     repo: str = Field(..., min_length=1, max_length=256)
     tool_name: str = Field(..., min_length=1, max_length=128)

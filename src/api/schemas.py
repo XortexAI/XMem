@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -159,15 +159,37 @@ class SearchRequest(BaseModel):
         ..., min_length=1, max_length=256, pattern=r"^[\w.\-@]+$",
     )
     domains: List[str] = Field(
-        default=["profile", "temporal", "summary"],
+        default=["profile", "temporal", "summary", "snippet"],
         description="Which memory domains to search",
     )
     top_k: int = Field(default=10, ge=1, le=100)
+    answer: bool = Field(
+        default=False,
+        description="When true, also run LLM answer synthesis using the ranked search results.",
+    )
+    org_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="Organization ID for code domain searches.",
+    )
+    repo: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="Repository name for code domain searches.",
+    )
+    project_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="Project ID for annotation-aware code searches.",
+    )
 
     @field_validator("domains")
     @classmethod
     def validate_domains(cls, v: List[str]) -> List[str]:
-        allowed = {"profile", "temporal", "summary"}
+        allowed = {"profile", "temporal", "summary", "snippet", "code"}
         for d in v:
             if d not in allowed:
                 raise ValueError(f"Invalid domain '{d}'. Allowed: {allowed}")
@@ -177,6 +199,10 @@ class SearchRequest(BaseModel):
 class SearchResponse(BaseModel):
     results: List[SourceRecord] = Field(default_factory=list)
     total: int = 0
+    mode: Literal["raw", "answer"] = "raw"
+    answer: Optional[str] = None
+    confidence: float = 0.0
+    latency_ms: Dict[str, float] = Field(default_factory=dict)
 
 
 # ── Scrape (extract from shared chat links) ────────────────────────────────

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -133,6 +134,10 @@ class RetrievalPipeline:
 
         self.embed_fn = embed_fn
         self._snippet_stores: Dict[str, BaseVectorStore] = {}
+        self._profile_catalog_cache: Dict[str, tuple[float, List[Dict[str, str]], List[Any]]] = {}
+        self._profile_catalog_ttl_seconds = 60.0
+        self._retrieval_plan_cache: Dict[tuple[str, str, str, int], tuple[float, AIMessage]] = {}
+        self._retrieval_plan_ttl_seconds = 30.0
 
         logger.info("RetrievalPipeline initialized")
 
@@ -169,8 +174,15 @@ class RetrievalPipeline:
             HumanMessage(content=query),
         ]
 
-        ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
-        logger.info("LLM response received (tool_calls=%d)", len(ai_response.tool_calls or []))
+        plan_cache_key = (user_id, query, catalog_text, top_k)
+        cached_plan = self._retrieval_plan_cache.get(plan_cache_key)
+        if cached_plan and time.monotonic() - cached_plan[0] < self._retrieval_plan_ttl_seconds:
+            ai_response = cached_plan[1]
+            logger.info("LLM retrieval plan cache hit (tool_calls=%d)", len(ai_response.tool_calls or []))
+        else:
+            ai_response: AIMessage = await self.model_with_tools.ainvoke(messages)
+            self._retrieval_plan_cache[plan_cache_key] = (time.monotonic(), ai_response)
+            logger.info("LLM response received (tool_calls=%d)", len(ai_response.tool_calls or []))
 
         # ── Step 2: Execute tool calls ────────────────────────────────
         sources: List[SourceRecord] = []
@@ -487,13 +499,18 @@ class RetrievalPipeline:
     # ------------------------------------------------------------------
 
     def _fetch_profile_catalog(self, user_id: str):
-        """Fetch all profile entries for a user.
+        """Fetch all profile entries for a user, caching the catalog briefly.
 
         Returns:
             (catalog, raw_results)
             catalog  — list of {topic, sub_topic} for the prompt
             raw_results — the full SearchResult list, cached for _search_profile
         """
+        now = time.monotonic()
+        cached = self._profile_catalog_cache.get(user_id)
+        if cached and now - cached[0] < self._profile_catalog_ttl_seconds:
+            return cached[1], cached[2]
+
         try:
             results = self.vector_store.search_by_metadata(
                 filters={"user_id": user_id, "domain": "profile"},
@@ -524,6 +541,7 @@ class RetrievalPipeline:
                     "sub_topic": "",
                 })
 
+        self._profile_catalog_cache[user_id] = (now, catalog, results)
         return catalog, results
 
     def _format_catalog(self, catalog: List[Dict[str, str]]) -> str:

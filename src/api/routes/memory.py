@@ -9,13 +9,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List
+from collections import defaultdict, deque
+from typing import Any, Callable, Dict, List
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import JSONResponse
+from langchain_core.messages import HumanMessage
 
 from src.api.dependencies import (
     enforce_rate_limit,
+    get_code_pipeline,
     get_ingest_pipeline,
     get_retrieval_pipeline,
     require_api_key,
@@ -41,6 +44,7 @@ from src.api.schemas import (
     WeaverSummary,
 )
 from src.pipelines.retrieval import RetrievalPipeline
+from src.prompts.retrieval import ANSWER_PROMPT
 
 from bs4 import BeautifulSoup
 import json
@@ -62,6 +66,26 @@ scrape_router = APIRouter(
     tags=["memory"],
     dependencies=[Depends(enforce_rate_limit)],
 )
+
+_SEARCH_LATENCIES: Dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=500))
+
+
+def _record_search_latency(mode: str, elapsed_ms: float) -> Dict[str, float]:
+    samples = _SEARCH_LATENCIES[mode]
+    samples.append(elapsed_ms)
+    ordered = sorted(samples)
+
+    def pct(percent: float) -> float:
+        if not ordered:
+            return 0.0
+        idx = min(len(ordered) - 1, int(round((len(ordered) - 1) * percent)))
+        return round(ordered[idx], 2)
+
+    return {
+        f"{mode}_p50": pct(0.50),
+        f"{mode}_p95": pct(0.95),
+        f"{mode}_p99": pct(0.99),
+    }
 
 
 # Helpers
@@ -679,27 +703,54 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
 @router.post(
     "/search",
     response_model=APIResponse,
-    summary="Raw semantic search across memory domains (no LLM answer)",
+    summary="Fast raw search across memory domains, with optional LLM answer synthesis",
 )
 async def search_memory(req: SearchRequest, request: Request, user: dict = Depends(require_api_key)):
     start = time.perf_counter()
     pipeline = get_retrieval_pipeline()
-    
-    # Get username from authenticated user
+
     user_id = user.get("username") or user.get("name") or user["id"]
+    mode = "answer" if req.answer else "raw"
 
     try:
+        timings: Dict[str, float] = {}
         all_results: List[SourceRecord] = []
+        domains = list(dict.fromkeys(req.domains))
 
-        if "profile" in req.domains:
-            all_results.extend(_search_profile(pipeline, user_id))
-        if "temporal" in req.domains:
-            all_results.extend(_search_temporal(pipeline, req.query, user_id, req.top_k))
-        if "summary" in req.domains:
-            all_results.extend(await _search_summary(pipeline, req.query, user_id, req.top_k))
+        if "profile" in domains:
+            all_results.extend(await _timed_sync("profile", timings, _search_profile, pipeline, user_id))
+        if "temporal" in domains:
+            all_results.extend(await _timed_sync("temporal", timings, _search_temporal, pipeline, req.query, user_id, req.top_k))
+        if "summary" in domains:
+            all_results.extend(await _timed_async("summary", timings, _search_summary, pipeline, req.query, user_id, req.top_k))
+        if "snippet" in domains:
+            all_results.extend(await _timed_async("snippet", timings, _search_snippet, pipeline, req.query, user_id, req.top_k))
+        if "code" in domains:
+            if not req.org_id or not req.repo:
+                return _error(request, "org_id and repo are required when domains includes 'code'.", 400, 0)
+            all_results.extend(await _timed_async("code", timings, _search_code, req, user_id))
 
-        data = SearchResponse(results=all_results, total=len(all_results))
+        all_results.sort(key=lambda r: r.score, reverse=True)
+        answer_text = None
+        confidence = min(1.0, len(all_results) * 0.2) if all_results else 0.0
+
+        if req.answer:
+            answer_start = time.perf_counter()
+            answer_text = await _synthesize_search_answer(pipeline, req.query, all_results)
+            timings["answer"] = round((time.perf_counter() - answer_start) * 1000, 2)
+
         elapsed = round((time.perf_counter() - start) * 1000, 2)
+        timings[f"{mode}_total"] = elapsed
+        timings.update(_record_search_latency(mode, elapsed))
+
+        data = SearchResponse(
+            results=all_results,
+            total=len(all_results),
+            mode=mode,
+            answer=answer_text,
+            confidence=confidence,
+            latency_ms=timings,
+        )
         return _wrap(request, data, elapsed)
 
     except Exception as exc:
@@ -708,12 +759,28 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
         return _error(request, str(exc), 500, elapsed)
 
 
+async def _timed_sync(label: str, timings: Dict[str, float], fn: Callable, *args) -> List[SourceRecord]:
+    start = time.perf_counter()
+    records = await asyncio.to_thread(fn, *args)
+    timings[label] = round((time.perf_counter() - start) * 1000, 2)
+    return records
+
+
+async def _timed_async(label: str, timings: Dict[str, float], fn: Callable, *args) -> List[SourceRecord]:
+    start = time.perf_counter()
+    records = await fn(*args)
+    timings[label] = round((time.perf_counter() - start) * 1000, 2)
+    return records
+
+
 def _search_profile(pipeline: RetrievalPipeline, user_id: str) -> List[SourceRecord]:
     try:
-        raw = pipeline.vector_store.search_by_metadata(
-            filters={"user_id": user_id, "domain": "profile"}, top_k=100,
-        )
-        return [SourceRecord(domain="profile", content=r.content, score=r.score, metadata=r.metadata) for r in raw]
+        _, raw = pipeline._fetch_profile_catalog(user_id)
+        pipeline._cached_profile_records = raw
+        return [
+            SourceRecord(domain="profile", content=r.content, score=r.score, metadata={"id": r.id, **r.metadata})
+            for r in raw
+        ]
     except Exception as exc:
         logger.warning("Profile search error: %s", exc)
         return []
@@ -761,6 +828,66 @@ async def _search_summary(pipeline: RetrievalPipeline, query: str, user_id: str,
     except Exception as exc:
         logger.warning("Summary search error: %s", exc)
         return []
+
+
+async def _search_snippet(pipeline: RetrievalPipeline, query: str, user_id: str, top_k: int) -> List[SourceRecord]:
+    try:
+        return await pipeline._search_snippet(query=query, user_id=user_id, top_k=top_k)
+    except Exception as exc:
+        logger.warning("Snippet search error: %s", exc)
+        return []
+
+
+async def _search_code(req: SearchRequest, user_id: str) -> List[SourceRecord]:
+    try:
+        from src.api.routes.scanner import _get_code_store, _scanner_chat_allowed
+
+        denied = _scanner_chat_allowed(_get_code_store(), user_id, req.org_id or "", req.repo or "")
+        if denied:
+            logger.warning("Code search denied for user=%s org=%s repo=%s: %s", user_id, req.org_id, req.repo, denied)
+            return []
+
+        pipeline = get_code_pipeline(org_id=req.org_id or "", repo=req.repo or "", project_id=req.project_id)
+        symbol_results, file_results = await asyncio.gather(
+            pipeline._execute_tool(
+                tool_name="SearchSymbols",
+                tool_args={"query": req.query, "repo": req.repo or ""},
+                repo=req.repo or "",
+                top_k=req.top_k,
+                user_id=user_id,
+            ),
+            pipeline._execute_tool(
+                tool_name="SearchFiles",
+                tool_args={"query": req.query, "repo": req.repo or ""},
+                repo=req.repo or "",
+                top_k=req.top_k,
+                user_id=user_id,
+            ),
+        )
+        return [SourceRecord(domain="code", content=r.content, score=r.score, metadata=r.metadata) for r in [*symbol_results, *file_results]]
+    except Exception as exc:
+        logger.warning("Code search error: %s", exc)
+        return []
+
+
+async def _synthesize_search_answer(
+    pipeline: RetrievalPipeline, query: str, sources: List[SourceRecord]
+) -> str:
+    context = "\n".join(
+        f"[{idx + 1}] domain={source.domain} score={source.score:.3f}\n{source.content}"
+        for idx, source in enumerate(sources)
+    ) or "(No memory search results found.)"
+    response = await pipeline.model.ainvoke([HumanMessage(content=ANSWER_PROMPT.format(context=context, query=query))])
+    content = response.content if hasattr(response, "content") else response
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and "text" in item:
+                parts.append(item["text"])
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(content)
 
 
 # POST /v1/memory/scrape

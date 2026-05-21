@@ -114,6 +114,31 @@ class BatchIngestResponse(BaseModel):
     results: List[IngestResponse] = Field(default_factory=list)
 
 
+class JobEnqueueResponse(BaseModel):
+    """Response returned when long-running work is accepted by the job queue."""
+    job_id: str
+    job_type: str
+    status: str
+    idempotency_key: str
+    status_url: str
+
+
+class JobStatusResponse(BaseModel):
+    """Public state for a background job."""
+    job_id: str
+    job_type: str
+    status: str
+    retry_count: int = 0
+    max_retries: int = 0
+    timeout_seconds: float = 0.0
+    error: Optional[str] = None
+    result: Optional[Any] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
 
 # ── Retrieve (answer a question from memory) ──────────────────────────────
 

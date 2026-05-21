@@ -262,6 +262,30 @@ class Settings(BaseSettings):
         default=60,
         description="Rate limit (requests per minute)"
     )
+    job_worker_enabled: bool = Field(
+        default=True,
+        description="Enable durable background job queue worker"
+    )
+    job_poll_interval_seconds: float = Field(
+        default=1.0,
+        description="Seconds between job queue polls when idle"
+    )
+    job_timeout_seconds: float = Field(
+        default=120.0,
+        description="Default timeout for background jobs"
+    )
+    job_max_retries: int = Field(
+        default=3,
+        description="Default retry attempts before moving a job to dead-letter"
+    )
+    job_retry_backoff_seconds: float = Field(
+        default=5.0,
+        description="Initial exponential backoff delay for job retries"
+    )
+    job_lease_seconds: float = Field(
+        default=300.0,
+        description="Seconds before a running job lease is considered stale"
+    )
 
     # Scanner dashboard — heuristic pre-scan estimates (tunable)
     scanner_estimate_phase1_base_seconds: float = Field(

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -133,6 +134,9 @@ class RetrievalPipeline:
 
         self.embed_fn = embed_fn
         self._snippet_stores: Dict[str, BaseVectorStore] = {}
+        self._profile_catalog_cache: Dict[str, tuple[float, List[Dict[str, str]], list]] = {}
+        self._raw_retrieval_plan_cache: Dict[tuple[tuple[str, ...], bool], tuple[str, ...]] = {}
+        self._cache_ttl_seconds = 60.0
 
         logger.info("RetrievalPipeline initialized")
 
@@ -494,6 +498,11 @@ class RetrievalPipeline:
             catalog  — list of {topic, sub_topic} for the prompt
             raw_results — the full SearchResult list, cached for _search_profile
         """
+        now = time.monotonic()
+        cached = self._profile_catalog_cache.get(user_id)
+        if cached and now - cached[0] < self._cache_ttl_seconds:
+            return cached[1], cached[2]
+
         try:
             results = self.vector_store.search_by_metadata(
                 filters={"user_id": user_id, "domain": "profile"},
@@ -524,7 +533,17 @@ class RetrievalPipeline:
                     "sub_topic": "",
                 })
 
+        self._profile_catalog_cache[user_id] = (now, catalog, results)
         return catalog, results
+
+    def raw_retrieval_plan(self, domains: List[str], answer: bool = False) -> tuple[str, ...]:
+        """Return a cached deterministic raw-search plan for the requested domains."""
+        ordered_allowed = ("profile", "temporal", "summary", "snippet", "code")
+        normalized = tuple(d for d in ordered_allowed if d in set(domains))
+        key = (normalized, answer)
+        if key not in self._raw_retrieval_plan_cache:
+            self._raw_retrieval_plan_cache[key] = normalized
+        return self._raw_retrieval_plan_cache[key]
 
     def _format_catalog(self, catalog: List[Dict[str, str]]) -> str:
         """Format profile catalog for the system prompt."""

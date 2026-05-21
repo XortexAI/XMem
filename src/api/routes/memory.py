@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
+from collections import defaultdict, deque
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File
@@ -50,6 +52,7 @@ from playwright.sync_api import sync_playwright
 logger = logging.getLogger("xmem.api.routes.memory")
 
 _ingest_semaphore = asyncio.Semaphore(5)
+_latency_samples: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=200))
 
 router = APIRouter(
     prefix="/v1/memory",
@@ -108,6 +111,40 @@ def _error(request: Request, detail: str, code: int, elapsed_ms: float = 0) -> J
     return JSONResponse(content=body.model_dump(), status_code=code)
 
 
+def _record_latency(mode: str, elapsed_ms: float) -> None:
+    _latency_samples[mode].append(elapsed_ms)
+
+
+def _percentile(sorted_values: List[float], percentile: float) -> float:
+    if not sorted_values:
+        return 0.0
+    index = min(len(sorted_values) - 1, int(round((len(sorted_values) - 1) * percentile)))
+    return round(sorted_values[index], 2)
+
+
+def _latency_stats() -> Dict[str, Dict[str, float]]:
+    stats: Dict[str, Dict[str, float]] = {}
+    for mode, samples in _latency_samples.items():
+        values = sorted(samples)
+        stats[mode] = {
+            "count": len(values),
+            "p50_ms": _percentile(values, 0.50),
+            "p95_ms": _percentile(values, 0.95),
+            "p99_ms": _percentile(values, 0.99),
+        }
+    return stats
+
+
+async def _timed(mode: str, func, *args, **kwargs):
+    start = time.perf_counter()
+    result = func(*args, **kwargs)
+    if hasattr(result, "__await__"):
+        result = await result
+    elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+    _record_latency(mode, elapsed_ms)
+    return result, elapsed_ms
+
+
 def _detect_chat_provider(*urls: str) -> str:
     for url in urls:
         lowered = (url or "").lower()
@@ -144,8 +181,6 @@ async def _render_chat_share(url: str) -> tuple[str, str]:
 # Launching Chromium from cold takes 3-5s. We keep a singleton alive and
 # reuse it across scrape requests. The browser is thread-safe when each
 # request uses its own BrowserContext.
-
-import threading
 
 _browser_lock = threading.Lock()
 _pw_instance = None
@@ -690,15 +725,57 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
 
     try:
         all_results: List[SourceRecord] = []
+        latency_ms: Dict[str, float] = {}
+        plan = pipeline.raw_retrieval_plan(req.domains, answer=req.answer)
 
-        if "profile" in req.domains:
-            all_results.extend(_search_profile(pipeline, user_id))
-        if "temporal" in req.domains:
-            all_results.extend(_search_temporal(pipeline, req.query, user_id, req.top_k))
-        if "summary" in req.domains:
-            all_results.extend(await _search_summary(pipeline, req.query, user_id, req.top_k))
+        if "profile" in plan:
+            results, elapsed = await _timed("profile", _search_profile, pipeline, user_id)
+            latency_ms["profile"] = elapsed
+            all_results.extend(results)
+        if "temporal" in plan:
+            results, elapsed = await _timed("temporal", _search_temporal, pipeline, req.query, user_id, req.top_k)
+            latency_ms["temporal"] = elapsed
+            all_results.extend(results)
+        if "summary" in plan:
+            results, elapsed = await _timed("summary", _search_summary, pipeline, req.query, user_id, req.top_k)
+            latency_ms["summary"] = elapsed
+            all_results.extend(results)
+        if "snippet" in plan:
+            results, elapsed = await _timed("snippet", _search_snippet, pipeline, req.query, user_id, req.top_k)
+            latency_ms["snippet"] = elapsed
+            all_results.extend(results)
+        if "code" in plan:
+            results, elapsed = await _timed("code", _search_code, pipeline, req.query, user_id, req.top_k)
+            latency_ms["code"] = elapsed
+            all_results.extend(results)
 
-        data = SearchResponse(results=all_results, total=len(all_results))
+        all_results.sort(key=lambda record: record.score, reverse=True)
+
+        answer = None
+        answer_sources: List[SourceRecord] = []
+        confidence = 0.0
+        if req.answer:
+            answer_result, elapsed = await _timed("answer", pipeline.run, req.query, user_id, req.top_k)
+            latency_ms["answer"] = elapsed
+            answer = answer_result.answer
+            confidence = answer_result.confidence
+            answer_sources = [
+                SourceRecord(
+                    domain=s.domain, content=s.content,
+                    score=round(s.score, 3), metadata=s.metadata,
+                )
+                for s in answer_result.sources
+            ]
+
+        data = SearchResponse(
+            results=all_results,
+            total=len(all_results),
+            answer=answer,
+            answer_sources=answer_sources,
+            confidence=confidence,
+            latency_ms=latency_ms,
+            latency_stats=_latency_stats(),
+        )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         return _wrap(request, data, elapsed)
 
@@ -760,6 +837,34 @@ async def _search_summary(pipeline: RetrievalPipeline, query: str, user_id: str,
         ]
     except Exception as exc:
         logger.warning("Summary search error: %s", exc)
+        return []
+
+
+async def _search_snippet(pipeline: RetrievalPipeline, query: str, user_id: str, top_k: int) -> List[SourceRecord]:
+    try:
+        raw = await pipeline._search_snippet(query=query, user_id=user_id, top_k=top_k)
+        return [
+            SourceRecord(domain=r.domain, content=r.content, score=round(r.score, 3), metadata=r.metadata)
+            for r in raw
+        ]
+    except Exception as exc:
+        logger.warning("Snippet search error: %s", exc)
+        return []
+
+
+async def _search_code(pipeline: RetrievalPipeline, query: str, user_id: str, top_k: int) -> List[SourceRecord]:
+    try:
+        raw = await pipeline.vector_store.search_by_text(
+            query_text=query,
+            top_k=top_k,
+            filters={"user_id": user_id, "domain": "code"},
+        )
+        return [
+            SourceRecord(domain="code", content=r.content, score=round(r.score, 3), metadata={"id": r.id, **r.metadata})
+            for r in raw
+        ]
+    except Exception as exc:
+        logger.warning("Code search error: %s", exc)
         return []
 
 

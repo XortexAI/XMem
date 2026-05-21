@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
-from src.pipelines.weaver import Weaver
 from src.schemas.judge import JudgeDomain, JudgeResult, Operation, OperationType
 from src.schemas.weaver import OpStatus
+
+WEAVER_PATH = Path(__file__).resolve().parents[2] / "src" / "pipelines" / "weaver.py"
+weaver_spec = importlib.util.spec_from_file_location("weaver_under_test", WEAVER_PATH)
+weaver_module = importlib.util.module_from_spec(weaver_spec)
+weaver_spec.loader.exec_module(weaver_module)
+Weaver = weaver_module.Weaver
 
 
 @pytest.mark.asyncio
@@ -30,8 +38,14 @@ async def test_weaver_batches_vector_add_update_and_delete(vector_store, fast_em
 
     assert result.succeeded == 3
     assert vector_store.add_calls[0]["texts"] == ["work / title = Engineer"]
-    assert vector_store.records["profile-1"]["content"] == "work / company = XMem"
-    assert vector_store.records["profile-1"]["metadata"]["main_content"] == "work_company"
+    update_result = result.executed[1]
+    assert update_result.new_id
+    assert vector_store.records["profile-1"]["content"] == "work / company = OldCo"
+    assert vector_store.records["profile-1"]["metadata"]["is_current"] is False
+    assert vector_store.records["profile-1"]["metadata"]["superseded_by"] == update_result.new_id
+    assert vector_store.records[update_result.new_id]["content"] == "work / company = XMem"
+    assert vector_store.records[update_result.new_id]["metadata"]["main_content"] == "work_company"
+    assert vector_store.records[update_result.new_id]["metadata"]["version"] == 2
 
 
 @pytest.mark.asyncio

@@ -42,6 +42,10 @@ load_dotenv()
 logger = logging.getLogger("xmem.pipelines.retrieval")
 
 
+def _is_active_memory(metadata: Dict[str, Any]) -> bool:
+    return metadata.get("is_current") is not False
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Tool schemas — These are the "function signatures" exposed to the LLM
 # ═══════════════════════════════════════════════════════════════════════════
@@ -417,7 +421,7 @@ class RetrievalPipeline:
 
         results = await self.vector_store.search_by_text(
             query_text=query,
-            top_k=top_k,
+            top_k=max(top_k * 2, 10),
             filters={
                 "user_id": user_id,
                 "domain": "summary",
@@ -426,12 +430,16 @@ class RetrievalPipeline:
 
         records = []
         for r in results:
+            if not _is_active_memory(r.metadata):
+                continue
             records.append(SourceRecord(
                 domain="summary",
                 content=r.content,
                 score=r.score,
                 metadata={"id": r.id, **r.metadata},
             ))
+            if len(records) >= top_k:
+                break
 
         logger.info("  → Summary [%s]: %d results", query, len(records))
         return records
@@ -507,6 +515,8 @@ class RetrievalPipeline:
         seen = set()
 
         for r in results:
+            if not _is_active_memory(r.metadata):
+                continue
             main_content = r.metadata.get("main_content", "")
             if not main_content or main_content in seen:
                 continue

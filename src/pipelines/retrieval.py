@@ -137,6 +137,7 @@ class RetrievalPipeline:
         self._profile_catalog_cache: Dict[str, tuple[float, List[Dict[str, str]], list]] = {}
         self._raw_retrieval_plan_cache: Dict[tuple[tuple[str, ...], bool], tuple[str, ...]] = {}
         self._cache_ttl_seconds = 60.0
+        self._profile_catalog_cache_max_users = 256
 
         logger.info("RetrievalPipeline initialized")
 
@@ -499,8 +500,11 @@ class RetrievalPipeline:
             raw_results — the full SearchResult list, cached for _search_profile
         """
         now = time.monotonic()
+        self._prune_profile_catalog_cache(now)
+
         cached = self._profile_catalog_cache.get(user_id)
         if cached and now - cached[0] < self._cache_ttl_seconds:
+            self._profile_catalog_cache[user_id] = (now, cached[1], cached[2])
             return cached[1], cached[2]
 
         try:
@@ -535,6 +539,20 @@ class RetrievalPipeline:
 
         self._profile_catalog_cache[user_id] = (now, catalog, results)
         return catalog, results
+
+    def _prune_profile_catalog_cache(self, now: float) -> None:
+        """Bound profile catalog cache by TTL and number of cached users."""
+        expired_user_ids = [
+            cached_user_id
+            for cached_user_id, (cached_at, _, _) in self._profile_catalog_cache.items()
+            if now - cached_at >= self._cache_ttl_seconds
+        ]
+        for cached_user_id in expired_user_ids:
+            self._profile_catalog_cache.pop(cached_user_id, None)
+
+        while len(self._profile_catalog_cache) >= self._profile_catalog_cache_max_users:
+            oldest_user_id = next(iter(self._profile_catalog_cache))
+            self._profile_catalog_cache.pop(oldest_user_id, None)
 
     def raw_retrieval_plan(self, domains: List[str], answer: bool = False) -> tuple[str, ...]:
         """Return a cached deterministic raw-search plan for the requested domains."""

@@ -961,27 +961,39 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
         all_results: List[SourceRecord] = []
         latency_ms: Dict[str, float] = {}
         plan = pipeline.raw_retrieval_plan(req.domains, answer=req.answer)
+        raw_tasks = []
 
         if "profile" in plan:
-            results, elapsed = await _timed("profile", _search_profile, pipeline, user_id)
-            latency_ms["profile"] = elapsed
-            all_results.extend(results)
+            raw_tasks.append((
+                "profile",
+                _timed("profile", _search_profile, pipeline, user_id, threaded=True),
+            ))
         if "temporal" in plan:
-            results, elapsed = await _timed("temporal", _search_temporal, pipeline, req.query, user_id, req.top_k)
-            latency_ms["temporal"] = elapsed
-            all_results.extend(results)
+            raw_tasks.append((
+                "temporal",
+                _timed("temporal", _search_temporal, pipeline, req.query, user_id, req.top_k, threaded=True),
+            ))
         if "summary" in plan:
-            results, elapsed = await _timed("summary", _search_summary, pipeline, req.query, user_id, req.top_k)
-            latency_ms["summary"] = elapsed
-            all_results.extend(results)
+            raw_tasks.append((
+                "summary",
+                _timed("summary", _search_summary, pipeline, req.query, user_id, req.top_k),
+            ))
         if "snippet" in plan:
-            results, elapsed = await _timed("snippet", _search_snippet, pipeline, req.query, user_id, req.top_k)
-            latency_ms["snippet"] = elapsed
-            all_results.extend(results)
+            raw_tasks.append((
+                "snippet",
+                _timed("snippet", _search_snippet, pipeline, req.query, user_id, req.top_k),
+            ))
         if "code" in plan:
-            results, elapsed = await _timed("code", _search_code, pipeline, req.query, user_id, req.top_k)
-            latency_ms["code"] = elapsed
-            all_results.extend(results)
+            raw_tasks.append((
+                "code",
+                _timed("code", _search_code, pipeline, req.query, user_id, req.top_k),
+            ))
+
+        if raw_tasks:
+            raw_results = await asyncio.gather(*(task for _, task in raw_tasks))
+            for (domain, _), (results, elapsed) in zip(raw_tasks, raw_results):
+                latency_ms[domain] = elapsed
+                all_results.extend(results)
 
         all_results.sort(key=lambda record: record.score, reverse=True)
 

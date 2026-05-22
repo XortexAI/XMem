@@ -541,8 +541,8 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
     user_id = user.get("username") or user.get("name") or user["id"]
 
     try:
-        async with _ingest_semaphore:
-            async with _user_coordinator.acquire(user_id):
+        async with _user_coordinator.acquire(user_id):
+            async with _ingest_semaphore:
                 result = await asyncio.wait_for(
                     pipeline.run(
                         user_query=req.user_query,
@@ -591,34 +591,40 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
 
     results = []
 
-    async with _user_coordinator.acquire(user_id):
-        for item in req.items:
-            result = await asyncio.wait_for(
-                pipeline.run(
-                    user_query=item.user_query,
-                    agent_response=item.agent_response or "Acknowledged.",
-                    user_id=user_id,
-                    session_datetime=item.session_datetime,
-                    image_url=item.image_url,
-                    effort_level=item.effort_level,
-                ),
-                timeout=120.0
-            )
-            
-            data = IngestResponse(
-                model=_model_name(pipeline.model),
-                classification=_safe_classifications(result),
-                profile=_build_domain_result(result.get("profile_judge"), result.get("profile_weaver")),
-                temporal=_build_domain_result(result.get("temporal_judge"), result.get("temporal_weaver")),
-                summary=_build_domain_result(result.get("summary_judge"), result.get("summary_weaver")),
-                image=_build_domain_result(result.get("image_judge"), result.get("image_weaver")),
-            )
-            results.append(data)
+    try:
+        async with _user_coordinator.acquire(user_id):
+            for item in req.items:
+                async with _ingest_semaphore:
+                    result = await asyncio.wait_for(
+                        pipeline.run(
+                            user_query=item.user_query,
+                            agent_response=item.agent_response or "Acknowledged.",
+                            user_id=user_id,
+                            session_datetime=item.session_datetime,
+                            image_url=item.image_url,
+                            effort_level=item.effort_level,
+                        ),
+                        timeout=120.0
+                    )
+                
+                data = IngestResponse(
+                    model=_model_name(pipeline.model),
+                    classification=_safe_classifications(result),
+                    profile=_build_domain_result(result.get("profile_judge"), result.get("profile_weaver")),
+                    temporal=_build_domain_result(result.get("temporal_judge"), result.get("temporal_weaver")),
+                    summary=_build_domain_result(result.get("summary_judge"), result.get("summary_weaver")),
+                    image=_build_domain_result(result.get("image_judge"), result.get("image_weaver")),
+                )
+                results.append(data)
 
-    response_data = BatchIngestResponse(results=results)
-    
-    elapsed = round((time.perf_counter() - start) * 1000, 2)
-    return _wrap(request, response_data, elapsed)
+        response_data = BatchIngestResponse(results=results)
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _wrap(request, response_data, elapsed)
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Batch ingest failed for user=%s", user_id)
+        return _error(request, str(exc), 500, elapsed)
 
 
 

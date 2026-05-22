@@ -1,0 +1,162 @@
+# API diff check — detect breaking changes in OpenAPI schema on PRs.
+# Compares the OpenAPI spec from the PR branch against `develop` and
+# posts a diff comment so reviewers can see exactly what API surface changed.
+
+name: API Schema Diff
+
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - "src/api/**"
+      - "src/schemas/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: api-diff-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diff:
+    name: Detect API breaking changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Generate OpenAPI spec (PR branch)
+        run: |
+          python -c "
+          import json, os
+          os.environ.setdefault('API_KEYS', '[\"test\"]')
+          os.environ.setdefault('JWT_SECRET_KEY', 'test')
+          os.environ.setdefault('PINECONE_API_KEY', 'test')
+          os.environ.setdefault('PINECONE_INDEX_NAME', 'test')
+          os.environ.setdefault('NEO4J_PASSWORD', 'test')
+          os.environ.setdefault('GEMINI_API_KEY', 'test')
+          os.environ.setdefault('MONGODB_URI', 'mongodb://127.0.0.1:1')
+          os.environ.setdefault('ENABLE_ANALYTICS', 'false')
+          os.environ.setdefault('ENABLE_PROMETHEUS', 'false')
+          from src.api.app import create_app
+          app = create_app()
+          spec = app.openapi()
+          with open('openapi-pr.json', 'w') as f:
+              json.dump(spec, f, indent=2)
+          " || echo '{}' > openapi-pr.json
+
+      - name: Generate OpenAPI spec (base branch)
+        run: |
+          git stash || true
+          git checkout ${{ github.event.pull_request.base.ref }}
+          python -c "
+          import json, os
+          os.environ.setdefault('API_KEYS', '[\"test\"]')
+          os.environ.setdefault('JWT_SECRET_KEY', 'test')
+          os.environ.setdefault('PINECONE_API_KEY', 'test')
+          os.environ.setdefault('PINECONE_INDEX_NAME', 'test')
+          os.environ.setdefault('NEO4J_PASSWORD', 'test')
+          os.environ.setdefault('GEMINI_API_KEY', 'test')
+          os.environ.setdefault('MONGODB_URI', 'mongodb://127.0.0.1:1')
+          os.environ.setdefault('ENABLE_ANALYTICS', 'false')
+          os.environ.setdefault('ENABLE_PROMETHEUS', 'false')
+          from src.api.app import create_app
+          app = create_app()
+          spec = app.openapi()
+          with open('openapi-base.json', 'w') as f:
+              json.dump(spec, f, indent=2)
+          " || echo '{}' > openapi-base.json
+          git checkout -
+
+      - name: Diff OpenAPI specs
+        id: diff
+        run: |
+          pip install deepdiff
+          python -c "
+          import json, sys
+          from deepdiff import DeepDiff
+
+          with open('openapi-base.json') as f:
+              base = json.load(f)
+          with open('openapi-pr.json') as f:
+              pr = json.load(f)
+
+          diff = DeepDiff(base, pr, ignore_order=True)
+
+          if not diff:
+              print('NO_CHANGES')
+              sys.exit(0)
+
+          # Detect breaking changes
+          breaking = []
+          added = []
+          changed = []
+
+          removed = diff.get('dictionary_item_removed', [])
+          for item in removed:
+              path = str(item)
+              if '/paths/' in path:
+                  breaking.append(f'🔴 REMOVED: {path}')
+
+          new_items = diff.get('dictionary_item_added', [])
+          for item in new_items:
+              path = str(item)
+              if '/paths/' in path:
+                  added.append(f'🟢 ADDED: {path}')
+
+          values_changed = diff.get('values_changed', {})
+          for path, change in values_changed.items():
+              changed.append(f'🟡 CHANGED: {path}')
+
+          print('---REPORT---')
+          if breaking:
+              print('### ⚠️ Breaking Changes')
+              for b in breaking:
+                  print(f'- {b}')
+          if added:
+              print('### ✅ New Endpoints')
+              for a in added:
+                  print(f'- {a}')
+          if changed:
+              print('### 🔄 Modified')
+              for c in changed[:20]:
+                  print(f'- {c}')
+          " > api-diff-report.txt 2>&1 || true
+
+          cat api-diff-report.txt
+
+      - name: Post diff to PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let report = '';
+            try {
+              report = fs.readFileSync('api-diff-report.txt', 'utf8');
+            } catch { report = 'Could not generate API diff.'; }
+
+            if (report.includes('NO_CHANGES')) {
+              return;  // No API changes, skip comment
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## 🔍 API Schema Diff\n\n${report}\n\n---\n_Auto-generated by API Schema Diff workflow_`,
+            });

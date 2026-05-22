@@ -1,0 +1,71 @@
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+  schedule:
+    - cron: "0 2 * * 1"   # also run weekly on Mondays at 02:00 UTC
+
+permissions:
+  contents: read
+  security-events: write    # needed to upload SARIF to GitHub Security tab
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bandit:
+    name: Bandit SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install bandit
+        run: pip install bandit[toml]
+
+      - name: Run Bandit
+        run: |
+          bandit -r src/ \
+            -ll \
+            --exclude src/tests \
+            -f sarif \
+            -o bandit-results.sarif
+        continue-on-error: true
+
+      - name: Upload Bandit SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit
+
+  pip-audit:
+    name: Dependency CVE Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit dependencies
+        run: pip-audit --requirement <(pip install -e ".[dev]" --dry-run -q 2>&1 | grep "Would install" | sed 's/.*Would install //' | tr ' ' '\n' | sed 's/==.*/==&/') || true
+
+      - name: pip-audit (from pyproject)
+        run: |
+          pip install -e ".[dev]" -q
+          pip-audit

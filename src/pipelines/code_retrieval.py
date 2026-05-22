@@ -1328,25 +1328,19 @@ class CodeRetrievalPipeline:
     async def _search_snippets(
         self, query: str, user_id: str, top_k: int = 10,
     ) -> List[SourceRecord]:
-        """Search user-scoped snippets. Still uses Pinecone for now."""
+        """Search user-scoped snippets via the configured vector provider."""
         if not user_id:
             logger.warning("search_snippets called without user_id")
             return []
 
         try:
             from src.schemas.code import snippets_namespace
-            from src.storage.pinecone import PineconeVectorStore
+            from src.storage.factory import get_vector_store
 
             ns = snippets_namespace(user_id)
 
             if ns not in self._snippet_stores:
-                self._snippet_stores[ns] = PineconeVectorStore(
-                    api_key=settings.pinecone_api_key,
-                    index_name=settings.pinecone_index_name,
-                    dimension=settings.pinecone_dimension,
-                    metric=settings.pinecone_metric,
-                    cloud=settings.pinecone_cloud,
-                    region=settings.pinecone_region,
+                self._snippet_stores[ns] = get_vector_store(
                     namespace=ns,
                     create_if_not_exists=False,
                 )

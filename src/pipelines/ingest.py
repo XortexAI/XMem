@@ -87,14 +87,14 @@ from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
 from src.storage.base import BaseVectorStore, SearchResult
-from src.storage.pinecone import PineconeVectorStore
+from src.storage.factory import get_vector_store
 from src.config.effort import EffortLevel, EffortConfig, get_effort_config, chunk_text, estimate_tokens
 
 logger = logging.getLogger("xmem.pipelines.ingest")
 
 
 # ---------------------------------------------------------------------------
-# Embedding helper — supports Google GenAI and Amazon Bedrock (Nova)
+# Embedding helper — supports Google GenAI, OpenAI, Amazon Bedrock, Ollama, FastEmbed
 # ---------------------------------------------------------------------------
 
 import json as _json
@@ -103,12 +103,30 @@ from google import genai
 from google.genai import types
 
 _embedding_client: Optional[genai.Client] = None
+_openai_embedding_client = None
 _bedrock_embedding_client = None
+_fastembed_model = None
 
 
 def _is_bedrock_embedding() -> bool:
     """Check if the configured embedding model is an Amazon Bedrock model."""
     return settings.embedding_model.lower().startswith("amazon.")
+
+
+def _is_openai_embedding() -> bool:
+    """Check if the configured embedding model is an OpenAI embedding model."""
+    return settings.embedding_model.lower().startswith("text-embedding")
+
+
+def _embedding_provider() -> str:
+    provider = (settings.embedding_provider or "auto").strip().lower()
+    if provider == "auto":
+        if _is_bedrock_embedding():
+            return "bedrock"
+        if _is_openai_embedding():
+            return "openai"
+        return "gemini"
+    return provider
 
 
 def get_embedding_client() -> genai.Client:
@@ -139,16 +157,72 @@ def _get_bedrock_embedding_client():
     return _bedrock_embedding_client
 
 
+def _get_openai_embedding_client():
+    """Lazily create an OpenAI client for embeddings."""
+    global _openai_embedding_client
+    if _openai_embedding_client is None:
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ImportError(
+                "openai package is not installed. Install with: pip install openai"
+            ) from exc
+        api_key = settings.openai_api_key
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY is not set but EMBEDDING_PROVIDER=openai")
+        _openai_embedding_client = OpenAI(api_key=api_key)
+        logger.info("Loaded OpenAI embedding client for model: %s", settings.embedding_model)
+    return _openai_embedding_client
+
+
+def _get_fastembed_model():
+    global _fastembed_model
+    if _fastembed_model is None:
+        try:
+            from fastembed import TextEmbedding
+        except ImportError as exc:
+            raise ImportError(
+                "FastEmbed is not installed. Install local embedding dependencies "
+                "with: pip install -e \".[local]\""
+            ) from exc
+        _fastembed_model = TextEmbedding(model_name=settings.fastembed_model)
+        logger.info("Loaded FastEmbed model: %s", settings.fastembed_model)
+    return _fastembed_model
+
+
+def _ensure_embedding_dimension(values: tuple[float, ...], provider: str) -> tuple[float, ...]:
+    expected = int(settings.pinecone_dimension)
+    if len(values) != expected:
+        raise ValueError(
+            f"{provider} embedding dimension is {len(values)}, but PINECONE_DIMENSION "
+            f"is {expected}. Set PINECONE_DIMENSION to match the selected embedding model "
+            "before creating vector indexes."
+        )
+    return values
+
+
 @functools.lru_cache(maxsize=4096)
 def embed_text(text: str) -> tuple[float, ...]:
     """Embed a single text string → tuple of floats.
 
-    Dispatches to Google GenAI or Amazon Bedrock based on the
-    EMBEDDING_MODEL setting.
+    Dispatches to the configured embedding provider (auto-detected or explicit).
+    Supported: gemini, openai, bedrock, ollama, fastembed.
     """
-    if _is_bedrock_embedding():
+    provider = _embedding_provider()
+    if provider == "gemini":
+        return _embed_text_gemini(text)
+    if provider == "openai":
+        return _embed_text_openai(text)
+    if provider == "bedrock":
         return _embed_text_bedrock(text)
-    return _embed_text_gemini(text)
+    if provider == "ollama":
+        return _embed_text_ollama(text)
+    if provider == "fastembed":
+        return _embed_text_fastembed(text)
+    raise ValueError(
+        f"Unsupported EMBEDDING_PROVIDER={provider!r}. "
+        "Use auto, gemini, openai, bedrock, ollama, or fastembed."
+    )
 
 
 def _embed_text_gemini(text: str) -> tuple[float, ...]:
@@ -182,6 +256,51 @@ def _embed_text_gemini(text: str) -> tuple[float, ...]:
     return tuple(embedding_obj.values)
 
 
+def _embed_text_openai(text: str) -> tuple[float, ...]:
+    """Embed text using the OpenAI Embeddings API.
+
+    Supports text-embedding-3-small, text-embedding-3-large, and
+    text-embedding-ada-002.  The v3 models accept a ``dimensions``
+    parameter for native dimension reduction (e.g. 384 for Pinecone).
+    """
+    import time as _time
+
+    client = _get_openai_embedding_client()
+    model = settings.embedding_model
+    dimension = int(settings.pinecone_dimension)
+
+    start = _time.perf_counter()
+
+    # text-embedding-3-* supports the dimensions parameter;
+    # ada-002 does not (fixed at 1536).
+    kwargs: dict = {"model": model, "input": text}
+    if model.startswith("text-embedding-3"):
+        kwargs["dimensions"] = dimension
+
+    response = client.embeddings.create(**kwargs)
+    elapsed = _time.perf_counter() - start
+    embedding = response.data[0].embedding
+
+    # Track embedding call for cost analytics
+    input_tokens = getattr(response.usage, "total_tokens", 0) or len(text.split())
+    try:
+        from src.config.analytics import analytics
+        analytics.track_llm_call(
+            provider="openai",
+            model=model,
+            agent="embedding",
+            latency_ms=round(elapsed * 1000, 2),
+            input_tokens=input_tokens,
+            output_tokens=0,
+            total_tokens=input_tokens,
+        )
+    except Exception:
+        pass
+
+    values = tuple(float(v) for v in embedding)
+    return _ensure_embedding_dimension(values, "OpenAI")
+
+
 def _embed_text_bedrock(text: str) -> tuple[float, ...]:
     client = _get_bedrock_embedding_client()
 
@@ -206,6 +325,45 @@ def _embed_text_bedrock(text: str) -> tuple[float, ...]:
 
     response_body = _json.loads(response["body"].read())
     return tuple(response_body["embeddings"][0]["embedding"])
+
+
+def _embed_text_ollama(text: str) -> tuple[float, ...]:
+    """Embed text with a local Ollama server.
+
+    Supports Ollama's newer /api/embed endpoint and falls back to the older
+    /api/embeddings shape for compatibility.
+    """
+    import httpx
+
+    model = settings.ollama_embedding_model or settings.embedding_model
+    if model == "gemini-embedding-001":
+        model = "nomic-embed-text"
+
+    base_url = settings.ollama_base_url.rstrip("/")
+    with httpx.Client(timeout=120.0) as client:
+        response = client.post(
+            f"{base_url}/api/embed",
+            json={"model": model, "input": text},
+        )
+        if response.status_code == 404:
+            response = client.post(
+                f"{base_url}/api/embeddings",
+                json={"model": model, "prompt": text},
+            )
+        response.raise_for_status()
+        data = response.json()
+
+    if "embeddings" in data:
+        [embedding] = data["embeddings"]
+    else:
+        embedding = data["embedding"]
+    return _ensure_embedding_dimension(tuple(float(v) for v in embedding), "Ollama")
+
+
+def _embed_text_fastembed(text: str) -> tuple[float, ...]:
+    model = _get_fastembed_model()
+    embedding = next(model.embed([text]))
+    return _ensure_embedding_dimension(tuple(float(v) for v in embedding), "FastEmbed")
 
 
 # ---------------------------------------------------------------------------
@@ -284,25 +442,13 @@ class IngestPipeline:
         if vector_store:
             self.vector_store = vector_store
         else:
-            self.vector_store = PineconeVectorStore(
-                api_key=settings.pinecone_api_key,
-                index_name=settings.pinecone_index_name,
-                dimension=settings.pinecone_dimension,
-                metric=settings.pinecone_metric,
-                cloud=settings.pinecone_cloud,
-                region=settings.pinecone_region,
+            self.vector_store = get_vector_store(
                 namespace=settings.pinecone_namespace,
             )
-        logger.info("Pinecone vector store initialised.")
+        logger.info("Vector store initialised (provider=%s).", settings.vector_store_provider)
 
         # ── Code annotations Pinecone store (annotations namespace) ──
-        self.code_vector_store = PineconeVectorStore(
-            api_key=settings.pinecone_api_key,
-            index_name=settings.pinecone_index_name,
-            dimension=settings.pinecone_dimension,
-            metric=settings.pinecone_metric,
-            cloud=settings.pinecone_cloud,
-            region=settings.pinecone_region,
+        self.code_vector_store = get_vector_store(
             namespace=annotations_namespace(org_id),
             create_if_not_exists=False,
         )
@@ -370,7 +516,7 @@ class IngestPipeline:
         )
 
         # Snippet stores are user-scoped — lazily created per user_id
-        self._snippet_stores: Dict[str, PineconeVectorStore] = {}
+        self._snippet_stores: Dict[str, BaseVectorStore] = {}
 
         # ── Weaver ────────────────────────────────────────────────────
         self.weaver = Weaver(
@@ -502,17 +648,11 @@ class IngestPipeline:
     # User-scoped snippet store
     # ------------------------------------------------------------------
 
-    def _get_snippet_store(self, user_id: str) -> PineconeVectorStore:
-        """Get or create a PineconeVectorStore for a user's snippets namespace."""
+    def _get_snippet_store(self, user_id: str) -> BaseVectorStore:
+        """Get or create a vector store for a user's snippets namespace."""
         if user_id not in self._snippet_stores:
             ns = snippets_namespace(user_id)
-            self._snippet_stores[user_id] = PineconeVectorStore(
-                api_key=settings.pinecone_api_key,
-                index_name=settings.pinecone_index_name,
-                dimension=settings.pinecone_dimension,
-                metric=settings.pinecone_metric,
-                cloud=settings.pinecone_cloud,
-                region=settings.pinecone_region,
+            self._snippet_stores[user_id] = get_vector_store(
                 namespace=ns,
                 create_if_not_exists=False,
             )

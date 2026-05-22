@@ -1,0 +1,66 @@
+# Label definitions for actions/labeler
+# Maps labels to file path globs when a PR touches these paths, the label is auto-applied.
+
+api:
+  - changed-files:
+      - any-glob-to-any-file: "src/api/**"
+
+memory:
+  - changed-files:
+      - any-glob-to-any-file: "src/memory/**"
+
+graph:
+  - changed-files:
+      - any-glob-to-any-file: "src/graph/**"
+
+scanner:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/scanner/**"
+          - "src/scanner_v1/**"
+
+agents:
+  - changed-files:
+      - any-glob-to-any-file: "src/agents/**"
+
+pipelines:
+  - changed-files:
+      - any-glob-to-any-file: "src/pipelines/**"
+
+prompts:
+  - changed-files:
+      - any-glob-to-any-file: "src/prompts/**"
+
+frontend:
+  - changed-files:
+      - any-glob-to-any-file: "frontend/**"
+
+admin:
+  - changed-files:
+      - any-glob-to-any-file: "admin/**"
+
+docker:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Dockerfile"
+          - "docker/**"
+          - "docker-compose*.yml"
+
+config:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/config/**"
+          - "pyproject.toml"
+          - "setup.py"
+          - ".env.example"
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "README.md"
+          - "CHANGELOG.md"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file: "tests/**"

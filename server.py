@@ -198,7 +198,7 @@ async def scrape_chat_link(req: ScrapeRequest):
                 {
                     "status": "error",
                     "data": None,
-                    "error": "Failed to extract messages from the provided link.",
+                    "error": _chat_share_error_message(result),
                     "elapsed_ms": elapsed,
                 },
                 status_code=400,
@@ -536,15 +536,32 @@ def _build_memory_domain(judge: Any, weaver: Any) -> dict[str, Any] | None:
     }
 
 
-def _detect_chat_provider(url: str) -> str:
-    lowered = url.lower()
-    if "chatgpt.com" in lowered or "chat.openai.com" in lowered or "openai.com" in lowered:
-        return "chatgpt"
-    if "claude.ai" in lowered:
-        return "claude"
-    if "gemini.google.com" in lowered or "g.co/gemini" in lowered:
-        return "gemini"
+def _detect_chat_provider(*urls: str) -> str:
+    for url in urls:
+        lowered = (url or "").lower()
+        if not lowered:
+            continue
+        if "chatgpt.com" in lowered or "chat.openai.com" in lowered or "openai.com" in lowered:
+            return "chatgpt"
+        if "claude.ai" in lowered or "claude.com" in lowered:
+            return "claude"
+        if "gemini.google.com" in lowered or "g.co/gemini" in lowered:
+            return "gemini"
     return "unknown"
+
+
+def _chat_share_error_message(result: dict[str, Any]) -> str:
+    provider = result.get("provider") or "unknown"
+    if provider == "unknown":
+        return (
+            "Failed to extract messages from the provided link. "
+            "Please provide a public ChatGPT, Claude, or Gemini share link."
+        )
+
+    return (
+        f"Failed to extract messages from the provided {provider} share link. "
+        "Please confirm the link is public, exists, and is not redirecting to a login or deleted-chat page."
+    )
 
 
 async def _render_chat_share(url: str) -> tuple[str, str]:
@@ -599,7 +616,7 @@ def _render_chat_share_sync(url: str) -> tuple[str, str]:
             except Exception as exc:
                 print(f"[scrape] navigation warning: {exc}", flush=True)
 
-            provider = _detect_chat_provider(page.url or url)
+            provider = _detect_chat_provider(page.url, url)
             selector = {
                 "chatgpt": "div[data-message-author-role]",
                 "claude": "script",
@@ -621,8 +638,12 @@ def _render_chat_share_sync(url: str) -> tuple[str, str]:
     return html, final_url
 
 
-def _extract_chat_pairs(url: str, html: str) -> tuple[str, str, list[dict[str, str]]]:
-    provider = _detect_chat_provider(url)
+def _extract_chat_pairs(
+    url: str,
+    html: str,
+    source_url: str = "",
+) -> tuple[str, str, list[dict[str, str]]]:
+    provider = _detect_chat_provider(url, source_url)
     soup = BeautifulSoup(html, "html.parser")
     pairs: list[dict[str, str]] = []
     extraction_method = "none"
@@ -863,7 +884,7 @@ def _parse_transcript_text(text: str) -> tuple[str, list[dict[str, str]]]:
 
 async def _scrape_chat_share(url: str) -> dict[str, Any]:
     html, final_url = await _render_chat_share(url)
-    provider, extraction_method, pairs = _extract_chat_pairs(final_url or url, html)
+    provider, extraction_method, pairs = _extract_chat_pairs(final_url or url, html, url)
 
     return {
         "provider": provider,

@@ -8,20 +8,27 @@ Default credentials are seeded on first boot: admin / admin@123
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
 import os
+import re
+import smtplib
 import time
 import itertools
 from collections import deque
 from datetime import datetime, timezone, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote, unquote
 
 import httpx
+from bson.objectid import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from src.config import settings
@@ -926,6 +933,897 @@ async def get_user_trail(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Outreach — GitHub email scraper + email sender with tracking
+# ═══════════════════════════════════════════════════════════════════════════
+
+_outreach_db = None
+_scrape_tasks: Dict[str, asyncio.Task] = {}
+_scrape_stop_events: Dict[str, asyncio.Event] = {}
+_scrape_queues: Dict[str, deque] = {}  # job_id -> deque of new emails for SSE
+
+
+def _get_outreach_db():
+    global _outreach_db
+    if _outreach_db is not None:
+        return _outreach_db
+    try:
+        from pymongo import MongoClient
+        client = MongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=3000)
+        client.admin.command("ping")
+        _outreach_db = client[settings.mongodb_database]
+        return _outreach_db
+    except Exception as exc:
+        logger.error("Outreach MongoDB connection failed: %s", exc)
+        return None
+
+
+# ── PAT Management ────────────────────────────────────────────────────────
+
+class AddPATRequest(BaseModel):
+    token: str
+    label: str = ""
+
+
+@router.post("/api/outreach/pats")
+async def add_pat(req: AddPATRequest, user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    req.token = req.token.strip()
+    coll = db["outreach_pats"]
+    if coll.find_one({"token": req.token}):
+        raise HTTPException(status_code=400, detail="This PAT already exists")
+
+    remaining, reset_at = 5000, None
+    headers = {"Authorization": f"token {req.token}", "Accept": "application/vnd.github.v3+json"}
+    try:
+        resp = httpx.get("https://api.github.com/user", headers=headers, timeout=15)
+        if resp.status_code == 200:
+            user_info = resp.json()
+            logger.info("[outreach] PAT validated for GitHub user: %s", user_info.get("login"))
+        elif resp.status_code == 401:
+            raise HTTPException(status_code=400, detail=f"Invalid PAT — GitHub says: {resp.json().get('message', 'Bad credentials')}")
+        elif resp.status_code == 403:
+            raise HTTPException(status_code=400, detail="PAT forbidden — may be IP-restricted or missing scopes")
+        else:
+            raise HTTPException(status_code=400, detail=f"GitHub returned HTTP {resp.status_code} on /user check")
+
+        # Also test repo access to confirm the PAT can read public repos
+        test_resp = httpx.get(
+            "https://api.github.com/repos/torvalds/linux/stargazers?per_page=1",
+            headers=headers, timeout=15,
+        )
+        if test_resp.status_code == 401:
+            raise HTTPException(status_code=400, detail="PAT is valid for /user but fails on repo access. Use a Classic token with 'repo' scope, or a Fine-grained token with 'All repositories' read access.")
+        if test_resp.status_code == 403:
+            raise HTTPException(status_code=400, detail="PAT lacks permission to read repository stargazers. Ensure 'repo' scope (classic) or read access to public repos (fine-grained).")
+
+        rl_resp = httpx.get("https://api.github.com/rate_limit", headers=headers, timeout=10)
+        if rl_resp.status_code == 200:
+            core = rl_resp.json().get("resources", {}).get("core", {})
+            remaining = core.get("remaining", 5000)
+            reset_ts = core.get("reset")
+            if reset_ts:
+                reset_at = datetime.fromtimestamp(reset_ts, tz=timezone.utc)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("[outreach] PAT validation error: %s", exc)
+        raise HTTPException(status_code=400, detail=f"Could not validate PAT: {exc}")
+
+    doc = {
+        "token": req.token,
+        "label": req.label or f"PAT-{req.token[-4:]}",
+        "remaining": remaining,
+        "reset_at": reset_at,
+        "added_at": datetime.now(timezone.utc),
+        "active": True,
+    }
+    result = coll.insert_one(doc)
+    doc["_id"] = str(result.inserted_id)
+    doc["token"] = doc["token"][:8] + "..." + doc["token"][-4:]
+    return JSONResponse(_bson_safe(doc))
+
+
+@router.get("/api/outreach/pats")
+async def list_pats(user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        return JSONResponse({"pats": []})
+    pats = list(db["outreach_pats"].find().sort("added_at", -1))
+    now = datetime.now(timezone.utc)
+    for p in pats:
+        if p.get("reset_at"):
+            reset_dt = p["reset_at"]
+            if reset_dt.tzinfo is None:
+                reset_dt = reset_dt.replace(tzinfo=timezone.utc)
+            if reset_dt <= now:
+                p["remaining"] = 5000
+                db["outreach_pats"].update_one(
+                    {"_id": p["_id"]}, {"$set": {"remaining": 5000}}
+                )
+
+        p["_id"] = str(p["_id"])
+        t = p.get("token", "")
+        p["token_masked"] = t[:8] + "..." + t[-4:] if len(t) > 12 else "****"
+        p["active"] = p.get("active", True)
+        del p["token"]
+    return JSONResponse({"pats": _bson_safe(pats)})
+
+
+@router.delete("/api/outreach/pats/all")
+async def delete_all_pats(user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    result = db["outreach_pats"].delete_many({})
+    return JSONResponse({"status": "ok", "deleted": result.deleted_count})
+
+
+@router.delete("/api/outreach/pats/{pat_id}")
+async def delete_pat(pat_id: str, user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    result = db["outreach_pats"].delete_one({"_id": ObjectId(pat_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="PAT not found")
+    return JSONResponse({"status": "ok"})
+
+
+def _get_best_pat(db) -> Optional[Dict]:
+    """Pick the PAT with highest remaining rate limit."""
+    now = datetime.now(timezone.utc)
+    pats = list(db["outreach_pats"].find({"active": True}))
+    
+    for p in pats:
+        if p.get("reset_at"):
+            reset_dt = p["reset_at"]
+            if reset_dt.tzinfo is None:
+                reset_dt = reset_dt.replace(tzinfo=timezone.utc)
+            if reset_dt <= now:
+                db["outreach_pats"].update_one(
+                    {"_id": p["_id"]}, {"$set": {"remaining": 5000}}
+                )
+                p["remaining"] = 5000
+                
+    pats.sort(key=lambda x: x.get("remaining", 0), reverse=True)
+    
+    for p in pats:
+        if p.get("remaining", 0) > 0:
+            return p
+    # All PATs have 0 remaining but no reset_at — force a recheck
+    for p in pats:
+        if not p.get("reset_at"):
+            db["outreach_pats"].update_one(
+                {"_id": p["_id"]}, {"$set": {"remaining": 5000}}
+            )
+            p["remaining"] = 5000
+            return p
+    return None
+
+
+async def _gh_get(url: str, pat_doc: Optional[Dict], db, client: httpx.AsyncClient) -> Optional[httpx.Response]:
+    """Make a GitHub API GET with rate-limit tracking, rotation, and connection pooling."""
+    for attempt in range(5):
+        if pat_doc is None:
+            pat_doc = _get_best_pat(db)
+        if pat_doc is None:
+            logger.warning("[outreach] _gh_get: no usable PAT available")
+            return None
+        try:
+            token_val = pat_doc["token"].strip()
+            resp = await client.get(
+                url,
+                headers={
+                    "Authorization": f"token {token_val}",
+                    "Accept": "application/vnd.github.v3+json",
+                },
+            )
+            rl_remaining = resp.headers.get("x-ratelimit-remaining")
+            if rl_remaining is not None:
+                db["outreach_pats"].update_one(
+                    {"_id": pat_doc["_id"]},
+                    {"$set": {"remaining": int(rl_remaining)}},
+                )
+
+            if resp.status_code == 401:
+                logger.warning("[outreach] PAT %s got 401, marking inactive", pat_doc.get("label"))
+                db["outreach_pats"].update_one(
+                    {"_id": pat_doc["_id"]},
+                    {"$set": {"active": False, "remaining": 0}},
+                )
+                pat_doc = None
+                await asyncio.sleep(0.5)
+                continue
+
+            if resp.status_code in (403, 429):
+                reset_ts = resp.headers.get("x-ratelimit-reset")
+                reset_at = datetime.fromtimestamp(int(reset_ts), tz=timezone.utc) if reset_ts else None
+                db["outreach_pats"].update_one(
+                    {"_id": pat_doc["_id"]},
+                    {"$set": {"remaining": 0, "reset_at": reset_at}},
+                )
+                pat_doc = None
+                await asyncio.sleep(1)
+                continue
+            return resp
+        except Exception as exc:
+            logger.warning("[outreach] _gh_get exception: %s", exc)
+            await asyncio.sleep(1)
+            pat_doc = None
+    return None
+
+
+# ── Scraping Jobs ─────────────────────────────────────────────────────────
+
+class StartJobRequest(BaseModel):
+    repo_url: str
+    target_email_count: int = 500
+
+
+def _extract_repo_slug(url: str) -> str:
+    url = url.strip().rstrip("/")
+    if url.startswith("https://github.com/"):
+        url = url[len("https://github.com/"):]
+    elif url.startswith("http://github.com/"):
+        url = url[len("http://github.com/"):]
+    parts = url.split("/")
+    if len(parts) >= 2:
+        return f"{parts[0]}/{parts[1]}"
+    return url
+
+
+async def _get_email_for_user(username: str, pat_doc: Dict, db, client: httpx.AsyncClient) -> Optional[str]:
+    """3-step email discovery: profile -> push events -> recent repo commit."""
+    resp = await _gh_get(f"https://api.github.com/users/{username}", pat_doc, db, client)
+    if resp and resp.status_code == 200:
+        data = resp.json()
+        email = data.get("email")
+        if email and "noreply" not in email and email.lower().endswith("@gmail.com"):
+            return email
+
+    resp = await _gh_get(
+        f"https://api.github.com/users/{username}/events/public?per_page=15",
+        pat_doc, db, client,
+    )
+    if resp and resp.status_code == 200:
+        for event in resp.json():
+            if event.get("type") == "PushEvent":
+                for commit in event.get("payload", {}).get("commits", []):
+                    email = commit.get("author", {}).get("email")
+                    if email and "noreply" not in email and email.lower().endswith("@gmail.com"):
+                        return email
+
+    resp = await _gh_get(
+        f"https://api.github.com/users/{username}/repos?sort=updated&per_page=1",
+        pat_doc, db, client,
+    )
+    if resp and resp.status_code == 200:
+        repos = resp.json()
+        if repos and isinstance(repos, list) and repos:
+            repo_name = repos[0].get("name")
+            if repo_name:
+                c_resp = await _gh_get(
+                    f"https://api.github.com/repos/{username}/{repo_name}/commits?per_page=1",
+                    pat_doc, db, client,
+                )
+                if c_resp and c_resp.status_code == 200:
+                    commits = c_resp.json()
+                    if isinstance(commits, list) and commits:
+                        email = commits[0].get("commit", {}).get("author", {}).get("email")
+                        if email and "noreply" not in email and email.lower().endswith("@gmail.com"):
+                            return email
+    return None
+
+
+def _push_status(queue, msg_type: str, message: str, **extra):
+    """Push a status/progress event into the SSE queue."""
+    if queue is not None:
+        event = {"_type": msg_type, "message": message, **extra}
+        queue.append(event)
+
+
+async def _scrape_worker(job_id: str, repo_slug: str, target: int, resume_page: int, resume_index: int):
+    """Background async task that scrapes stargazer emails with connection pooling."""
+    db = _get_outreach_db()
+    if db is None:
+        return
+
+    stop_event = _scrape_stop_events.get(job_id)
+    queue = _scrape_queues.get(job_id)
+    jobs_coll = db["outreach_jobs"]
+    emails_coll = db["outreach_emails"]
+
+    def _set_job_error(error_msg: str):
+        jobs_coll.update_one(
+            {"_id": ObjectId(job_id)},
+            {"$set": {"status": "error", "error": error_msg, "updated_at": datetime.now(timezone.utc)}},
+        )
+        _push_status(queue, "error", error_msg)
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=15,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        ) as client:
+            stargazers = []
+            per_page = 100
+            page = (resume_index // per_page) + 1
+            page_offset = resume_index % per_page
+
+            _push_status(queue, "status", f"Fetching stargazers for {repo_slug}...")
+
+            while len(stargazers) < 2000:
+                if stop_event and stop_event.is_set():
+                    break
+                pat = _get_best_pat(db)
+                if pat is None:
+                    _push_status(queue, "warning", "All PATs exhausted, waiting 10s for rate limit reset...")
+                    await asyncio.sleep(10)
+                    pat = _get_best_pat(db)
+                    if pat is None:
+                        _set_job_error("All GitHub PATs have exhausted their rate limits. Add more PATs or wait for reset.")
+                        _scrape_tasks.pop(job_id, None)
+                        _scrape_stop_events.pop(job_id, None)
+                        return
+
+                resp = await _gh_get(
+                    f"https://api.github.com/repos/{repo_slug}/stargazers?per_page={per_page}&page={page}",
+                    pat, db, client,
+                )
+                if resp is None:
+                    active_pats = list(db["outreach_pats"].find({"active": True}))
+                    if not active_pats:
+                        _set_job_error("All PATs have been marked inactive (likely invalid/expired). Delete them and add fresh PATs.")
+                    else:
+                        _set_job_error("GitHub API unreachable after multiple retries. Check network or PAT validity.")
+                    _scrape_tasks.pop(job_id, None)
+                    _scrape_stop_events.pop(job_id, None)
+                    return
+                if resp.status_code == 404:
+                    _set_job_error(f"Repository '{repo_slug}' not found on GitHub. Check the URL.")
+                    _scrape_tasks.pop(job_id, None)
+                    _scrape_stop_events.pop(job_id, None)
+                    return
+                if resp.status_code != 200:
+                    _set_job_error(f"GitHub API returned HTTP {resp.status_code}: {resp.text[:200]}")
+                    _scrape_tasks.pop(job_id, None)
+                    _scrape_stop_events.pop(job_id, None)
+                    return
+
+                users = resp.json()
+                if not users:
+                    break
+
+                # If this is the first page we are fetching, skip the users we already processed
+                if page == (resume_index // per_page) + 1 and page_offset > 0:
+                    users = users[page_offset:]
+
+                for u in users:
+                    login = u.get("login")
+                    if login:
+                        stargazers.append(login)
+                page += 1
+                jobs_coll.update_one(
+                    {"_id": ObjectId(job_id)},
+                    {"$set": {
+                        "total_stargazers_fetched": len(stargazers) + resume_index,
+                        "last_stargazer_page": page,
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                )
+                _push_status(queue, "progress", f"Fetched {len(stargazers)} stargazers...",
+                             stargazers_fetched=len(stargazers))
+
+            if not stargazers:
+                _set_job_error(f"No stargazers found for '{repo_slug}'. The repo may have 0 stars or the URL is wrong.")
+                _scrape_tasks.pop(job_id, None)
+                _scrape_stop_events.pop(job_id, None)
+                return
+
+            _push_status(queue, "status",
+                         f"Found {len(stargazers)} stargazers. Now scanning for emails (target: {target})...")
+
+            scanned_coll = db["outreach_scanned_users"]
+            existing_usernames = set(
+                doc["username"] for doc in scanned_coll.find({"repo_slug": repo_slug}, {"username": 1})
+            )
+
+            found_count = emails_coll.count_documents({"job_id": job_id})
+            scanned_count = 0
+
+            consecutive_no_pat = 0
+            for i, username in enumerate(stargazers):
+                if stop_event and stop_event.is_set():
+                    break
+                if found_count >= target:
+                    break
+                if username in existing_usernames:
+                    continue
+
+                # Mark as scanned immediately
+                existing_usernames.add(username)
+                scanned_coll.insert_one({"username": username, "repo_slug": repo_slug, "scanned_at": datetime.now(timezone.utc)})
+
+                pat = _get_best_pat(db)
+                if pat is None:
+                    consecutive_no_pat += 1
+                    if consecutive_no_pat >= 3:
+                        _set_job_error("All PATs are inactive or exhausted during email scanning. Add valid PATs.")
+                        _scrape_tasks.pop(job_id, None)
+                        _scrape_stop_events.pop(job_id, None)
+                        return
+                    _push_status(queue, "warning", "No available PAT, waiting...")
+                    await asyncio.sleep(5)
+                    continue
+                consecutive_no_pat = 0
+                email = await _get_email_for_user(username, pat, db, client)
+                scanned_count += 1
+
+                jobs_coll.update_one(
+                    {"_id": ObjectId(job_id)},
+                    {"$set": {
+                        "processed_index": resume_index + i + 1,
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                )
+
+                if email:
+                    email_doc = {
+                        "job_id": job_id,
+                        "username": username,
+                        "email": email,
+                        "scraped_at": datetime.now(timezone.utc),
+                        "sent": False,
+                        "sent_at": None,
+                        "opened": False,
+                        "opened_at": None,
+                        "clicked": False,
+                        "clicked_at": None,
+                    }
+                    emails_coll.insert_one(email_doc)
+                    email_doc["_id"] = str(email_doc["_id"])
+                    found_count += 1
+
+                    jobs_coll.update_one(
+                        {"_id": ObjectId(job_id)},
+                        {"$set": {"emails_found": found_count}},
+                    )
+
+                    if queue is not None:
+                        queue.append(email_doc)
+                else:
+                    if scanned_count % 10 == 0:
+                        _push_status(queue, "progress",
+                                     f"Scanned {scanned_count} users, found {found_count} emails so far...",
+                                     scanned=scanned_count, found=found_count)
+
+                # Throttle: yield control to the event loop between user scans
+                await asyncio.sleep(0.3)
+
+            final_status = "completed" if found_count >= target else "stopped"
+            jobs_coll.update_one(
+                {"_id": ObjectId(job_id)},
+                {"$set": {"status": final_status, "emails_found": found_count,
+                           "updated_at": datetime.now(timezone.utc)}},
+            )
+            _push_status(queue, "done",
+                         f"Finished. Found {found_count} emails from {scanned_count} scanned users.",
+                         found=found_count, scanned=scanned_count, status=final_status)
+
+    except Exception as exc:
+        logger.exception("[outreach] Scrape worker crashed for job %s", job_id)
+        _set_job_error(f"Scraper crashed: {exc}")
+
+    _scrape_tasks.pop(job_id, None)
+    _scrape_stop_events.pop(job_id, None)
+
+
+@router.post("/api/outreach/jobs/start")
+async def start_scrape_job(req: StartJobRequest, user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    slug = _extract_repo_slug(req.repo_url)
+    if "/" not in slug:
+        raise HTTPException(status_code=400, detail="Invalid repo URL")
+
+    active_pats = db["outreach_pats"].count_documents({"active": True})
+    if active_pats == 0:
+        raise HTTPException(status_code=400, detail="No active GitHub PATs available. Delete old/invalid ones and add fresh PATs first.")
+
+    last_job = db["outreach_jobs"].find_one({"repo_slug": slug}, sort=[("created_at", -1)])
+    start_index = 0
+    if last_job:
+        start_index = last_job.get("processed_index", 0)
+
+    job = {
+        "repo_url": req.repo_url,
+        "repo_slug": slug,
+        "status": "running",
+        "total_stargazers_fetched": start_index,
+        "processed_index": start_index,
+        "target_email_count": req.target_email_count,
+        "emails_found": 0,
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    result = db["outreach_jobs"].insert_one(job)
+    job_id = str(result.inserted_id)
+
+    stop_event = asyncio.Event()
+    _scrape_stop_events[job_id] = stop_event
+    _scrape_queues[job_id] = deque(maxlen=500)
+
+    task = asyncio.create_task(
+        _scrape_worker(job_id, slug, req.target_email_count, 1, start_index)
+    )
+    _scrape_tasks[job_id] = task
+
+    job["_id"] = job_id
+    return JSONResponse(_bson_safe(job))
+
+
+@router.post("/api/outreach/jobs/{job_id}/stop")
+async def stop_scrape_job(job_id: str, user: dict = Depends(_verify_admin_token)):
+    stop_event = _scrape_stop_events.get(job_id)
+    if stop_event:
+        stop_event.set()
+    db = _get_outreach_db()
+    if db is not None:
+        db["outreach_jobs"].update_one(
+            {"_id": ObjectId(job_id)},
+            {"$set": {"status": "stopped", "updated_at": datetime.now(timezone.utc)}},
+        )
+    return JSONResponse({"status": "ok"})
+
+
+@router.post("/api/outreach/jobs/{job_id}/resume")
+async def resume_scrape_job(job_id: str, user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    job = db["outreach_jobs"].find_one({"_id": ObjectId(job_id)})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job_id in _scrape_tasks and not _scrape_tasks[job_id].done():
+        raise HTTPException(status_code=400, detail="Job is already running")
+
+    active_pats = db["outreach_pats"].count_documents({"active": True})
+    if active_pats == 0:
+        raise HTTPException(status_code=400, detail="No active PATs available. Delete old ones and add fresh PATs before resuming.")
+
+    db["outreach_jobs"].update_one(
+        {"_id": ObjectId(job_id)},
+        {"$set": {"status": "running", "updated_at": datetime.now(timezone.utc)}},
+    )
+
+    stop_event = asyncio.Event()
+    _scrape_stop_events[job_id] = stop_event
+    _scrape_queues[job_id] = deque(maxlen=500)
+
+    task = asyncio.create_task(
+        _scrape_worker(
+            job_id,
+            job["repo_slug"],
+            job["target_email_count"],
+            job.get("last_stargazer_page", 1),
+            job.get("processed_index", 0),
+        )
+    )
+    _scrape_tasks[job_id] = task
+
+    return JSONResponse({"status": "ok", "message": "Resumed"})
+
+
+@router.get("/api/outreach/jobs")
+async def list_scrape_jobs(user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        return JSONResponse({"jobs": []})
+    jobs = list(db["outreach_jobs"].find().sort("created_at", -1))
+    for j in jobs:
+        j["_id"] = str(j["_id"])
+        j["is_running"] = j["_id"] in _scrape_tasks and not _scrape_tasks[j["_id"]].done()
+    return JSONResponse({"jobs": _bson_safe(jobs)})
+
+
+@router.get("/api/outreach/jobs/{job_id}/emails")
+async def get_job_emails(job_id: str, user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        return JSONResponse({"emails": []})
+    emails = list(db["outreach_emails"].find({"job_id": job_id}).sort("scraped_at", -1))
+    for e in emails:
+        e["_id"] = str(e["_id"])
+    return JSONResponse({"emails": _bson_safe(emails)})
+
+
+@router.get("/api/outreach/jobs/{job_id}/stream")
+async def stream_job_emails(job_id: str, request: Request, user: dict = Depends(_verify_admin_token)):
+    """SSE endpoint for real-time email discovery updates."""
+    queue = _scrape_queues.get(job_id)
+    if queue is None:
+        _scrape_queues[job_id] = deque(maxlen=500)
+        queue = _scrape_queues[job_id]
+
+    async def _event_stream():
+        while True:
+            if await request.is_disconnected():
+                break
+            if queue:
+                entry = queue.popleft()
+                entry_type = entry.get("_type", "email")
+                if entry_type in ("done", "error"):
+                    yield f"event: {entry_type}\ndata: {json.dumps(_bson_safe(entry))}\n\n"
+                    if entry_type == "error":
+                        break
+                elif entry_type in ("status", "progress", "warning"):
+                    yield f"event: status\ndata: {json.dumps(_bson_safe(entry))}\n\n"
+                else:
+                    yield f"data: {json.dumps(_bson_safe(entry))}\n\n"
+            else:
+                db = _get_outreach_db()
+                if db is not None:
+                    job = db["outreach_jobs"].find_one({"_id": ObjectId(job_id)})
+                    if job and job.get("status") in ("completed", "stopped", "error"):
+                        payload = {"status": job["status"]}
+                        if job.get("error"):
+                            payload["error"] = job["error"]
+                        yield f"event: done\ndata: {json.dumps(payload)}\n\n"
+                        break
+                yield ":keepalive\n\n"
+                await asyncio.sleep(1)
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Email Drafts & Sending ────────────────────────────────────────────────
+
+class SaveDraftRequest(BaseModel):
+    subject: str
+    body_html: str
+
+
+@router.post("/api/outreach/drafts")
+async def save_draft(req: SaveDraftRequest, user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    coll = db["outreach_drafts"]
+    existing = coll.find_one({}, sort=[("created_at", -1)])
+    now = datetime.now(timezone.utc)
+    if existing:
+        coll.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"subject": req.subject, "body_html": req.body_html, "updated_at": now}},
+        )
+        return JSONResponse({"status": "ok", "id": str(existing["_id"])})
+    else:
+        doc = {"subject": req.subject, "body_html": req.body_html, "created_at": now, "updated_at": now}
+        result = coll.insert_one(doc)
+        return JSONResponse({"status": "ok", "id": str(result.inserted_id)})
+
+
+@router.get("/api/outreach/drafts")
+async def get_draft(user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        return JSONResponse({"subject": "", "body_html": ""})
+    coll = db["outreach_drafts"]
+    draft = coll.find_one({}, sort=[("created_at", -1)])
+    if draft:
+        draft["_id"] = str(draft["_id"])
+        return JSONResponse(_bson_safe(draft))
+    return JSONResponse({"subject": "", "body_html": ""})
+
+
+class SendEmailsRequest(BaseModel):
+    job_id: str
+    email_ids: Optional[List[str]] = None
+    sender_email: Optional[str] = None
+
+
+def _inject_tracking(html_body: str, email_doc_id: str, server_url: str) -> str:
+    """Inject tracking pixel and rewrite links for click tracking."""
+    base = server_url.rstrip("/")
+    pixel = f'<img src="{base}/admin/api/outreach/track/open/{email_doc_id}" width="1" height="1" style="display:none" />'
+
+    def _rewrite_link(match):
+        original_url = match.group(1)
+        if "/outreach/track/" in original_url:
+            return match.group(0)
+        encoded = quote(original_url, safe="")
+        return f'href="{base}/admin/api/outreach/track/click/{email_doc_id}?url={encoded}"'
+
+    tracked_html = re.sub(r'href="([^"]+)"', _rewrite_link, html_body)
+    tracked_html += pixel
+    return tracked_html
+
+
+def _send_single_email(to_email: str, subject: str, html_body: str, sender: str, app_password: str):
+    """Send one email via Gmail SMTP."""
+    msg = MIMEMultipart("alternative")
+    msg["From"] = sender
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(html_body, "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(sender, app_password)
+        server.sendmail(sender, to_email, msg.as_string())
+
+
+@router.post("/api/outreach/send")
+async def send_outreach_emails(req: SendEmailsRequest, user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    sender_email = req.sender_email or settings.gmail_sender_email
+    app_password = None
+
+    if sender_email == settings.gmail_sender_email:
+        app_password = settings.gmail_app_password
+    else:
+        for k, v in os.environ.items():
+            if k.startswith("OUTREACH_SENDER_") and k.endswith("_EMAIL") and v == sender_email:
+                app_password = os.environ.get(k.replace("_EMAIL", "_PWD"))
+                break
+
+    if not app_password:
+        raise HTTPException(status_code=400, detail=f"No app password configured for sender {sender_email}")
+
+    draft = db["outreach_drafts"].find_one({}, sort=[("created_at", -1)])
+    if not draft:
+        raise HTTPException(status_code=400, detail="No draft saved — write a draft first")
+
+    query = {"job_id": req.job_id, "sent": False}
+    if req.email_ids:
+        query["_id"] = {"$in": [ObjectId(eid) for eid in req.email_ids]}
+
+    emails = list(db["outreach_emails"].find(query))
+    if not emails:
+        return JSONResponse({"status": "ok", "sent": 0, "message": "No unsent emails to send"})
+
+    server_url = settings.xmem_server_url
+    sent_count = 0
+    errors = []
+
+    for email_doc in emails:
+        eid = str(email_doc["_id"])
+        username = email_doc.get("username", "")
+        to_email = email_doc["email"]
+
+        subject = draft["subject"].replace("{{username}}", username)
+        body = draft["body_html"].replace("{{username}}", username)
+        body = _inject_tracking(body, eid, server_url)
+
+        try:
+            _send_single_email(to_email, subject, body, sender_email, app_password)
+            db["outreach_emails"].update_one(
+                {"_id": email_doc["_id"]},
+                {"$set": {"sent": True, "sent_at": datetime.now(timezone.utc), "sender_email": sender_email}},
+            )
+            sent_count += 1
+            time.sleep(0.5)
+        except Exception as exc:
+            errors.append({"email": to_email, "error": str(exc)})
+            logger.error("Failed to send email to %s: %s", to_email, exc)
+
+    return JSONResponse({
+        "status": "ok",
+        "sent": sent_count,
+        "errors": errors[:10],
+        "total_attempted": len(emails),
+    })
+
+@router.get("/api/outreach/senders")
+async def get_outreach_senders(user: dict = Depends(_verify_admin_token)):
+    senders = []
+    if settings.gmail_sender_email and settings.gmail_app_password:
+        senders.append(settings.gmail_sender_email)
+        
+    for k, v in os.environ.items():
+        if k.startswith("OUTREACH_SENDER_") and k.endswith("_EMAIL"):
+            pwd = os.environ.get(k.replace("_EMAIL", "_PWD"))
+            if v and pwd and v not in senders:
+                senders.append(v)
+                
+    db = _get_outreach_db()
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    stats = []
+    for s in senders:
+        count = 0
+        if db is not None:
+            count = db["outreach_emails"].count_documents({"sender_email": s, "sent_at": {"$gte": today}})
+        stats.append({"email": s, "sent_today": count, "limit": 400})
+        
+    return JSONResponse(stats)
+
+
+# ── Tracking Endpoints (public — no auth) ─────────────────────────────────
+
+TRANSPARENT_1PX_GIF = base64.b64decode(
+    "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+)
+
+
+@router.get("/api/outreach/track/open/{email_id}")
+async def track_open(email_id: str):
+    """Record email open via tracking pixel. No auth required."""
+    try:
+        db = _get_outreach_db()
+        if db is not None:
+            db["outreach_emails"].update_one(
+                {"_id": ObjectId(email_id), "opened": False},
+                {"$set": {"opened": True, "opened_at": datetime.now(timezone.utc)}},
+            )
+    except Exception:
+        pass
+    return Response(
+        content=TRANSPARENT_1PX_GIF,
+        media_type="image/gif",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@router.get("/api/outreach/track/click/{email_id}")
+async def track_click(email_id: str, url: str = ""):
+    """Record link click and redirect. No auth required."""
+    try:
+        db = _get_outreach_db()
+        if db is not None:
+            db["outreach_emails"].update_one(
+                {"_id": ObjectId(email_id), "clicked": False},
+                {"$set": {"clicked": True, "clicked_at": datetime.now(timezone.utc)}},
+            )
+    except Exception:
+        pass
+    redirect_url = unquote(url) if url else "https://xmem.in"
+    return Response(
+        status_code=302,
+        headers={"Location": redirect_url},
+    )
+
+
+# ── Outreach Analytics ────────────────────────────────────────────────────
+
+@router.get("/api/outreach/analytics/{job_id}")
+async def outreach_analytics(job_id: str, user: dict = Depends(_verify_admin_token)):
+    db = _get_outreach_db()
+    if db is None:
+        return JSONResponse({"error": "Database unavailable"}, status_code=503)
+
+    emails = list(db["outreach_emails"].find({"job_id": job_id}))
+    total = len(emails)
+    sent = sum(1 for e in emails if e.get("sent"))
+    opened = sum(1 for e in emails if e.get("opened"))
+    clicked = sum(1 for e in emails if e.get("clicked"))
+
+    return JSONResponse({
+        "job_id": job_id,
+        "total_emails": total,
+        "sent": sent,
+        "opened": opened,
+        "clicked": clicked,
+        "open_rate": round(opened / sent * 100, 1) if sent > 0 else 0,
+        "click_rate": round(clicked / sent * 100, 1) if sent > 0 else 0,
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Dashboard HTML
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -950,6 +1848,8 @@ def _bson_safe(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_bson_safe(item) for item in obj]
     if isinstance(obj, datetime):
+        if obj.tzinfo is None:
+            obj = obj.replace(tzinfo=timezone.utc)
         return obj.isoformat()
     if hasattr(obj, "__str__") and not isinstance(obj, (str, int, float, bool)):
         return str(obj)

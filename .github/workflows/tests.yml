@@ -1,0 +1,100 @@
+name: Test Suite
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+  push:
+    branches:
+      - main
+      - master
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  API_KEYS: '["test-static-key"]'
+  JWT_SECRET_KEY: test-jwt-secret
+  PINECONE_API_KEY: test-pinecone-key
+  PINECONE_INDEX_NAME: test-xmem
+  NEO4J_PASSWORD: test-neo4j-password
+  GEMINI_API_KEY: test-gemini-key
+  MONGODB_URI: mongodb://127.0.0.1:1
+  ENABLE_ANALYTICS: "false"
+  ENABLE_PROMETHEUS: "false"
+
+jobs:
+  unit:
+    name: Unit, API, and Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run unit, API, and integration tests with coverage gate
+        run: >
+          pytest
+          tests/unit
+          tests/api
+          tests/integration
+          tests/test_deterministic_memory_layer.py
+          tests/test_enterprise_chat.py
+          --cov=src/utils
+          --cov=src/schemas
+          --cov=src/pipelines
+          --cov=src/enterprise
+          --cov=src/api
+          --cov-report=term-missing
+          --cov-report=xml
+          --cov-fail-under=70
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  e2e:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: unit
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run E2E tests
+        run: pytest tests/e2e

@@ -1,0 +1,39 @@
+name: Danger PR Review Bot
+
+# Danger runs on the PR and posts a review comment with potential issues.
+# It does NOT block the PR — it's purely advisory for the reviewer.
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+
+permissions:
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: danger-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  danger:
+    name: Danger Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Danger
+        run: npm install --save-dev danger
+
+      - name: Run Danger
+        run: npx danger ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

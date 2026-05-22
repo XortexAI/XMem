@@ -149,8 +149,12 @@ class CodeStore:
         error: Optional[str] = None,
         phase1_result: Optional[Dict[str, Any]] = None,
         phase2_result: Optional[Dict[str, Any]] = None,
+        durable_job_id: Optional[str] = None,
+        retry_count: Optional[int] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> None:
         """Persist or update scanner dashboard job state."""
+        rollup_status = phase2_status if phase1_status == "complete" else phase1_status
         doc: Dict[str, Any] = {
             "job_id": job_id,
             "username": username,
@@ -160,14 +164,22 @@ class CodeStore:
             "url": url,
             "phase1_status": phase1_status,
             "phase2_status": phase2_status,
+            "status": rollup_status,
             "started_at": started_at,
             "updated_at": datetime.now(timezone.utc),
             "error": error,
+            "error_state": {"message": error} if error else None,
         }
         if phase1_result is not None:
             doc["phase1_result"] = phase1_result
         if phase2_result is not None:
             doc["phase2_result"] = phase2_result
+        if durable_job_id is not None:
+            doc["durable_job_id"] = durable_job_id
+        if retry_count is not None:
+            doc["retry_count"] = retry_count
+        if timeout_seconds is not None:
+            doc["timeout_seconds"] = timeout_seconds
 
         self.scanner_jobs.update_one(
             {"job_id": job_id},

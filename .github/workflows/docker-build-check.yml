@@ -1,0 +1,58 @@
+# Validate that the Docker image builds successfully on every PR.
+# This catches broken Dockerfiles, missing files, and build-time errors
+# BEFORE code reaches staging.
+
+name: Docker Build Check
+
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - "Dockerfile"
+      - "docker/**"
+      - "pyproject.toml"
+      - "setup.py"
+      - "src/**"
+      - "server.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Docker build validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: xmem:pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image size check
+        run: |
+          # Build without buildx to get local image for size check
+          docker build -t xmem:size-check .
+          SIZE=$(docker image inspect xmem:size-check --format='{{.Size}}')
+          SIZE_MB=$((SIZE / 1024 / 1024))
+          echo "Image size: ${SIZE_MB}MB"
+
+          MAX_SIZE_MB=2000
+          if [ "$SIZE_MB" -gt "$MAX_SIZE_MB" ]; then
+            echo "⚠️ WARNING: Docker image is ${SIZE_MB}MB (limit: ${MAX_SIZE_MB}MB)"
+            echo "Consider optimizing the Dockerfile (multi-stage builds, .dockerignore, etc.)"
+          fi

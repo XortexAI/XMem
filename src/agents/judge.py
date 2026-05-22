@@ -87,6 +87,43 @@ def _format_similar_block(
     return "\n".join(lines)
 
 
+SUMMARY_JUDGE_SIMILARITY_THRESHOLD = 0.4
+
+
+def _has_summary_judge_candidates(
+    matches_per_item: Dict[str, List[SearchResult]],
+    threshold: float = SUMMARY_JUDGE_SIMILARITY_THRESHOLD,
+) -> bool:
+    for matches in matches_per_item.values():
+        for match in matches:
+            if match.score >= threshold:
+                return True
+    return False
+
+
+def _filter_matches_by_threshold(
+    matches_per_item: Dict[str, List[SearchResult]],
+    threshold: float,
+) -> Dict[str, List[SearchResult]]:
+    filtered: Dict[str, List[SearchResult]] = {}
+    for item_str, matches in matches_per_item.items():
+        filtered[item_str] = [m for m in matches if m.score >= threshold]
+    return filtered
+
+
+def _deterministic_summary_add(items_strings: List[str], confidence: float = 0.8) -> JudgeResult:
+    operations = [
+        Operation(
+            type=OperationType.ADD,
+            content=item,
+            reason="No similar summary at or above 0.4 — defaulting to ADD.",
+        )
+        for item in items_strings
+        if str(item).strip()
+    ]
+    return JudgeResult(operations=operations, confidence=confidence)
+
+
 # ---------------------------------------------------------------------------
 # Type alias for the Neo4j event search callable that the pipeline injects.
 #
@@ -150,6 +187,17 @@ class JudgeAgent(BaseAgent):
             user_id=user_id,
             domain=domain,
         )
+
+        if domain == JudgeDomain.SUMMARY and not _has_summary_judge_candidates(matches_per_item):
+            result = _deterministic_summary_add(items_strings)
+            self._log_result(domain, result)
+            return result
+
+        if domain == JudgeDomain.SUMMARY:
+            matches_per_item = _filter_matches_by_threshold(
+                matches_per_item,
+                SUMMARY_JUDGE_SIMILARITY_THRESHOLD,
+            )
 
         # 3. Build the prompt
         new_items_block = "\n".join(

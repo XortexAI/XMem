@@ -35,7 +35,17 @@ class ProjectStore:
         self._try_connect()
 
     def _try_connect(self) -> None:
-        """Attempt to connect to MongoDB, fall back to in-memory if unavailable."""
+        """Attempt to connect to configured store, fall back to memory if unavailable."""
+        provider = (settings.app_store_provider or "mongo").strip().lower()
+        if provider == "memory":
+            logger.info("Using in-memory project storage")
+            self._connected = False
+            self._in_memory = True
+            return
+        if provider == "postgres":
+            self._try_connect_postgres()
+            return
+
         try:
             from pymongo import MongoClient, ASCENDING
             from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
@@ -54,6 +64,74 @@ class ProjectStore:
             logger.warning(f"MongoDB connection failed, using in-memory storage: {e}")
             self._connected = False
             self._in_memory = True
+
+    def _try_connect_postgres(self) -> None:
+        """Attempt to connect to Postgres for local project metadata."""
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+
+            self._client = psycopg.connect(settings.app_postgres_url or settings.pgvector_url)
+            self._client.autocommit = True
+            self._pg_row_factory = dict_row
+            self._connected = True
+            self._in_memory = False
+            self._backend = "postgres"
+            self._ensure_postgres_schema()
+            logger.info("Connected to Postgres for project storage")
+        except Exception as e:
+            logger.warning(f"Postgres connection failed, using in-memory project storage: {e}")
+            self._connected = False
+            self._in_memory = True
+
+    def _ensure_postgres_schema(self) -> None:
+        with self._client.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    org_id TEXT NOT NULL,
+                    repo TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    annotation_count INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS team_members (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    email TEXT,
+                    role TEXT NOT NULL,
+                    added_by TEXT NOT NULL,
+                    added_at TIMESTAMPTZ NOT NULL,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    UNIQUE(project_id, user_id)
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS projects_created_by_idx ON projects(created_by)")
+            cur.execute("CREATE INDEX IF NOT EXISTS team_members_project_idx ON team_members(project_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS team_members_user_idx ON team_members(user_id)")
+
+    def _is_postgres(self) -> bool:
+        return getattr(self, "_backend", "") == "postgres"
+
+    @staticmethod
+    def _with_mongo_id(row: Dict[str, Any] | None) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        doc = dict(row)
+        doc["_id"] = doc.pop("id")
+        return doc
 
     def _ensure_indexes(self) -> None:
         """Create necessary indexes for the collections."""
@@ -108,6 +186,25 @@ class ProjectStore:
             logger.info(f"Created project (memory): {name}")
             return project_doc
 
+        if self._is_postgres():
+            import uuid
+
+            project_id = str(uuid.uuid4())
+            with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                cur.execute(
+                    """
+                    INSERT INTO projects(
+                        id, name, description, org_id, repo, created_by,
+                        created_at, updated_at, is_active, annotation_count
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, 0)
+                    RETURNING *
+                    """,
+                    (project_id, name, description, org_id, repo, created_by, now, now),
+                )
+                logger.info(f"Created project (postgres): {name} (id={project_id})")
+                return self._with_mongo_id(cur.fetchone())
+
         try:
             result = self.projects.insert_one(project_doc)
             project_doc["_id"] = result.inserted_id
@@ -123,6 +220,10 @@ class ProjectStore:
             return self._in_memory_projects.get(project_id)
 
         try:
+            if self._is_postgres():
+                with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                    cur.execute("SELECT * FROM projects WHERE id = %s", (project_id,))
+                    return self._with_mongo_id(cur.fetchone())
             from bson import ObjectId
             return self.projects.find_one({"_id": ObjectId(project_id)})
         except Exception as e:
@@ -156,6 +257,21 @@ class ProjectStore:
             return result
 
         try:
+            if self._is_postgres():
+                with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                    cur.execute(
+                        """
+                        SELECT DISTINCT p.*
+                        FROM projects p
+                        LEFT JOIN team_members tm
+                          ON tm.project_id = p.id
+                         AND tm.user_id = %s
+                         AND tm.is_active = TRUE
+                        WHERE p.created_by = %s OR tm.id IS NOT NULL
+                        """,
+                        (user_id, user_id),
+                    )
+                    return [self._with_mongo_id(row) for row in cur.fetchall()]
             from bson import ObjectId
             # Find projects created by user
             created = list(self.projects.find({"created_by": user_id}))
@@ -200,6 +316,18 @@ class ProjectStore:
             return False
 
         try:
+            if self._is_postgres():
+                allowed = {"name", "description", "org_id", "repo", "is_active", "annotation_count", "updated_at"}
+                fields = {k: v for k, v in updates.items() if k in allowed}
+                if not fields:
+                    return False
+                assignments = ", ".join(f"{k} = %s" for k in fields)
+                with self._client.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE projects SET {assignments} WHERE id = %s",
+                        [*fields.values(), project_id],
+                    )
+                    return cur.rowcount > 0
             from bson import ObjectId
             result = self.projects.update_one(
                 {"_id": ObjectId(project_id)},
@@ -221,6 +349,18 @@ class ProjectStore:
             return False
 
         try:
+            if self._is_postgres():
+                with self._client.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE projects
+                        SET annotation_count = annotation_count + %s,
+                            updated_at = %s
+                        WHERE id = %s
+                        """,
+                        (increment, datetime.utcnow(), project_id),
+                    )
+                    return cur.rowcount > 0
             from bson import ObjectId
             result = self.projects.update_one(
                 {"_id": ObjectId(project_id)},
@@ -241,6 +381,11 @@ class ProjectStore:
             return False
 
         try:
+            if self._is_postgres():
+                with self._client.cursor() as cur:
+                    cur.execute("DELETE FROM team_members WHERE project_id = %s", (project_id,))
+                    cur.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+                    return cur.rowcount > 0
             from bson import ObjectId
             # Delete project
             result = self.projects.delete_one({"_id": ObjectId(project_id)})
@@ -294,6 +439,33 @@ class ProjectStore:
             logger.info(f"Added team member (memory): {username} to project {project_id}")
             return member_doc
 
+        if self._is_postgres():
+            import uuid
+
+            member_id = str(uuid.uuid4())
+            with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                cur.execute(
+                    """
+                    INSERT INTO team_members(
+                        id, project_id, user_id, username, email, role,
+                        added_by, added_at, is_active
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+                    ON CONFLICT(project_id, user_id) DO UPDATE SET
+                        username = excluded.username,
+                        email = excluded.email,
+                        role = excluded.role,
+                        is_active = TRUE
+                    RETURNING *
+                    """,
+                    (
+                        member_id, project_id, user_id, username, email,
+                        role.value, added_by, datetime.utcnow(),
+                    ),
+                )
+                logger.info(f"Added team member (postgres): {username} to project {project_id}")
+                return self._with_mongo_id(cur.fetchone())
+
         try:
             from pymongo.errors import DuplicateKeyError
             result = self.team_members.insert_one(member_doc)
@@ -315,6 +487,13 @@ class ProjectStore:
             return next((m for m in members if m["user_id"] == user_id), None)
 
         try:
+            if self._is_postgres():
+                with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                    cur.execute(
+                        "SELECT * FROM team_members WHERE project_id = %s AND user_id = %s",
+                        (project_id, user_id),
+                    )
+                    return self._with_mongo_id(cur.fetchone())
             return self.team_members.find_one({
                 "project_id": project_id,
                 "user_id": user_id,
@@ -330,6 +509,13 @@ class ProjectStore:
             return [m for m in members if m.get("is_active", True)]
 
         try:
+            if self._is_postgres():
+                with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                    cur.execute(
+                        "SELECT * FROM team_members WHERE project_id = %s AND is_active = TRUE",
+                        (project_id,),
+                    )
+                    return [self._with_mongo_id(row) for row in cur.fetchall()]
             return list(self.team_members.find({
                 "project_id": project_id,
                 "is_active": True,
@@ -354,6 +540,18 @@ class ProjectStore:
             return None
 
         try:
+            if self._is_postgres():
+                with self._client.cursor(row_factory=self._pg_row_factory) as cur:
+                    cur.execute(
+                        """
+                        UPDATE team_members
+                        SET role = %s
+                        WHERE project_id = %s AND user_id = %s
+                        RETURNING *
+                        """,
+                        (role.value, project_id, user_id),
+                    )
+                    return self._with_mongo_id(cur.fetchone())
             result = self.team_members.find_one_and_update(
                 {"project_id": project_id, "user_id": user_id},
                 {"$set": {"role": role.value}},
@@ -375,6 +573,17 @@ class ProjectStore:
             return False
 
         try:
+            if self._is_postgres():
+                with self._client.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE team_members
+                        SET is_active = FALSE
+                        WHERE project_id = %s AND user_id = %s
+                        """,
+                        (project_id, user_id),
+                    )
+                    return cur.rowcount > 0
             result = self.team_members.update_one(
                 {"project_id": project_id, "user_id": user_id},
                 {"$set": {"is_active": False}}

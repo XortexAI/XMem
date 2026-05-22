@@ -27,7 +27,6 @@ from datetime import date, timedelta
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
-import numpy as np
 from neo4j import GraphDatabase
 
 from src.graph.schema import GraphSchema
@@ -255,53 +254,68 @@ class Neo4jClient:
     ) -> List[Dict[str, Any]]:
         """Semantic search over event embeddings stored on HAS_EVENT relationships.
 
-        Generates an embedding for *query_text*, then fetches all events for
-        *user_id* that carry an embedding, computes cosine similarity, and
-        returns the top-k results above the threshold.
+        Generates an embedding for *query_text*, then asks Neo4j to compute
+        cosine similarity against every event's embedding for *user_id*,
+        filter by *similarity_threshold*, sort, and return the top *top_k*
+        rows. Computation and ranking happen in the database; only the
+        winning rows cross the wire.
+
+        ``similarity_score`` is raw cosine in [-1, 1] (matches the previous
+        dot-product semantics, which assumed unit-normalised embeddings).
         """
         if not self._embedding_fn:
             logger.warning("No embedding function — cannot search by embedding.")
             return []
 
-        query_embedding = self._embedding_fn(query_text)
+        query_embedding = list(self._embedding_fn(query_text))
+        if not query_embedding:
+            return []
 
+        # Neo4j's built-in `vector.similarity.cosine` returns (1 + cos(theta))/2
+        # in [0, 1]; we map back to raw cosine in [-1, 1] so the caller's
+        # threshold semantics (and any downstream logging) stay unchanged.
         query = f"""
         MATCH (u:{GraphSchema.LABEL_USER} {{ {GraphSchema.PROP_USER_ID}: $user_id }})
               -[r:{GraphSchema.REL_HAS_EVENT}]->
               (d:{GraphSchema.LABEL_DATE})
         WHERE r.{GraphSchema.PROP_EMBEDDING} IS NOT NULL
+          AND size(r.{GraphSchema.PROP_EMBEDDING}) = size($query_embedding)
+        WITH r, d,
+             2.0 * vector.similarity.cosine(r.{GraphSchema.PROP_EMBEDDING}, $query_embedding) - 1.0
+             AS similarity_score
+        WHERE similarity_score >= $similarity_threshold
         RETURN r.{GraphSchema.PROP_EVENT_NAME} as event_name,
                r.{GraphSchema.PROP_DESC} as desc,
                r.{GraphSchema.PROP_YEAR} as year,
                r.{GraphSchema.PROP_TIME} as time,
                r.{GraphSchema.PROP_DATE_EXPRESSION} as date_expression,
-               r.{GraphSchema.PROP_EMBEDDING} as embedding,
-               d.{GraphSchema.PROP_DATE_VAL} as date
+               d.{GraphSchema.PROP_DATE_VAL} as date,
+               similarity_score
+        ORDER BY similarity_score DESC
+        LIMIT $top_k
         """
+
+        params = {
+            "user_id": user_id,
+            "query_embedding": query_embedding,
+            "similarity_threshold": float(similarity_threshold),
+            "top_k": int(top_k),
+        }
 
         results: List[Dict[str, Any]] = []
         with self._session() as session:
-            records = session.run(query, user_id=user_id)
+            records = session.run(query, **params)
             for record in records:
-                event_embedding = record["embedding"]
-                if event_embedding:
-                    q_vec = np.array(query_embedding, dtype=np.float32)
-                    e_vec = np.array(event_embedding, dtype=np.float32)
-                    similarity = float(np.dot(q_vec, e_vec))
-
-                    if similarity >= similarity_threshold:
-                        results.append({
-                            "event_name": record["event_name"],
-                            "desc": record["desc"],
-                            "year": record["year"],
-                            "time": record["time"],
-                            "date": record["date"],
-                            "date_expression": record["date_expression"],
-                            "similarity_score": similarity,
-                        })
-
-        results.sort(key=lambda x: x["similarity_score"], reverse=True)
-        return results[:top_k]
+                results.append({
+                    "event_name": record["event_name"],
+                    "desc": record["desc"],
+                    "year": record["year"],
+                    "time": record["time"],
+                    "date": record["date"],
+                    "date_expression": record["date_expression"],
+                    "similarity_score": float(record["similarity_score"]),
+                })
+        return results
 
     # -- Search: by event_name (exact match) — for Judge -------------------
 

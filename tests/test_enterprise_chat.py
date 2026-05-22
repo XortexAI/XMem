@@ -90,12 +90,13 @@ async def test_annotation_service_extracts_and_stores_project_annotations():
         ),
     )
 
-    ids = await service.extract_and_store(
+    ids, assigned_to_name = await service.extract_and_store(
         context=_context(),
         answer_text="Use an idempotency key per transaction.",
     )
 
     assert ids == ["ann_1"]
+    assert assigned_to_name == ""
     assert len(store.created) == 1
     created = store.created[0]
     assert created["project_id"] == "proj_1"
@@ -108,7 +109,7 @@ async def test_annotation_service_extracts_and_stores_project_annotations():
     assert created["file_path"] == "src/payments/processor.py"
     assert created["symbol_name"] == "PaymentProcessor.process"
     assert count_updates == [("proj_1", 1)]
-    assert "Assistant response" in agent.states[0]["classifier_output"]
+    assert agent.states[0]["classifier_output"] == "The retry path can duplicate charges."
 
 
 @pytest.mark.asyncio

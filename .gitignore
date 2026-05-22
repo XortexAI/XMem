@@ -53,10 +53,15 @@ logs/
 # Dev-only folders
 frontend/
 scripts/
+!scripts/
+!scripts/benchmark_v2_ingest.py
 tests/
+!tests/
+!tests/**/*.py
 benchmarks/
 LongMemEval/
 backboard/
+rust/
 
 # Empty root files
 Makefile

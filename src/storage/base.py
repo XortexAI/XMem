@@ -463,6 +463,19 @@ class BaseVectorStore(ABC):
             VectorStoreError: For other retrieval-related errors.
         """
         pass
+
+    async def search_by_text(
+        self,
+        query_text: str,
+        top_k: int = 2,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[SearchResult]:
+        """Embed a query string and run vector search.
+
+        Backends can override this to share their normal embedding helper.
+        Keeping it on the base type lets retrieval code stay provider-agnostic.
+        """
+        raise NotImplementedError("search_by_text is not implemented for this vector store")
     
     # ========================================================================
     # OPTIONAL ABSTRACT METHODS - Override if your backend supports them

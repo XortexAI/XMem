@@ -33,7 +33,24 @@ def mock_ingest_pipeline():
                 "image_weaver": None,
             }
         
+        async def mock_run_staged_batch(items, user_id):
+            return [
+                {
+                    "classification_result": SimpleNamespace(classifications=["test"]),
+                    "profile_judge": None,
+                    "profile_weaver": None,
+                    "temporal_judge": None,
+                    "temporal_weaver": None,
+                    "summary_judge": None,
+                    "summary_weaver": None,
+                    "image_judge": None,
+                    "image_weaver": None,
+                }
+                for _ in items
+            ]
+        
         mock_pipeline.run.side_effect = mock_run
+        mock_pipeline.run_staged_batch.side_effect = mock_run_staged_batch
         mock_get_pipeline.return_value = mock_pipeline
         yield mock_pipeline
 
@@ -130,6 +147,117 @@ def test_coordinator_serializes_concurrent_batches(client, mock_ingest_pipeline)
         assert r is not None
         assert r.status_code == 200, r.json()
 
-    # All 4 pipeline.run calls (2 items × 2 batches) should have been made
-    assert mock_ingest_pipeline.run.call_count == 4
+    # All 2 run_staged_batch calls (2 batches) should have been made
+    assert mock_ingest_pipeline.run_staged_batch.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_staged_batch_overlays():
+    """Verify that JudgeAgent applies simulated overlays for profile, temporal, and semantic domains when pending_ops are passed."""
+    from unittest.mock import MagicMock
+    from src.agents.judge import JudgeAgent, JudgeDomain
+    from src.schemas.judge import Operation, OperationType
+    from src.storage.base import SearchResult
+
+    # Mock the vector store and graph event search
+    mock_vector_store = MagicMock()
+    mock_graph_search = MagicMock()
+    
+    agent = JudgeAgent(model=MagicMock(), name="judge", system_prompt="system")
+    agent.vector_store = mock_vector_store
+    agent.graph_event_search = mock_graph_search
+    agent.top_k = 5
+
+    # 1. Test profile topic/sub-topic exact match
+    pending_profile_ops = [
+        Operation(
+            type=OperationType.ADD,
+            content="work / company = XMem",
+            reason="User works at XMem",
+            embedding_id="pending_prof_1"
+        )
+    ]
+    
+    mock_vector_store.search_by_metadata.return_value = []
+    
+    res = await agent._fetch_similar(
+        items_strings=["work / company = XMem"],
+        new_items=[{"topic": "work", "sub_topic": "company", "memo": "XMem"}],
+        user_id="user_1",
+        domain=JudgeDomain.PROFILE,
+        pending_ops=pending_profile_ops
+    )
+    
+    assert "work / company = XMem" in res
+    assert len(res["work / company = XMem"]) == 1
+    match = res["work / company = XMem"][0]
+    assert match.id == "pending_prof_1"
+    assert match.score == 1.0
+    assert match.metadata["domain"] == "profile"
+
+    # 2. Test profile delete overlay (should clear matches)
+    pending_delete_profile_ops = [
+        Operation(
+            type=OperationType.DELETE,
+            content="work / company = XMem",
+            reason="User left XMem",
+            embedding_id="pending_prof_1"
+        )
+    ]
+    
+    res_del = await agent._fetch_similar(
+        items_strings=["work / company = XMem"],
+        new_items=[{"topic": "work", "sub_topic": "company", "memo": "XMem"}],
+        user_id="user_1",
+        domain=JudgeDomain.PROFILE,
+        pending_ops=pending_delete_profile_ops
+    )
+    assert len(res_del["work / company = XMem"]) == 0
+
+    # 3. Test temporal event name match
+    pending_temporal_ops = [
+        Operation(
+            type=OperationType.ADD,
+            content="Date: 05-22, 2026 | Event: Launch | Description: Final Release | Time:  | Date expression: today",
+            reason="Launch event",
+            embedding_id="pending_temp_1"
+        )
+    ]
+    
+    mock_graph_search.search_events_by_embedding.return_value = []
+    res_temp = await agent._fetch_similar(
+        items_strings=["Launch event"],
+        new_items=[{"date": "05-22", "event_name": "Launch", "desc": "Final Release", "year": "2026", "time": "", "date_expression": "today"}],
+        user_id="user_1",
+        domain=JudgeDomain.TEMPORAL,
+        pending_ops=pending_temporal_ops
+    )
+    assert len(res_temp["Launch event"]) == 1
+    match_temp = res_temp["Launch event"][0]
+    assert match_temp.id == "pending_temp_1"
+    assert match_temp.score == 1.0
+
+    # 4. Test semantic similarity match (SequenceMatcher)
+    pending_summary_ops = [
+        Operation(
+            type=OperationType.ADD,
+            content="Likes clean coding and unit testing",
+            reason="Clean code preference",
+            embedding_id="pending_sum_1"
+        )
+    ]
+    
+    mock_vector_store.search_by_text = MagicMock(return_value=[])
+    res_sum = await agent._fetch_similar(
+        items_strings=["Likes clean coding"],
+        new_items=[],
+        user_id="user_1",
+        domain=JudgeDomain.SUMMARY,
+        pending_ops=pending_summary_ops
+    )
+    assert len(res_sum["Likes clean coding"]) == 1
+    match_sum = res_sum["Likes clean coding"][0]
+    assert match_sum.id == "pending_sum_1"
+    assert match_sum.score > 0.5
+
 

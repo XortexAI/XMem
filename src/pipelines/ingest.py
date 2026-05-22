@@ -82,7 +82,7 @@ from src.schemas.code import (
 )
 from src.schemas.events import EventResult
 from src.schemas.image import ImageResult
-from src.schemas.judge import JudgeDomain, JudgeResult, OperationType
+from src.schemas.judge import JudgeDomain, JudgeResult, OperationType, Operation
 from src.schemas.profile import ProfileResult
 from src.schemas.summary import SummaryResult
 from src.schemas.weaver import WeaverResult
@@ -762,33 +762,130 @@ class IngestPipeline:
 
     # ── Extraction nodes ──────────────────────────────────────────────
 
+    # ── Decoupled helpers ─────────────────────────────────────────────
+
+    async def _extract_profile(self, combined_query: str) -> ProfileResult:
+        return await self.profiler.arun({"classifier_output": combined_query})
+
+    async def _judge_profile(
+        self, items: list, user_id: str, pending_ops: Optional[List[Operation]] = None
+    ) -> JudgeResult:
+        return await self.judge.arun_deterministic({
+            "domain": "profile",
+            "new_items": items,
+            "user_id": user_id,
+        }, pending_ops=pending_ops)
+
+    async def _weave_profile(self, judge_result: JudgeResult, user_id: str) -> WeaverResult:
+        return await self.weaver.execute(
+            judge_result=judge_result,
+            domain=JudgeDomain.PROFILE,
+            user_id=user_id,
+        )
+
+    async def _extract_temporal(self, combined_query: str, session_dt: str) -> EventResult:
+        return await self.temporal.arun({
+            "classifier_output": combined_query,
+            "session_datetime": session_dt,
+        })
+
+    async def _judge_temporal(
+        self, items: list, user_id: str, pending_ops: Optional[List[Operation]] = None
+    ) -> JudgeResult:
+        return await self.judge.arun_deterministic({
+            "domain": "temporal",
+            "new_items": items,
+            "user_id": user_id,
+        }, pending_ops=pending_ops)
+
+    async def _weave_temporal(self, judge_result: JudgeResult, user_id: str) -> WeaverResult:
+        return await self.weaver.execute(
+            judge_result=judge_result,
+            domain=JudgeDomain.TEMPORAL,
+            user_id=user_id,
+        )
+
+    async def _extract_image(self, state: IngestState) -> ImageResult:
+        return await self.image_agent.arun(state)
+
+    async def _extract_code(self, combined_query: str) -> CodeAnnotationResult:
+        return await self.code_agent.arun({"classifier_output": combined_query})
+
+    async def _judge_code(
+        self, items: list, user_id: str, pending_ops: Optional[List[Operation]] = None
+    ) -> JudgeResult:
+        return await self.judge.arun({
+            "domain": JudgeDomain.CODE,
+            "new_items": items,
+            "user_id": user_id,
+        }, pending_ops=pending_ops)
+
+    async def _weave_code(self, judge_result: JudgeResult, user_id: str) -> WeaverResult:
+        return await self.weaver.execute(
+            judge_result=judge_result,
+            domain=JudgeDomain.CODE,
+            user_id=user_id,
+        )
+
+    async def _extract_snippet(self, combined_query: str) -> SnippetExtractionResult:
+        return await self.snippet_agent.arun({"classifier_output": combined_query})
+
+    async def _judge_snippet(
+        self, items: list, user_id: str, pending_ops: Optional[List[Operation]] = None
+    ) -> JudgeResult:
+        return await self.judge.arun({
+            "domain": JudgeDomain.SNIPPET,
+            "new_items": items,
+            "user_id": user_id,
+        }, pending_ops=pending_ops)
+
+    async def _weave_snippet(self, judge_result: JudgeResult, user_id: str) -> WeaverResult:
+        self.weaver.snippet_vector_store = self._get_snippet_store(user_id)
+        return await self.weaver.execute(
+            judge_result=judge_result,
+            domain=JudgeDomain.SNIPPET,
+            user_id=user_id,
+        )
+
+    async def _extract_summary(self, user_query: str, agent_response: str) -> SummaryResult:
+        return await self.summarizer.arun({
+            "user_query": user_query,
+            "agent_response": agent_response,
+        })
+
+    async def _judge_summary(
+        self, items: list, user_id: str, pending_ops: Optional[List[Operation]] = None
+    ) -> JudgeResult:
+        return await self.judge.arun({
+            "domain": JudgeDomain.SUMMARY,
+            "new_items": items,
+            "user_id": user_id,
+        }, pending_ops=pending_ops)
+
+    async def _weave_summary(self, judge_result: JudgeResult, user_id: str) -> WeaverResult:
+        return await self.weaver.execute(
+            judge_result=judge_result,
+            domain=JudgeDomain.SUMMARY,
+            user_id=user_id,
+        )
+
+    # ── Extraction nodes ──────────────────────────────────────────────
+
     async def _node_extract_profile(self, state: IngestState) -> Dict[str, Any]:
         """Extract profile facts from the classifier query."""
         queries = state.get("profile_queries", [])
         user_id = state.get("user_id", "default")
 
-        # Merge into a single query (safety net if classifier outputs duplicate lines)
         combined_query = " ".join(queries)
-        result = await self.profiler.arun({"classifier_output": combined_query})
+        result = await self._extract_profile(combined_query)
 
         if result.is_empty:
             return {"status": "no_profile_facts"}
 
-        # Profile facts are already structured; exact metadata lookup avoids
-        # an extra judge LLM call on the hot path.
         items = [f.model_dump() for f in result.facts]
-        judge_result = await self.judge.arun_deterministic({
-            "domain": "profile",
-            "new_items": items,
-            "user_id": user_id,
-        })
+        judge_result = await self._judge_profile(items, user_id)
 
-        # Weave
-        weaver_result = await self.weaver.execute(
-            judge_result=judge_result,
-            domain=JudgeDomain.PROFILE,
-            user_id=user_id,
-        )
+        weaver_result = await self._weave_profile(judge_result, user_id)
         return {
             "profile_result": result,
             "profile_judge": judge_result,
@@ -801,12 +898,8 @@ class IngestPipeline:
         user_id = state.get("user_id", "default")
         session_dt = state.get("session_datetime", "")
 
-        # Merge into a single query
         combined_query = " ".join(queries)
-        result = await self.temporal.arun({
-            "classifier_output": combined_query,
-            "session_datetime": session_dt,
-        })
+        result = await self._extract_temporal(combined_query, session_dt)
 
         if result.is_empty:
             return {"status": "no_temporal_event"}
@@ -822,17 +915,9 @@ class IngestPipeline:
                 "date_expression": event.date_expression or "",
             })
 
-        judge_result = await self.judge.arun_deterministic({
-            "domain": "temporal",
-            "new_items": all_items,
-            "user_id": user_id,
-        })
+        judge_result = await self._judge_temporal(all_items, user_id)
 
-        weaver_result = await self.weaver.execute(
-            judge_result=judge_result,
-            domain=JudgeDomain.TEMPORAL,
-            user_id=user_id,
-        )
+        weaver_result = await self._weave_temporal(judge_result, user_id)
         return {
             "temporal_result": result,
             "temporal_judge": judge_result,
@@ -843,16 +928,11 @@ class IngestPipeline:
         """Extract visual observations from the image and store them as summary."""
         user_id = state.get("user_id", "default")
 
-        # ImageAgent reads classifier_output and image_url from state
-        result = await self.image_agent.arun(state)
+        result = await self._extract_image(state)
 
         if result.is_empty:
             return {"status": "no_image_observations"}
 
-        # Convert observations to list of dicts for Judge
-        # items = [obs.model_dump() for obs in result.observations]
-
-        #converted observation of images to summary and stored as summary
         items = []
         if result.description:
             items.append(f"[Image] {result.description}")
@@ -863,17 +943,9 @@ class IngestPipeline:
         if not items:
             return {"status": "no_image_observations"}
 
-        judge_result = await self.judge.arun({
-            "domain": JudgeDomain.SUMMARY,
-            "new_items": items,
-            "user_id": user_id,
-        })
+        judge_result = await self._judge_summary(items, user_id)
 
-        weaver_result = await self.weaver.execute(
-            judge_result=judge_result,
-            domain=JudgeDomain.SUMMARY,
-            user_id=user_id,
-        )
+        weaver_result = await self._weave_summary(judge_result, user_id)
 
         return {
             "image_result": result,
@@ -886,9 +958,8 @@ class IngestPipeline:
         queries = state.get("code_queries", [])
         user_id = state.get("user_id", "default")
 
-        # Merge into a single query
         combined_query = " ".join(queries)
-        result = await self.code_agent.arun({"classifier_output": combined_query})
+        result = await self._extract_code(combined_query)
 
         if result.is_empty:
             return {"status": "no_code_annotations"}
@@ -905,17 +976,9 @@ class IngestPipeline:
             ]
             all_items.append(" | ".join(parts))
 
-        judge_result = await self.judge.arun({
-            "domain": JudgeDomain.CODE,
-            "new_items": all_items,
-            "user_id": user_id,
-        })
+        judge_result = await self._judge_code(all_items, user_id)
 
-        weaver_result = await self.weaver.execute(
-            judge_result=judge_result,
-            domain=JudgeDomain.CODE,
-            user_id=user_id,
-        )
+        weaver_result = await self._weave_code(judge_result, user_id)
         return {
             "code_result": result,
             "code_judge": judge_result,
@@ -927,9 +990,8 @@ class IngestPipeline:
         queries = state.get("code_queries", [])
         user_id = state.get("user_id", "default")
 
-        # Merge into a single query
         combined_query = " ".join(queries)
-        result = await self.snippet_agent.arun({"classifier_output": combined_query})
+        result = await self._extract_snippet(combined_query)
 
         if result.is_empty:
             return {"status": "no_snippets"}
@@ -945,20 +1007,9 @@ class IngestPipeline:
             ]
             all_items.append(" | ".join(parts))
 
-        judge_result = await self.judge.arun({
-            "domain": JudgeDomain.SNIPPET,
-            "new_items": all_items,
-            "user_id": user_id,
-        })
+        judge_result = await self._judge_snippet(all_items, user_id)
 
-        # Bind the user-scoped snippet store before executing
-        self.weaver.snippet_vector_store = self._get_snippet_store(user_id)
-
-        weaver_result = await self.weaver.execute(
-            judge_result=judge_result,
-            domain=JudgeDomain.SNIPPET,
-            user_id=user_id,
-        )
+        weaver_result = await self._weave_snippet(judge_result, user_id)
         return {
             "snippet_result": result,
             "snippet_judge": judge_result,
@@ -966,14 +1017,14 @@ class IngestPipeline:
         }
 
     async def _node_extract_summary(self, state: IngestState) -> Dict[str, Any]:
-        result = await self.summarizer.arun({
-            "user_query": state.get("user_query", ""),
-            "agent_response": state.get("agent_response", ""),
-        })
+        user_id = state.get("user_id", "default")
+        result = await self._extract_summary(
+            user_query=state.get("user_query", ""),
+            agent_response=state.get("agent_response", ""),
+        )
         if result.is_empty:
             return {"status": "no_summary"}
 
-        # Split bullet summary into individual items
         items = [
             line.lstrip("- •").strip()
             for line in result.summary.strip().splitlines()
@@ -982,17 +1033,9 @@ class IngestPipeline:
         if not items:
             return {"status": "no_summary_items"}
 
-        judge_result = await self.judge.arun({
-            "domain": "summary",
-            "new_items": items,
-            "user_id": state.get("user_id", "default"),
-        })
+        judge_result = await self._judge_summary(items, user_id)
 
-        weaver_result = await self.weaver.execute(
-            judge_result=judge_result,
-            domain=JudgeDomain.SUMMARY,
-            user_id=state.get("user_id", "default"),
-        )
+        weaver_result = await self._weave_summary(judge_result, user_id)
         return {
             "summary_result": result,
             "summary_judge": judge_result,
@@ -1143,6 +1186,285 @@ class IngestPipeline:
         }
         return await self.graph.ainvoke(initial_state)
 
+    async def _process_item_phase_a(self, idx: int, item: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+        """Phase A - Classification and domain extraction concurrently for a single item."""
+        user_query = item.get("user_query", "")
+        agent_response = item.get("agent_response", "") or "Acknowledged."
+        session_dt = item.get("session_datetime", "")
+        image_url = item.get("image_url", "")
+        disabled_domains = set(item.get("disabled_domains") or [])
+
+        # Run Classifier
+        classifier_query = user_query
+        if image_url:
+            classifier_query += " [User has attached an image]"
+
+        classification_result = await self.classifier.arun({
+            "user_query": classifier_query,
+        })
+
+        # Collect sub-queries per domain
+        profile_queries = []
+        temporal_queries = []
+        image_queries = []
+        code_queries = []
+
+        if classification_result and classification_result.classifications:
+            for c in classification_result.classifications:
+                if c["source"] == "profile":
+                    profile_queries.append(c["query"])
+                elif c["source"] == "event":
+                    temporal_queries.append(c["query"])
+                elif c["source"] == "image":
+                    image_queries.append(c["query"])
+                elif c["source"] == "code":
+                    code_queries.append(c["query"])
+
+        words = user_query.split()
+        is_trivial = len(words) < 4 and not any([profile_queries, temporal_queries, code_queries, image_queries])
+
+        tasks = []
+        task_names = []
+
+        if not is_trivial:
+            tasks.append(self._extract_summary(user_query, agent_response))
+            task_names.append("summary")
+
+        if profile_queries:
+            combined_profile = " ".join(profile_queries)
+            tasks.append(self._extract_profile(combined_profile))
+            task_names.append("profile")
+
+        if temporal_queries:
+            combined_temporal = " ".join(temporal_queries)
+            tasks.append(self._extract_temporal(combined_temporal, session_dt))
+            task_names.append("temporal")
+
+        if code_queries and not {"code", "snippet"}.issubset(disabled_domains):
+            is_enterprise = self.org_id != "default"
+            if is_enterprise and "code" not in disabled_domains:
+                combined_code = " ".join(code_queries)
+                tasks.append(self._extract_code(combined_code))
+                task_names.append("code")
+            elif not is_enterprise and "snippet" not in disabled_domains:
+                combined_snippet = " ".join(code_queries)
+                tasks.append(self._extract_snippet(combined_snippet))
+                task_names.append("snippet")
+
+        if image_url:
+            if not image_queries:
+                image_queries.append("Analyze this image for memory-relevant details.")
+            combined_image = " ".join(image_queries)
+            image_state = {
+                "classifier_output": combined_image,
+                "image_url": image_url,
+                "user_id": user_id,
+            }
+            tasks.append(self._extract_image(image_state))
+            task_names.append("image")
+
+        extraction_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        item_state = {
+            "user_query": user_query,
+            "agent_response": agent_response,
+            "user_id": user_id,
+            "session_datetime": session_dt,
+            "image_url": image_url,
+            "disabled_domains": list(disabled_domains),
+            "classification_result": classification_result,
+            "errors": [],
+            "status": "extracted",
+        }
+
+        for name, result in zip(task_names, extraction_results):
+            if isinstance(result, Exception):
+                logger.error(f"Error during {name} extraction for batch item {idx}: {result}")
+                item_state["errors"].append(f"{name}_extraction_error: {str(result)}")
+            else:
+                item_state[f"{name}_result"] = result
+
+        return {"idx": idx, "item_state": item_state}
+
+    async def run_staged_batch(
+        self,
+        items: List[Dict[str, Any]],
+        user_id: str,
+    ) -> List[Dict[str, Any]]:
+        """Run batch memory ingestion using a staged parallel/sequential hybrid pipeline."""
+        logger.info("=" * 60)
+        logger.info("RUN STAGED BATCH: %d items", len(items))
+        logger.info("=" * 60)
+
+        # Phase A: Concurrently run classification + domain extraction across all items
+        phase_a_tasks = [self._process_item_phase_a(idx, item, user_id) for idx, item in enumerate(items)]
+        phase_a_outputs = await asyncio.gather(*phase_a_tasks)
+
+        # Phase B: Sequentially run Judge across all items with pending_ops tracking
+        pending_ops: List[Operation] = []
+
+        for phase_a_out in phase_a_outputs:
+            item_state = phase_a_out["item_state"]
+            idx = phase_a_out["idx"]
+
+            judge_tasks = []
+            judge_domains = []
+
+            # 1. Profile facts
+            profile_res = item_state.get("profile_result")
+            if profile_res and not profile_res.is_empty:
+                items_data = [f.model_dump() for f in profile_res.facts]
+                judge_tasks.append(self._judge_profile(items_data, user_id, pending_ops=pending_ops))
+                judge_domains.append("profile")
+
+            # 2. Temporal events
+            temporal_res = item_state.get("temporal_result")
+            if temporal_res and not temporal_res.is_empty:
+                items_data = []
+                for event in temporal_res.events:
+                    items_data.append({
+                        "date": event.date,
+                        "event_name": event.event_name or "",
+                        "desc": event.desc or "",
+                        "year": event.year or "",
+                        "time": event.time or "",
+                        "date_expression": event.date_expression or "",
+                    })
+                judge_tasks.append(self._judge_temporal(items_data, user_id, pending_ops=pending_ops))
+                judge_domains.append("temporal")
+
+            # 3. Summary (and Image)
+            summary_res = item_state.get("summary_result")
+            image_res = item_state.get("image_result")
+
+            summary_items = []
+            if summary_res and not summary_res.is_empty:
+                summary_items.extend([
+                    line.lstrip("- •").strip()
+                    for line in summary_res.summary.strip().splitlines()
+                    if line.strip() and line.strip() not in ("-", "•")
+                ])
+
+            if image_res and not image_res.is_empty:
+                if image_res.description:
+                    summary_items.append(f"[Image] {image_res.description}")
+                for obs in image_res.observations:
+                    conf = f" ({obs.confidence})" if obs.confidence else ""
+                    summary_items.append(f"[Image/{obs.category}] {obs.description}{conf}")
+
+            if summary_items:
+                judge_tasks.append(self._judge_summary(summary_items, user_id, pending_ops=pending_ops))
+                judge_domains.append("summary")
+
+            # 4. Code annotations
+            code_res = item_state.get("code_judge") or item_state.get("code_result")
+            # Wait, let's look at the result schema. It's code_result
+            code_res = item_state.get("code_result")
+            if code_res and not code_res.is_empty:
+                items_data = []
+                for ann in code_res.annotations:
+                    parts = [
+                        ann.annotation_type.value,
+                        ann.target_symbol or "",
+                        ann.target_file or "",
+                        ann.repo or "",
+                        ann.severity.value if ann.severity else "",
+                        ann.content,
+                    ]
+                    items_data.append(" | ".join(parts))
+                judge_tasks.append(self._judge_code(items_data, user_id, pending_ops=pending_ops))
+                judge_domains.append("code")
+
+            # 5. Personal code snippets
+            snippet_res = item_state.get("snippet_result")
+            if snippet_res and not snippet_res.is_empty:
+                items_data = []
+                for snip in snippet_res.snippets:
+                    parts = [
+                        snip.content,
+                        snip.code_snippet.replace("\n", "\\n") if snip.code_snippet else "",
+                        snip.language,
+                        snip.snippet_type.value,
+                        ",".join(snip.tags),
+                    ]
+                    items_data.append(" | ".join(parts))
+                judge_tasks.append(self._judge_snippet(items_data, user_id, pending_ops=pending_ops))
+                judge_domains.append("snippet")
+
+            if judge_tasks:
+                judge_results = await asyncio.gather(*judge_tasks, return_exceptions=True)
+                for domain_name, jr in zip(judge_domains, judge_results):
+                    if isinstance(jr, Exception):
+                        logger.error(f"Error during {domain_name} judge for batch item {idx}: {jr}")
+                        item_state["errors"].append(f"{domain_name}_judge_error: {str(jr)}")
+                    else:
+                        item_state[f"{domain_name}_judge"] = jr
+                        if domain_name == "summary" and image_res and not image_res.is_empty:
+                            item_state["image_judge"] = jr
+
+                        if jr and jr.operations:
+                            pending_ops.extend(jr.operations)
+
+        # Phase C: Concurrently run Weaver to write changes in parallel across all items
+        weave_tasks = []
+        weave_mappings = []
+
+        for phase_a_out in phase_a_outputs:
+            item_state = phase_a_out["item_state"]
+            idx = phase_a_out["idx"]
+
+            # Profile
+            profile_judge = item_state.get("profile_judge")
+            if profile_judge:
+                weave_tasks.append(self._weave_profile(profile_judge, user_id))
+                weave_mappings.append((item_state, "profile_weaver"))
+
+            # Temporal
+            temporal_judge = item_state.get("temporal_judge")
+            if temporal_judge:
+                weave_tasks.append(self._weave_temporal(temporal_judge, user_id))
+                weave_mappings.append((item_state, "temporal_weaver"))
+
+            # Summary
+            summary_judge = item_state.get("summary_judge")
+            if summary_judge:
+                weave_tasks.append(self._weave_summary(summary_judge, user_id))
+                weave_mappings.append((item_state, "summary_weaver"))
+
+            # Image
+            image_judge = item_state.get("image_judge")
+            if image_judge and "image_result" in item_state:
+                weave_tasks.append(self._weave_summary(image_judge, user_id))
+                weave_mappings.append((item_state, "image_weaver"))
+
+            # Code
+            code_judge = item_state.get("code_judge")
+            if code_judge:
+                weave_tasks.append(self._weave_code(code_judge, user_id))
+                weave_mappings.append((item_state, "code_weaver"))
+
+            # Snippet
+            snippet_judge = item_state.get("snippet_judge")
+            if snippet_judge:
+                weave_tasks.append(self._weave_snippet(snippet_judge, user_id))
+                weave_mappings.append((item_state, "snippet_weaver"))
+
+        if weave_tasks:
+            weave_results = await asyncio.gather(*weave_tasks, return_exceptions=True)
+            for (item_state, key), wr in zip(weave_mappings, weave_results):
+                if isinstance(wr, Exception):
+                    logger.error(f"Error during weaving for key {key}: {wr}")
+                    item_state["errors"].append(f"{key}_error: {str(wr)}")
+                else:
+                    item_state[key] = wr
+
+        # Complete all items
+        for phase_a_out in phase_a_outputs:
+            item_state = phase_a_out["item_state"]
+            item_state["status"] = "completed"
+
+        return [out["item_state"] for out in phase_a_outputs]
+
     async def _run_high_effort(
         self,
         user_query: str,
@@ -1153,13 +1475,7 @@ class IngestPipeline:
         cfg: EffortConfig,
         disabled_domains: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """HIGH-effort path: chunk user_query → sequential pipeline calls → merge.
-
-        Each chunk gets the full pipeline run independently and sequentially.
-        The ``agent_response`` is passed to every chunk so summary extraction
-        always has the full assistant context.  Image is only forwarded to the
-        first chunk to avoid duplicate image processing.
-        """
+        """HIGH-effort path: chunk user_query -> parallel staged staged batch run -> merge."""
         chunks = chunk_text(
             user_query,
             chunk_size_tokens=cfg.chunk_size_tokens,
@@ -1175,25 +1491,21 @@ class IngestPipeline:
             cfg.chunk_threshold_tokens,
         )
 
-        # Process every chunk through the pipeline sequentially to avoid duplicates.
-        # Image is only sent with chunk[0] to avoid duplicate processing.
-        chunk_results: List[Dict[str, Any]] = []
-        for idx, chunk in enumerate(chunks):
-            logger.info("Processing chunk %d/%d...", idx + 1, len(chunks))
-            res = await self._invoke_graph(
-                user_query=chunk,
-                agent_response=agent_response,
-                user_id=user_id,
-                session_datetime=session_datetime,
-                image_url=image_url if idx == 0 else "",
-                disabled_domains=disabled_domains,
-            )
-            chunk_results.append(res)
+        batch_items = [
+            {
+                "user_query": chunk,
+                "agent_response": agent_response,
+                "user_id": user_id,
+                "session_datetime": session_datetime,
+                "image_url": image_url if idx == 0 else "",
+                "disabled_domains": disabled_domains or [],
+            }
+            for idx, chunk in enumerate(chunks)
+        ]
+
+        chunk_results = await self.run_staged_batch(batch_items, user_id=user_id)
 
         # ── Merge states ─────────────────────────────────────────────
-        # All writes (Pinecone / Neo4j) already happened inside each chunk's
-        # pipeline run.  We merge the returned state dicts so callers get a
-        # sensible aggregate view.
         merged: Dict[str, Any] = {}
         all_errors: List[str] = []
 
@@ -1201,9 +1513,7 @@ class IngestPipeline:
             # Accumulate errors from every chunk.
             all_errors.extend(state.get("errors") or [])
 
-            # For every key, prefer the last non-None value; this gives
-            # callers the final-chunk's extraction results while retaining
-            # earlier chunks' results when a later chunk produced nothing.
+            # For every key, prefer the last non-None value
             for key, value in state.items():
                 if key == "errors":
                     continue

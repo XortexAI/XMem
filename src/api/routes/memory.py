@@ -7,10 +7,12 @@ All routes require a valid Bearer API key and respect the per-key rate limit.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 import time
-from typing import Any, Dict, List
+from collections import defaultdict, deque
+from typing import Any, Callable, Dict, List
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File
 from fastapi.responses import JSONResponse
@@ -58,6 +60,8 @@ from src.jobs.durable import (
 logger = logging.getLogger("xmem.api.routes.memory")
 
 _ingest_semaphore = asyncio.Semaphore(5)
+_latency_samples: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=200))
+_latency_lock = threading.Lock()
 
 router = APIRouter(
     prefix="/v1/memory",
@@ -231,6 +235,53 @@ async def _run_scrape_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 def _schedule_job(job: Dict[str, Any], handler) -> None:
     if job.get("status") == QUEUED:
         asyncio.create_task(run_job(get_default_job_store(), job["job_id"], handler))
+
+
+def _record_latency(mode: str, elapsed_ms: float) -> None:
+    with _latency_lock:
+        _latency_samples[mode].append(elapsed_ms)
+
+
+def _percentile(sorted_values: List[float], percentile: float) -> float:
+    if not sorted_values:
+        return 0.0
+    index = min(len(sorted_values) - 1, int(round((len(sorted_values) - 1) * percentile)))
+    return round(sorted_values[index], 2)
+
+
+def _latency_stats() -> Dict[str, Dict[str, float]]:
+    with _latency_lock:
+        snapshot = {mode: list(samples) for mode, samples in _latency_samples.items()}
+
+    stats: Dict[str, Dict[str, float]] = {}
+    for mode, samples in snapshot.items():
+        values = sorted(samples)
+        stats[mode] = {
+            "count": len(values),
+            "p50_ms": _percentile(values, 0.50),
+            "p95_ms": _percentile(values, 0.95),
+            "p99_ms": _percentile(values, 0.99),
+        }
+    return stats
+
+
+async def _timed(
+    mode: str,
+    func: Callable[..., Any],
+    *args: Any,
+    threaded: bool = False,
+    **kwargs: Any,
+) -> tuple[Any, float]:
+    start = time.perf_counter()
+    if threaded:
+        result = await asyncio.to_thread(func, *args, **kwargs)
+    else:
+        result = func(*args, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+    elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+    _record_latency(mode, elapsed_ms)
+    return result, elapsed_ms
 
 
 def _detect_chat_provider(*urls: str) -> str:
@@ -915,15 +966,69 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
 
     try:
         all_results: List[SourceRecord] = []
+        latency_ms: Dict[str, float] = {}
+        plan = pipeline.raw_retrieval_plan(req.domains, answer=req.answer)
+        raw_tasks = []
 
-        if "profile" in req.domains:
-            all_results.extend(_search_profile(pipeline, user_id))
-        if "temporal" in req.domains:
-            all_results.extend(_search_temporal(pipeline, req.query, user_id, req.top_k))
-        if "summary" in req.domains:
-            all_results.extend(await _search_summary(pipeline, req.query, user_id, req.top_k))
+        if "profile" in plan:
+            raw_tasks.append((
+                "profile",
+                _timed("profile", _search_profile, pipeline, user_id, threaded=True),
+            ))
+        if "temporal" in plan:
+            raw_tasks.append((
+                "temporal",
+                _timed("temporal", _search_temporal, pipeline, req.query, user_id, req.top_k, threaded=True),
+            ))
+        if "summary" in plan:
+            raw_tasks.append((
+                "summary",
+                _timed("summary", _search_summary, pipeline, req.query, user_id, req.top_k),
+            ))
+        if "snippet" in plan:
+            raw_tasks.append((
+                "snippet",
+                _timed("snippet", _search_snippet, pipeline, req.query, user_id, req.top_k),
+            ))
+        if "code" in plan:
+            raw_tasks.append((
+                "code",
+                _timed("code", _search_code, pipeline, req.query, user_id, req.top_k),
+            ))
 
-        data = SearchResponse(results=all_results, total=len(all_results))
+        if raw_tasks:
+            raw_results = await asyncio.gather(*(task for _, task in raw_tasks))
+            for (domain, _), (results, elapsed) in zip(raw_tasks, raw_results):
+                latency_ms[domain] = elapsed
+                all_results.extend(results)
+
+        all_results.sort(key=lambda record: record.score, reverse=True)
+
+        answer = None
+        answer_sources: List[SourceRecord] = []
+        confidence = 0.0
+        if req.answer:
+            answer_result, elapsed = await _timed("answer", pipeline.run, req.query, user_id, req.top_k)
+            latency_ms["answer"] = elapsed
+            answer = answer_result.answer
+            confidence = answer_result.confidence
+            answer_sources = [
+                SourceRecord(
+                    domain=s.domain, content=s.content,
+                    score=round(s.score, 3), metadata=s.metadata,
+                )
+                for s in answer_result.sources
+            ]
+
+        data = SearchResponse(
+            results=all_results,
+            total=len(all_results),
+            answer=answer,
+            answer_sources=answer_sources,
+            confidence=confidence,
+            latency_ms=latency_ms,
+            latency_stats=_latency_stats(),
+        )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         return _wrap(request, data, elapsed)
 
@@ -985,6 +1090,34 @@ async def _search_summary(pipeline: RetrievalPipeline, query: str, user_id: str,
         ]
     except Exception as exc:
         logger.warning("Summary search error: %s", exc)
+        return []
+
+
+async def _search_snippet(pipeline: RetrievalPipeline, query: str, user_id: str, top_k: int) -> List[SourceRecord]:
+    try:
+        raw = await pipeline._search_snippet(query=query, user_id=user_id, top_k=top_k)
+        return [
+            SourceRecord(domain=r.domain, content=r.content, score=round(r.score, 3), metadata=r.metadata)
+            for r in raw
+        ]
+    except Exception as exc:
+        logger.warning("Snippet search error: %s", exc)
+        return []
+
+
+async def _search_code(pipeline: RetrievalPipeline, query: str, user_id: str, top_k: int) -> List[SourceRecord]:
+    try:
+        raw = await pipeline.vector_store.search_by_text(
+            query_text=query,
+            top_k=top_k,
+            filters={"user_id": user_id, "domain": "code"},
+        )
+        return [
+            SourceRecord(domain="code", content=r.content, score=round(r.score, 3), metadata={"id": r.id, **r.metadata})
+            for r in raw
+        ]
+    except Exception as exc:
+        logger.warning("Code search error: %s", exc)
         return []
 
 

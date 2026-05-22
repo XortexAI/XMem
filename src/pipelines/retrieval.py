@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -133,6 +135,12 @@ class RetrievalPipeline:
 
         self.embed_fn = embed_fn
         self._snippet_stores: Dict[str, BaseVectorStore] = {}
+        self._profile_catalog_cache: Dict[str, tuple[float, List[Dict[str, str]], list]] = {}
+        self._raw_retrieval_plan_cache: Dict[tuple[tuple[str, ...], bool], tuple[str, ...]] = {}
+        self._cache_ttl_seconds = 60.0
+        self._profile_catalog_cache_max_users = 256
+        self._profile_catalog_cache_lock = threading.Lock()
+        self._raw_retrieval_plan_cache_lock = threading.Lock()
 
         logger.info("RetrievalPipeline initialized")
 
@@ -494,6 +502,17 @@ class RetrievalPipeline:
             catalog  — list of {topic, sub_topic} for the prompt
             raw_results — the full SearchResult list, cached for _search_profile
         """
+        now = time.monotonic()
+        with self._profile_catalog_cache_lock:
+            self._prune_profile_catalog_cache(now)
+
+            cached = self._profile_catalog_cache.get(user_id)
+            if cached and now - cached[0] < self._cache_ttl_seconds:
+                catalog, results = cached[1], cached[2]
+                self._profile_catalog_cache.pop(user_id)
+                self._profile_catalog_cache[user_id] = (now, catalog, results)
+                return catalog, results
+
         try:
             results = self.vector_store.search_by_metadata(
                 filters={"user_id": user_id, "domain": "profile"},
@@ -524,7 +543,34 @@ class RetrievalPipeline:
                     "sub_topic": "",
                 })
 
+        with self._profile_catalog_cache_lock:
+            self._prune_profile_catalog_cache(now)
+            self._profile_catalog_cache[user_id] = (now, catalog, results)
         return catalog, results
+
+    def _prune_profile_catalog_cache(self, now: float) -> None:
+        """Bound profile catalog cache by TTL and number of cached users."""
+        expired_user_ids = [
+            cached_user_id
+            for cached_user_id, (cached_at, _, _) in self._profile_catalog_cache.items()
+            if now - cached_at >= self._cache_ttl_seconds
+        ]
+        for cached_user_id in expired_user_ids:
+            self._profile_catalog_cache.pop(cached_user_id, None)
+
+        while len(self._profile_catalog_cache) >= self._profile_catalog_cache_max_users:
+            oldest_user_id = next(iter(self._profile_catalog_cache))
+            self._profile_catalog_cache.pop(oldest_user_id, None)
+
+    def raw_retrieval_plan(self, domains: List[str], answer: bool = False) -> tuple[str, ...]:
+        """Return a cached deterministic raw-search plan for the requested domains."""
+        ordered_allowed = ("profile", "temporal", "summary", "snippet", "code")
+        normalized = tuple(d for d in ordered_allowed if d in set(domains))
+        key = (normalized, answer)
+        with self._raw_retrieval_plan_cache_lock:
+            if key not in self._raw_retrieval_plan_cache:
+                self._raw_retrieval_plan_cache[key] = normalized
+            return self._raw_retrieval_plan_cache[key]
 
     def _format_catalog(self, catalog: List[Dict[str, str]]) -> str:
         """Format profile catalog for the system prompt."""

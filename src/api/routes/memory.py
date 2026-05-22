@@ -42,6 +42,7 @@ from src.api.schemas import (
     WeaverSummary,
 )
 from src.pipelines.retrieval import RetrievalPipeline
+from src.api.ingestion_coordinator import UserIngestionCoordinator
 
 from bs4 import BeautifulSoup
 import json
@@ -58,6 +59,7 @@ from src.jobs.durable import (
 logger = logging.getLogger("xmem.api.routes.memory")
 
 _ingest_semaphore = asyncio.Semaphore(5)
+_user_coordinator = UserIngestionCoordinator()
 
 router = APIRouter(
     prefix="/v1/memory",
@@ -210,14 +212,55 @@ async def _run_ingest_payload(
     return data.model_dump()
 
 
+async def _run_staged_batch_payload(
+    payload: Dict[str, Any],
+    user_id: str,
+) -> Dict[str, Any]:
+    pipeline = get_ingest_pipeline()
+    items = []
+    for item in payload["items"]:
+        if hasattr(item, "model_dump"):
+            items.append(item.model_dump())
+        elif isinstance(item, dict):
+            items.append(item)
+        else:
+            items.append(dict(item))
+
+    batch_results = await pipeline.run_staged_batch(items, user_id=user_id)
+
+    results = []
+    for result in batch_results:
+        data = IngestResponse(
+            model=_model_name(pipeline.model),
+            classification=_safe_classifications(result),
+            profile=_build_domain_result(
+                result.get("profile_judge"),
+                result.get("profile_weaver"),
+            ),
+            temporal=_build_domain_result(
+                result.get("temporal_judge"),
+                result.get("temporal_weaver"),
+            ),
+            summary=_build_domain_result(
+                result.get("summary_judge"),
+                result.get("summary_weaver"),
+            ),
+            image=_build_domain_result(
+                result.get("image_judge"),
+                result.get("image_weaver"),
+            ),
+        )
+        results.append(data)
+
+    return {"results": [r.model_dump() for r in results]}
+
+
 async def _run_batch_ingest_payload(
     payload: Dict[str, Any],
     user_id: str,
 ) -> Dict[str, Any]:
-    results = []
-    for item in payload["items"]:
-        results.append(await _run_ingest_payload(item, user_id))
-    return {"results": results}
+    async with _ingest_semaphore:
+        return await _run_staged_batch_payload(payload, user_id)
 
 
 async def _run_scrape_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -681,10 +724,11 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
     payload = req.model_dump()
 
     try:
-        data = await asyncio.wait_for(
-            _run_ingest_payload(payload, user_id),
-            timeout=120.0,
-        )
+        async with _user_coordinator.acquire(user_id):
+            data = await asyncio.wait_for(
+                _run_ingest_payload(payload, user_id),
+                timeout=120.0,
+            )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         return _wrap(request, data, elapsed)
 
@@ -800,15 +844,15 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
     user_id = _current_user_id(user)
 
     try:
-        results = []
-        for item in req.items:
-            data = await asyncio.wait_for(
-                _run_ingest_payload(item.model_dump(), user_id),
-                timeout=120.0,
-            )
-            results.append(IngestResponse(**data))
+        payload = req.model_dump()
+        async with _user_coordinator.acquire(user_id):
+            async with _ingest_semaphore:
+                data = await asyncio.wait_for(
+                    _run_staged_batch_payload(payload, user_id),
+                    timeout=max(120.0, len(req.items) * 120.0),
+                )
 
-        response_data = BatchIngestResponse(results=results)
+        response_data = BatchIngestResponse(**data)
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         return _wrap(request, response_data, elapsed)
 

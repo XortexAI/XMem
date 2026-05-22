@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from difflib import SequenceMatcher
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -162,7 +163,9 @@ class JudgeAgent(BaseAgent):
     # Public entry point
     # ------------------------------------------------------------------
 
-    async def arun(self, state: Dict[str, Any]) -> JudgeResult:
+    async def arun(
+        self, state: Dict[str, Any], pending_ops: Optional[List[Operation]] = None
+    ) -> JudgeResult:
         domain_str = state.get("domain", "")
         try:
             domain = JudgeDomain(domain_str)
@@ -186,6 +189,7 @@ class JudgeAgent(BaseAgent):
             new_items=new_items,
             user_id=user_id,
             domain=domain,
+            pending_ops=pending_ops,
         )
 
         if domain == JudgeDomain.SUMMARY and not _has_summary_judge_candidates(matches_per_item):
@@ -218,7 +222,9 @@ class JudgeAgent(BaseAgent):
 
         return result
 
-    async def arun_deterministic(self, state: Dict[str, Any]) -> JudgeResult:
+    async def arun_deterministic(
+        self, state: Dict[str, Any], pending_ops: Optional[List[Operation]] = None
+    ) -> JudgeResult:
         """Build operations without an LLM for structured domains.
 
         Profile and temporal extraction already returns normalized structured
@@ -238,15 +244,15 @@ class JudgeAgent(BaseAgent):
             return JudgeResult()
 
         if domain == JudgeDomain.PROFILE:
-            result = await self._deterministic_profile(new_items, user_id)
+            result = await self._deterministic_profile(new_items, user_id, pending_ops=pending_ops)
         elif domain == JudgeDomain.TEMPORAL:
-            result = await self._deterministic_temporal(new_items, user_id)
+            result = await self._deterministic_temporal(new_items, user_id, pending_ops=pending_ops)
         else:
             self.logger.warning(
                 "Deterministic judge unsupported for %s; falling back to LLM judge.",
                 domain.value,
             )
-            return await self.arun(state)
+            return await self.arun(state, pending_ops=pending_ops)
 
         self._log_result(domain, result)
         return result
@@ -275,11 +281,16 @@ class JudgeAgent(BaseAgent):
         new_items: list,
         user_id: str,
         domain: JudgeDomain,
+        pending_ops: Optional[List[Operation]] = None,
     ) -> Dict[str, List[SearchResult]]:
         if domain == JudgeDomain.TEMPORAL:
-            return await self._fetch_similar_temporal(items_strings, new_items, user_id)
+            return await self._fetch_similar_temporal(
+                items_strings, new_items, user_id, pending_ops=pending_ops
+            )
         else:
-            return await self._fetch_similar_vector(items_strings, new_items, user_id, domain)
+            return await self._fetch_similar_vector(
+                items_strings, new_items, user_id, domain, pending_ops=pending_ops
+            )
 
     # -- Profile / Summary: Pinecone (vector store) -----------------------
 
@@ -289,6 +300,7 @@ class JudgeAgent(BaseAgent):
         new_items: list,
         user_id: str,
         domain: JudgeDomain,
+        pending_ops: Optional[List[Operation]] = None,
     ) -> Dict[str, List[SearchResult]]:
         if not self.vector_store:
             self.logger.debug("No vector store attached — skipping similarity search.")
@@ -297,7 +309,7 @@ class JudgeAgent(BaseAgent):
         # Profile domain: use deterministic metadata lookup
         if domain == JudgeDomain.PROFILE:
             return await self._fetch_similar_profile_metadata(
-                items_strings, new_items, user_id,
+                items_strings, new_items, user_id, pending_ops=pending_ops
             )
 
         # Summary / other: parallel semantic search across all items
@@ -320,7 +332,43 @@ class JudgeAgent(BaseAgent):
                 return item_str, []
 
         pairs = await asyncio.gather(*(_search_one(s) for s in items_strings))
-        return dict(pairs)
+        matches_per_item = dict(pairs)
+
+        if pending_ops:
+            for item_str in items_strings:
+                matches = matches_per_item.get(item_str, [])
+
+                # Apply deletes first
+                deletes = {op.embedding_id for op in pending_ops if op.type == OperationType.DELETE and op.embedding_id}
+                if deletes:
+                    matches = [m for m in matches if m.id not in deletes]
+
+                # Apply adds/updates
+                for op in pending_ops:
+                    if op.type in (OperationType.ADD, OperationType.UPDATE):
+                        ratio = SequenceMatcher(None, _norm_text(item_str), _norm_text(op.content)).ratio()
+                        if ratio > 0.5:
+                            simulated = SearchResult(
+                                id=op.embedding_id or f"pending_{domain.value}_{hash(op.content)}",
+                                content=op.content,
+                                score=ratio,
+                                metadata={
+                                    "domain": domain.value,
+                                    "user_id": user_id,
+                                }
+                            )
+                            # Replace if same ID already exists in matches, otherwise prepend
+                            existing_idx = next((i for i, m in enumerate(matches) if m.id == simulated.id), None)
+                            if existing_idx is not None:
+                                matches[existing_idx] = simulated
+                            else:
+                                matches.insert(0, simulated)
+
+                # Sort matches by score descending
+                matches = sorted(matches, key=lambda x: x.score or 0.0, reverse=True)[:self.top_k]
+                matches_per_item[item_str] = matches
+
+        return matches_per_item
 
     # -- Profile: deterministic metadata lookup ----------------------------
 
@@ -329,6 +377,7 @@ class JudgeAgent(BaseAgent):
         items_strings: List[str],
         new_items: list,
         user_id: str,
+        pending_ops: Optional[List[Operation]] = None,
     ) -> Dict[str, List[SearchResult]]:
         """Fetch existing profile records by exact topic_subtopic match (parallel).
 
@@ -377,7 +426,36 @@ class JudgeAgent(BaseAgent):
         pairs = await asyncio.gather(
             *(_lookup_one(i, s) for i, s in enumerate(items_strings))
         )
-        return dict(pairs)
+        matches_per_item = dict(pairs)
+
+        if pending_ops:
+            for idx, item_str in enumerate(items_strings):
+                item = new_items[idx] if idx < len(new_items) else {}
+                meta_key = _build_profile_metadata_key(item)
+                if not meta_key:
+                    continue
+
+                for op in pending_ops:
+                    op_meta_key = _profile_meta_key_from_content(op.content)
+                    if op_meta_key == meta_key:
+                        if op.type in (OperationType.ADD, OperationType.UPDATE):
+                            _, _, memo = _parse_profile_content(op.content)
+                            simulated = SearchResult(
+                                id=op.embedding_id or f"pending_profile_{meta_key}",
+                                content=op.content,
+                                score=1.0,
+                                metadata={
+                                    "main_content": meta_key,
+                                    "subcontent": memo,
+                                    "domain": "profile",
+                                    "user_id": user_id,
+                                }
+                            )
+                            matches_per_item[item_str] = [simulated]
+                        elif op.type == OperationType.DELETE:
+                            matches_per_item[item_str] = []
+
+        return matches_per_item
 
     # -- Semantic search fallback (summary domain) -------------------------
 
@@ -406,6 +484,7 @@ class JudgeAgent(BaseAgent):
         items_strings: List[str],
         new_items: list,
         user_id: str,
+        pending_ops: Optional[List[Operation]] = None,
     ) -> Dict[str, List[SearchResult]]:
         if not self.graph_event_search:
             self.logger.debug("No graph_event_search provided — skipping Neo4j lookup.")
@@ -434,7 +513,36 @@ class JudgeAgent(BaseAgent):
         pairs = await asyncio.gather(
             *(_lookup_one(i, s) for i, s in enumerate(items_strings))
         )
-        return dict(pairs)
+        matches_per_item = dict(pairs)
+
+        if pending_ops:
+            for idx, item_str in enumerate(items_strings):
+                event = new_items[idx] if idx < len(new_items) else {}
+                event_name = event.get("event_name", "") if isinstance(event, dict) else ""
+                if not event_name:
+                    continue
+                norm_event_name = _norm_text(event_name)
+
+                for op in pending_ops:
+                    fields = _temporal_fields_from_content(op.content)
+                    op_event_name = fields.get("event_name", "")
+                    if _norm_text(op_event_name) == norm_event_name:
+                        if op.type in (OperationType.ADD, OperationType.UPDATE):
+                            simulated = SearchResult(
+                                id=op.embedding_id or f"pending_temporal_{norm_event_name}",
+                                content=op.content,
+                                score=1.0,
+                                metadata={
+                                    **fields,
+                                    "domain": "temporal",
+                                    "user_id": user_id,
+                                }
+                            )
+                            matches_per_item[item_str] = [simulated]
+                        elif op.type == OperationType.DELETE:
+                            matches_per_item[item_str] = []
+
+        return matches_per_item
 
     # -- Deterministic operation builders ---------------------------------
 
@@ -687,3 +795,20 @@ def _temporal_fields_from_match(match: SearchResult) -> Dict[str, str]:
 def _same_temporal_event(incoming: Dict[str, str], existing: Dict[str, str]) -> bool:
     keys = ["date", "event_name", "desc", "year", "time", "date_expression"]
     return all(_norm_text(incoming.get(key)) == _norm_text(existing.get(key)) for key in keys)
+
+
+def _parse_profile_content(content: str) -> tuple[str, str, str]:
+    if " = " not in content:
+        return "", "", content
+    left, memo = content.split(" = ", 1)
+    if " / " not in left:
+        return left.strip(), "", memo.strip()
+    topic, sub_topic = left.split(" / ", 1)
+    return topic.strip(), sub_topic.strip(), memo.strip()
+
+
+def _profile_meta_key_from_content(content: str) -> str:
+    topic, sub_topic, _ = _parse_profile_content(content)
+    if not topic or not sub_topic:
+        return ""
+    return f"{topic}_{sub_topic}".replace(" ", "_").lower()

@@ -397,6 +397,55 @@ def _rrf_fuse(
     return fused
 
 
+def _source_record_key(record: SourceRecord) -> tuple[str, str, str, str]:
+    """Return a stable identity for deduping source records across native tools."""
+    metadata = record.metadata
+    repo = str(metadata.get("repo", ""))
+    qualified_name = metadata.get("qualified_name")
+    if qualified_name:
+        return (
+            "symbol",
+            repo,
+            str(qualified_name),
+            str(metadata.get("file_path", "")),
+        )
+
+    file_path = metadata.get("file_path")
+    if file_path:
+        return ("file", repo, str(file_path), "")
+
+    return (record.domain, repo, record.content, "")
+
+
+def _fuse_source_records(
+    ranked_lists: List[List[SourceRecord]],
+    limit: int,
+    k: int = 60,
+) -> List[SourceRecord]:
+    """Fuse native SourceRecord lists while deduping and enforcing a hard limit."""
+    fused_scores: Dict[tuple[str, str, str, str], float] = {}
+    best_records: Dict[tuple[str, str, str, str], SourceRecord] = {}
+    first_positions: Dict[tuple[str, str, str, str], tuple[int, int]] = {}
+
+    for list_index, ranked_list in enumerate(ranked_lists):
+        for rank_pos, record in enumerate(ranked_list, start=1):
+            record_key = _source_record_key(record)
+            fused_scores[record_key] = (
+                fused_scores.get(record_key, 0.0) + 1.0 / (k + rank_pos)
+            )
+            first_positions.setdefault(record_key, (rank_pos, list_index))
+            current = best_records.get(record_key)
+            if current is None or record.score > current.score:
+                best_records[record_key] = record
+
+    ranked_keys = sorted(
+        fused_scores,
+        key=lambda record_key: (-fused_scores[record_key], first_positions[record_key]),
+    )
+
+    return [best_records[record_key] for record_key in ranked_keys[:limit]]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Deterministic fast-path detection
 # ═══════════════════════════════════════════════════════════════════════════
@@ -516,10 +565,7 @@ class CodeRetrievalPipeline:
             ),
         )
 
-        results: List[SourceRecord] = []
-        for records in tool_results:
-            results.extend(records)
-        return results
+        return _fuse_source_records([*tool_results], limit=top_k)
 
     async def run(
         self,

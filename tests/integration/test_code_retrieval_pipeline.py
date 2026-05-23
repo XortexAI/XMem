@@ -99,3 +99,87 @@ async def test_code_retrieval_raw_search_queries_symbols_and_files(monkeypatch):
     assert all(call["top_k"] == 3 for call in calls)
     assert all(call["user_id"] == "alice" for call in calls)
     assert [source.domain for source in results] == ["search_symbols", "search_files"]
+
+
+@pytest.mark.asyncio
+async def test_code_retrieval_raw_search_dedupes_and_limits_results(monkeypatch):
+    monkeypatch.setattr(
+        "src.pipelines.code_retrieval._get_embed_fn",
+        lambda: (lambda text: [1.0, 0.0, 0.0]),
+    )
+    pipeline = CodeRetrievalPipeline(
+        org_id="acme",
+        repos=["sample"],
+        model=FakeChatModel(),
+        store=FakeCodeStore(),
+    )
+
+    async def fake_execute_tool(tool_name, tool_args, repo, top_k, user_id=""):
+        if tool_name == "search_symbols":
+            return [
+                SourceRecord(
+                    domain="symbol",
+                    content="old handler",
+                    score=0.4,
+                    metadata={
+                        "repo": repo,
+                        "qualified_name": "handler",
+                        "file_path": "src/app.py",
+                    },
+                ),
+                SourceRecord(
+                    domain="symbol",
+                    content="helper",
+                    score=0.3,
+                    metadata={
+                        "repo": repo,
+                        "qualified_name": "helper",
+                        "file_path": "src/app.py",
+                    },
+                ),
+                SourceRecord(
+                    domain="symbol",
+                    content="new handler",
+                    score=0.9,
+                    metadata={
+                        "repo": repo,
+                        "qualified_name": "handler",
+                        "file_path": "src/app.py",
+                    },
+                ),
+                SourceRecord(
+                    domain="symbol",
+                    content="extra",
+                    score=0.2,
+                    metadata={
+                        "repo": repo,
+                        "qualified_name": "extra",
+                        "file_path": "src/extra.py",
+                    },
+                ),
+            ]
+        return [
+            SourceRecord(
+                domain="file",
+                content="app file",
+                score=0.8,
+                metadata={"repo": repo, "file_path": "src/app.py"},
+            ),
+            SourceRecord(
+                domain="file",
+                content="util file",
+                score=0.7,
+                metadata={"repo": repo, "file_path": "src/util.py"},
+            ),
+        ]
+
+    monkeypatch.setattr(pipeline, "_execute_tool", fake_execute_tool)
+
+    results = await pipeline.raw_search(
+        "handler", user_id="alice", repo="sample", top_k=3
+    )
+
+    assert len(results) == 3
+    assert [source.domain for source in results] == ["symbol", "file", "symbol"]
+    assert [source.content for source in results].count("new handler") == 1
+    assert all(source.content != "old handler" for source in results)

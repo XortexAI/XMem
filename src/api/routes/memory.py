@@ -1058,9 +1058,12 @@ async def search_memory(
 
         if req.answer:
             answer_start = time.perf_counter()
-            answer = await pipeline.synthesize_answer(req.query, all_results)
-            confidence = min(1.0, len(all_results) * 0.2) if all_results else 0.1
-            mode = "answer"
+            try:
+                answer = await pipeline.synthesize_answer(req.query, all_results)
+                confidence = min(1.0, len(all_results) * 0.2) if all_results else 0.1
+                mode = "answer"
+            except Exception:
+                logger.exception("Answer synthesis failed for user=%s", user_id)
             latency["answer"] = pipeline.record_latency(
                 "answer",
                 (time.perf_counter() - answer_start) * 1000,

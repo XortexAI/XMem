@@ -215,3 +215,66 @@ async def test_search_memory_preserves_memory_results_when_code_search_fails(
     assert payload["data"]["results"][0]["content"] == "profile hit"
     assert payload["data"]["latency"]["raw"] == {"mode": "raw", "current_ms": 1.2}
     assert payload["data"]["latency"]["code"]["mode"] == "code"
+
+
+@pytest.mark.asyncio
+async def test_search_memory_preserves_results_when_answer_synthesis_fails(
+    monkeypatch,
+):
+    class FakeAnswerFailurePipeline:
+        async def raw_search(self, query: str, user_id: str, domains, top_k: int):
+            return (
+                [
+                    RetrievalSourceRecord(
+                        domain="profile",
+                        content="profile hit",
+                        score=0.91,
+                        metadata={"topic": "shipping"},
+                    )
+                ],
+                {"mode": "raw", "current_ms": 1.2},
+            )
+
+        def record_latency(self, name: str, duration_ms: float):
+            return {"mode": name, "current_ms": round(duration_ms, 2)}
+
+        async def synthesize_answer(self, query: str, results):
+            raise RuntimeError("llm unavailable")
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/memory/search",
+            "headers": [],
+        }
+    )
+    request.state.request_id = "req-test"
+    monkeypatch.setattr(
+        memory_routes,
+        "get_retrieval_pipeline",
+        lambda: FakeAnswerFailurePipeline(),
+    )
+
+    response = await memory_routes.search_memory(
+        memory_routes.SearchRequest(
+            query="shipping handler",
+            user_id="alice",
+            domains=["profile"],
+            top_k=5,
+            answer=True,
+        ),
+        request,
+        {"id": "user-1", "username": "alice"},
+    )
+
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    assert payload["status"] == "ok"
+    assert payload["data"]["total"] == 1
+    assert payload["data"]["answer"] == ""
+    assert payload["data"]["confidence"] == 0.0
+    assert payload["data"]["mode"] == "raw"
+    assert payload["data"]["results"][0]["domain"] == "profile"
+    assert payload["data"]["results"][0]["content"] == "profile hit"
+    assert payload["data"]["latency"]["answer"]["mode"] == "answer"

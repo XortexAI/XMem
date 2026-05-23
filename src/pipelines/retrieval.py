@@ -191,9 +191,9 @@ class RetrievalPipeline:
         self._profile_catalog_cache: OrderedDict[
             str, Tuple[float, List[Dict[str, str]], List[Any]]
         ] = OrderedDict()
-        self._retrieval_plan_cache: Dict[
+        self._retrieval_plan_cache: OrderedDict[
             Tuple[Any, ...], Tuple[float, List[Dict[str, Any]]]
-        ] = {}
+        ] = OrderedDict()
         self._user_memory_versions: Dict[str, int] = {}
         self._latency_tracker = _LatencyTracker()
 
@@ -236,7 +236,6 @@ class RetrievalPipeline:
         plan_cache_key = self._retrieval_plan_cache_key(
             user_id=user_id,
             query=query,
-            top_k=top_k,
             profile_catalog=profile_catalog,
         )
         cached_tool_calls = self._get_cached_retrieval_plan(plan_cache_key)
@@ -384,12 +383,10 @@ class RetrievalPipeline:
         results = results[:top_k]
         latency = self.record_latency("raw", (time.perf_counter() - start) * 1000)
         logger.info(
-            "Raw retrieval complete (domains=%s results=%d p50=%sms p95=%sms p99=%sms)",
+            "Raw retrieval complete (domains=%s results=%d current=%sms)",
             ",".join(selected),
             len(results),
-            latency["p50_ms"],
-            latency["p95_ms"],
-            latency["p99_ms"],
+            latency["current_ms"],
         )
         return results, latency
 
@@ -415,7 +412,7 @@ class RetrievalPipeline:
             stats["p95_ms"],
             stats["p99_ms"],
         )
-        return stats
+        return {"mode": mode, "current_ms": stats["current_ms"]}
 
     def invalidate_user_cache(self, user_id: str) -> None:
         """Drop cached retrieval state for a user after memory writes."""
@@ -703,7 +700,6 @@ class RetrievalPipeline:
         self,
         user_id: str,
         query: str,
-        top_k: int,
         profile_catalog: List[Dict[str, str]],
     ) -> Tuple[Any, ...]:
         catalog_key = tuple(
@@ -715,7 +711,6 @@ class RetrievalPipeline:
         return (
             user_id,
             query.strip().lower(),
-            top_k,
             self._user_memory_versions.get(user_id, 0),
             catalog_key,
         )
@@ -733,6 +728,7 @@ class RetrievalPipeline:
             self._retrieval_plan_cache.pop(cache_key, None)
             return None
 
+        self._retrieval_plan_cache.move_to_end(cache_key)
         return [
             {
                 "name": call["name"],
@@ -758,9 +754,10 @@ class RetrievalPipeline:
         if not clean_calls:
             return
 
-        if len(self._retrieval_plan_cache) >= RETRIEVAL_PLAN_CACHE_MAX:
-            oldest_key = next(iter(self._retrieval_plan_cache))
-            self._retrieval_plan_cache.pop(oldest_key, None)
+        if cache_key in self._retrieval_plan_cache:
+            self._retrieval_plan_cache.pop(cache_key, None)
+        elif len(self._retrieval_plan_cache) >= RETRIEVAL_PLAN_CACHE_MAX:
+            self._retrieval_plan_cache.popitem(last=False)
 
         self._retrieval_plan_cache[cache_key] = (
             time.monotonic(),

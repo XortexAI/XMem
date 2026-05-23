@@ -167,7 +167,7 @@ async def test_raw_search_returns_ranked_domains_and_latency_without_llm(
         [record.score for record in records],
         reverse=True,
     )
-    assert {"p50_ms", "p95_ms", "p99_ms", "current_ms"} <= latency.keys()
+    assert latency == {"mode": "raw", "current_ms": latency["current_ms"]}
     assert model.calls == []
     assert pipeline.model_with_tools.calls == []
 
@@ -255,7 +255,7 @@ async def test_retrieval_pipeline_caches_tool_plans(vector_store, neo4j_client):
     )
 
     first = await pipeline.run("Where does Alice work?", "alice")
-    second = await pipeline.run("Where does Alice work?", "alice")
+    second = await pipeline.run("Where does Alice work?", "alice", top_k=10)
     pipeline.invalidate_user_cache("alice")
     third = await pipeline.run("Where does Alice work?", "alice")
 

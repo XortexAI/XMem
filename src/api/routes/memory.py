@@ -140,7 +140,9 @@ def _error(
 
 
 def _is_static_key_user(user: dict) -> bool:
-    return user.get("email") == "static@xmem.ai" or user.get("name") == "Static Key User"
+    return (
+        user.get("email") == "static@xmem.ai" or user.get("name") == "Static Key User"
+    )
 
 
 def _current_user_id(user: dict, requested_user_id: str = "") -> str:
@@ -921,7 +923,10 @@ async def batch_ingest_memory_v2(
             user_id=user_id,
             timeout_seconds=max(
                 float(settings.memory_ingest_timeout_seconds),
-                min(len(req.items) * float(settings.memory_ingest_timeout_seconds), 3600.0),
+                min(
+                    len(req.items) * float(settings.memory_ingest_timeout_seconds),
+                    3600.0,
+                ),
             ),
             max_attempts=3,
         )
@@ -1000,6 +1005,15 @@ async def search_memory(
     user_id = _current_user_id(user, req.user_id)
 
     try:
+        if "code" in req.domains and not req.org_id:
+            elapsed = round((time.perf_counter() - start) * 1000, 2)
+            return _error(
+                request,
+                "org_id is required when searching the code domain",
+                400,
+                elapsed,
+            )
+
         memory_domains = [domain for domain in req.domains if domain != "code"]
         all_results = []
         latency: Dict[str, Any] = {}
@@ -1015,15 +1029,6 @@ async def search_memory(
             latency["raw"] = raw_latency
 
         if "code" in req.domains:
-            if not req.org_id:
-                elapsed = round((time.perf_counter() - start) * 1000, 2)
-                return _error(
-                    request,
-                    "org_id is required when searching the code domain",
-                    400,
-                    elapsed,
-                )
-
             code_start = time.perf_counter()
             code_results = await _search_code(
                 query=req.query,

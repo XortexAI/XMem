@@ -1030,14 +1030,22 @@ async def search_memory(
 
         if "code" in req.domains:
             code_start = time.perf_counter()
-            code_results = await _search_code(
-                query=req.query,
-                user_id=user_id,
-                org_id=req.org_id,
-                repo=req.repo or "",
-                top_k=req.top_k,
-            )
-            all_results.extend(code_results)
+            try:
+                code_results = await _search_code(
+                    query=req.query,
+                    user_id=user_id,
+                    org_id=req.org_id,
+                    repo=req.repo or "",
+                    top_k=req.top_k,
+                )
+                all_results.extend(code_results)
+            except Exception:
+                logger.exception(
+                    "Code search failed for user=%s org=%s repo=%s",
+                    user_id,
+                    req.org_id,
+                    req.repo or "",
+                )
             latency["code"] = pipeline.record_latency(
                 "code", (time.perf_counter() - code_start) * 1000
             )

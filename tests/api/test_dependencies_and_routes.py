@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from src.api import dependencies as deps
 from src.api.routes import memory as memory_routes
@@ -148,3 +150,68 @@ async def test_search_code_uses_public_raw_search(monkeypatch):
         "source_domain": "file_code",
         "file_path": "src/app.py",
     }
+
+
+@pytest.mark.asyncio
+async def test_search_memory_preserves_memory_results_when_code_search_fails(
+    monkeypatch,
+):
+    class FakeRawSearchPipeline:
+        async def raw_search(self, query: str, user_id: str, domains, top_k: int):
+            return (
+                [
+                    RetrievalSourceRecord(
+                        domain="profile",
+                        content="profile hit",
+                        score=0.91,
+                        metadata={"topic": "shipping"},
+                    )
+                ],
+                {"mode": "raw", "current_ms": 1.2},
+            )
+
+        def record_latency(self, name: str, duration_ms: float):
+            return {"mode": name, "current_ms": round(duration_ms, 2)}
+
+        async def synthesize_answer(self, query: str, results):
+            raise AssertionError("answer synthesis should not run for raw search")
+
+    async def fail_code_search(**kwargs):
+        raise RuntimeError("code index unavailable")
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/memory/search",
+            "headers": [],
+        }
+    )
+    request.state.request_id = "req-test"
+    monkeypatch.setattr(
+        memory_routes,
+        "get_retrieval_pipeline",
+        lambda: FakeRawSearchPipeline(),
+    )
+    monkeypatch.setattr(memory_routes, "_search_code", fail_code_search)
+
+    response = await memory_routes.search_memory(
+        memory_routes.SearchRequest(
+            query="shipping handler",
+            user_id="alice",
+            domains=["profile", "code"],
+            org_id="acme",
+            top_k=5,
+        ),
+        request,
+        {"id": "user-1", "username": "alice"},
+    )
+
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    assert payload["status"] == "ok"
+    assert payload["data"]["total"] == 1
+    assert payload["data"]["results"][0]["domain"] == "profile"
+    assert payload["data"]["results"][0]["content"] == "profile hit"
+    assert payload["data"]["latency"]["raw"] == {"mode": "raw", "current_ms": 1.2}
+    assert payload["data"]["latency"]["code"]["mode"] == "code"

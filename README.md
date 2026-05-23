@@ -11,7 +11,6 @@
   <p><strong>The Memory Layer for AI That Never Forgets</strong></p>
   <p>Give every AI agent and LLM interface persistent, cross-platform memory out of the box.</p>
 
-
 <img src="https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white" alt="Python 3.11+"/>
 <img src="https://img.shields.io/badge/license-BSD--3--Clause-green" alt="BSD-3 License"/>
 <img src="https://img.shields.io/badge/FastAPI-00C7B7?logo=fastapi&logoColor=white" alt="FastAPI"/>
@@ -134,12 +133,12 @@ Not all memory is the same, and treating it that way is why other solutions unde
 
 ### Agentic Retrieval
 
-When you query XMem, retrieval is not a simple vector search. The LLM itself decides *what* to look up:
+When you query XMem, retrieval is not a simple vector search. The LLM itself decides _what_ to look up:
 
 1. **Tool Selection** - The retrieval LLM analyzes your query and calls the appropriate search tools (SearchProfile, SearchTemporal, SearchSummary, SearchSnippet), potentially multiple in parallel.
 2. **Synthesis** - Results from all search tools are aggregated and the LLM generates a cited answer with source references.
 
-This means asking *"What's my preferred tech stack and when did I last refactor the auth module?"* triggers both a profile lookup and a temporal search automatically.
+This means asking _"What's my preferred tech stack and when did I last refactor the auth module?"_ triggers both a profile lookup and a temporal search automatically.
 
 ### Multi-LLM Orchestration with Fallback
 
@@ -304,6 +303,7 @@ The industry standard benchmark for long-term conversational memory. Tests wheth
 > XMem matches Backboard.io across all categories, both scoring near-perfect on session recall and preference tracking. XMem outperforms Mastra by **9.2 points** and Supermemory by **11.8 points** overall.
 
 ### How We Benchmark
+
 - **Evaluation**: LLM-as-Judge using Gemini with structured rubrics
 - **Fairness**: All systems tested with identical conversation histories and queries
 
@@ -312,8 +312,8 @@ The industry standard benchmark for long-term conversational memory. Tests wheth
 ### 1. Start the XMem Server
 
 ```bash
-git clone https://github.com/XortexLabs/xmem.git
-cd xmem
+git clone https://github.com/XortexAI/XMem.git
+cd XMem
 
 # Install (requires Python 3.11+)
 pip install -e .
@@ -334,9 +334,7 @@ npm install && npm run build
 
 Load `dist/` in Chrome via `chrome://extensions` &rarr; "Load unpacked". Point it to your server URL.
 
-
 https://github.com/user-attachments/assets/605985c3-ef27-4096-a28c-b0b4cc6f8b8d
-
 
 ### 3. Index a Repository (Optional)
 
@@ -350,11 +348,13 @@ python -m src.scanner.runner \
 
 > [!TIP]
 > For a fully local setup with no cloud dependencies:
+>
 > ```ini
 > FALLBACK_ORDER='["ollama"]'
 > EMBEDDING_PROVIDER=fastembed
 > VECTOR_STORE_PROVIDER=chroma
 > ```
+>
 > Then install local extras: `pip install -e ".[local]"`
 
 ## Configuration

@@ -43,6 +43,7 @@ from src.api.schemas import (
     StatusEnum,
     WeaverSummary,
 )
+from src.config import settings
 from src.jobs import get_job_store
 from src.pipelines.retrieval import RetrievalPipeline
 
@@ -172,7 +173,7 @@ async def run_ingest_job(payload: Dict[str, Any]) -> Dict[str, Any]:
             image_url=payload.get("image_url", ""),
             effort_level=payload.get("effort_level", "low"),
         ),
-        timeout=120.0,
+        timeout=settings.job_timeout_seconds,
     )
     data = IngestResponse(
         model=_model_name(pipeline.model),
@@ -741,7 +742,10 @@ async def enqueue_batch_ingest_memory(req: BatchIngestRequest, request: Request,
             job_type="memory.batch_ingest",
             owner_id=user_id,
             payload=payload,
-            timeout_seconds=120.0 * max(len(req.items), 1),
+            timeout_seconds=min(
+                settings.job_timeout_seconds * max(len(req.items), 1),
+                settings.job_timeout_seconds * 10,
+            ),
         )
     except RuntimeError as exc:
         elapsed = round((time.perf_counter() - start) * 1000, 2)

@@ -3,12 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api import dependencies as deps
 from src.api.routes import jobs as jobs_routes
 from src.api.routes import memory as memory_routes
+from src.api.routes import scanner as scanner_routes
 from src.api.routes.jobs import router as jobs_router
 from src.api.routes.memory import router as memory_router
 from src.api.routes.memory import v2_router as memory_v2_router
@@ -147,10 +149,13 @@ class FakeCollection:
     def create_index(self, *_args, **_kwargs):
         return None
 
-    def find_one(self, query, projection=None):
-        for doc in self.docs:
-            if _matches(doc, query):
-                return _project(doc, projection)
+    def find_one(self, query, projection=None, sort=None):
+        docs = [doc for doc in self.docs if _matches(doc, query)]
+        if sort:
+            for key, direction in reversed(sort):
+                docs.sort(key=lambda item: item.get(key), reverse=direction < 0)
+        for doc in docs:
+            return _project(doc, projection)
         return None
 
     def insert_one(self, doc):
@@ -250,6 +255,7 @@ def test_claim_next_respects_per_job_lease(monkeypatch):
                 "job_id": "long-running",
                 "status": JobStatus.RUNNING.value,
                 "started_at": now - timedelta(seconds=400),
+                "stale_at": now + timedelta(seconds=200),
                 "run_after": now,
                 "created_at": now,
                 "lease_seconds": 600.0,
@@ -258,6 +264,7 @@ def test_claim_next_respects_per_job_lease(monkeypatch):
                 "job_id": "stale-running",
                 "status": JobStatus.RUNNING.value,
                 "started_at": now - timedelta(seconds=400),
+                "stale_at": now - timedelta(seconds=100),
                 "run_after": now,
                 "created_at": now,
                 "lease_seconds": 300.0,
@@ -269,3 +276,45 @@ def test_claim_next_respects_per_job_lease(monkeypatch):
 
     assert claimed["job_id"] == "stale-running"
     assert store.jobs.docs[0].get("worker_id") != "worker-1"
+
+
+@pytest.mark.asyncio
+async def test_scanner_enqueue_does_not_persist_github_pat(monkeypatch):
+    store = FakeJobStore()
+    scanner_routes._scanner_pat_refs.clear()
+    monkeypatch.setattr(scanner_routes, "get_job_store", lambda: store)
+
+    queue_job_id = await scanner_routes._enqueue_or_start_scanner_job(
+        job_type="scanner.scan",
+        scanner_job_id="user:org:repo",
+        username="user",
+        org="org",
+        repo="repo",
+        url="https://github.com/org/repo.git",
+        branch="main",
+        pat="ghp_secret",
+    )
+
+    assert queue_job_id == "job-1"
+    payload = store.enqueued[0]["payload"]
+    assert "pat" not in payload
+    assert payload["requires_pat"] is True
+    assert scanner_routes._resolve_scanner_pat(payload) == "ghp_secret"
+
+
+@pytest.mark.asyncio
+async def test_scanner_job_fails_closed_when_pat_ref_is_missing():
+    scanner_routes._scanner_pat_refs.clear()
+
+    with pytest.raises(RuntimeError, match="credential is no longer available"):
+        await scanner_routes.run_scanner_job(
+            {
+                "scanner_job_id": "user:org:repo",
+                "username": "user",
+                "org": "org",
+                "repo": "repo",
+                "url": "https://github.com/org/repo.git",
+                "branch": "main",
+                "requires_pat": True,
+            }
+        )

@@ -12,6 +12,7 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from pymongo import ASCENDING, ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from src.config import settings
 
@@ -91,6 +92,7 @@ class JobStore:
             "created_at": now,
             "updated_at": now,
             "started_at": None,
+            "stale_at": None,
             "finished_at": None,
         }
 
@@ -101,7 +103,7 @@ class JobStore:
         try:
             self.jobs.insert_one(doc)
             return doc
-        except Exception:
+        except DuplicateKeyError:
             existing = self.jobs.find_one({"idempotency_key": key})
             if existing:
                 return existing
@@ -115,45 +117,50 @@ class JobStore:
 
     def claim_next(self, worker_id: str) -> Optional[Dict[str, Any]]:
         now = _now()
-        update = {
-            "$set": {
-                "status": JobStatus.RUNNING.value,
-                "worker_id": worker_id,
-                "started_at": now,
-                "updated_at": now,
-            }
-        }
-        pending = self.jobs.find_one_and_update(
-            {"status": JobStatus.PENDING.value, "run_after": {"$lte": now}},
-            update,
-            sort=[("run_after", ASCENDING), ("created_at", ASCENDING)],
-            return_document=ReturnDocument.AFTER,
-        )
-        if pending:
-            return pending
 
-        running = self.jobs.find(
-            {"status": JobStatus.RUNNING.value, "started_at": {"$ne": None}},
-        ).sort([("started_at", ASCENDING)])
-        for job in running:
+        def _claim_update(job: Dict[str, Any]) -> Dict[str, Any]:
             try:
                 lease_seconds = float(job.get("lease_seconds") or settings.job_lease_seconds)
             except (TypeError, ValueError):
                 lease_seconds = settings.job_lease_seconds
-            stale_before = now - timedelta(seconds=lease_seconds)
-            if job.get("started_at") >= stale_before:
-                continue
-            claimed = self.jobs.find_one_and_update(
-                {
-                    "job_id": job["job_id"],
+            return {
+                "$set": {
                     "status": JobStatus.RUNNING.value,
-                    "started_at": job.get("started_at"),
-                },
-                update,
+                    "worker_id": worker_id,
+                    "started_at": now,
+                    "stale_at": now + timedelta(seconds=lease_seconds),
+                    "updated_at": now,
+                }
+            }
+
+        pending_query = {"status": JobStatus.PENDING.value, "run_after": {"$lte": now}}
+        pending_job = self.jobs.find_one(
+            pending_query,
+            sort=[("run_after", ASCENDING), ("created_at", ASCENDING)],
+        )
+        if pending_job:
+            claimed = self.jobs.find_one_and_update(
+                {"job_id": pending_job["job_id"], "status": JobStatus.PENDING.value},
+                _claim_update(pending_job),
                 return_document=ReturnDocument.AFTER,
             )
             if claimed:
                 return claimed
+
+        stale_job = self.jobs.find_one(
+            {"status": JobStatus.RUNNING.value, "stale_at": {"$lte": now}},
+            sort=[("stale_at", ASCENDING), ("started_at", ASCENDING)],
+        )
+        if stale_job:
+            return self.jobs.find_one_and_update(
+                {
+                    "job_id": stale_job["job_id"],
+                    "status": JobStatus.RUNNING.value,
+                    "stale_at": stale_job.get("stale_at"),
+                },
+                _claim_update(stale_job),
+                return_document=ReturnDocument.AFTER,
+            )
         return None
 
     def succeed(self, job_id: str, result: Any) -> None:
@@ -165,6 +172,7 @@ class JobStore:
                 "result": result,
                 "error": None,
                 "finished_at": now,
+                "stale_at": None,
                 "updated_at": now,
             }},
         )
@@ -182,6 +190,7 @@ class JobStore:
                     "retry_count": retry_count,
                     "error": error,
                     "finished_at": now,
+                    "stale_at": None,
                     "updated_at": now,
                 }
             }
@@ -203,6 +212,7 @@ class JobStore:
                 "retry_count": retry_count,
                 "error": error,
                 "run_after": now + timedelta(seconds=delay),
+                "stale_at": None,
                 "updated_at": now,
             }},
         )

@@ -46,6 +46,7 @@ logger = logging.getLogger("xmem.api.routes.scanner")
 router = APIRouter(prefix="/v1/scanner", tags=["scanner"])
 
 _code_store_singleton: Any = None
+_scanner_pat_refs: Dict[str, str] = {}
 
 
 def _get_code_store():
@@ -58,6 +59,25 @@ def _get_code_store():
             database=settings.mongodb_database,
         )
     return _code_store_singleton
+
+
+def _stash_scanner_pat(scanner_job_id: str, pat: str) -> bool:
+    if not pat:
+        return False
+    _scanner_pat_refs[scanner_job_id] = pat
+    return True
+
+
+def _resolve_scanner_pat(payload: Dict[str, Any]) -> str:
+    if not payload.get("requires_pat"):
+        return ""
+    pat = _scanner_pat_refs.get(payload["scanner_job_id"])
+    if pat is None:
+        raise RuntimeError(
+            "GitHub credential is no longer available for this scanner job; "
+            "please start the scan again."
+        )
+    return pat
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -586,6 +606,7 @@ async def _run_phase2_pipeline_only(
 
 
 async def run_scanner_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    pat = _resolve_scanner_pat(payload)
     await _run_scan_pipeline(
         payload["scanner_job_id"],
         payload["username"],
@@ -593,7 +614,7 @@ async def run_scanner_job(payload: Dict[str, Any]) -> Dict[str, Any]:
         payload["repo"],
         payload["url"],
         payload["branch"],
-        payload.get("pat", ""),
+        pat,
         payload.get("force_full", True),
     )
     return {"scanner_job_id": payload["scanner_job_id"]}
@@ -623,6 +644,7 @@ async def _enqueue_or_start_scanner_job(
     pat: str = "",
     force_full: bool = True,
 ) -> Optional[str]:
+    requires_pat = _stash_scanner_pat(scanner_job_id, pat)
     payload = {
         "scanner_job_id": scanner_job_id,
         "username": username,
@@ -630,7 +652,7 @@ async def _enqueue_or_start_scanner_job(
         "repo": repo,
         "url": url,
         "branch": branch,
-        "pat": pat,
+        "requires_pat": requires_pat,
         "force_full": force_full,
     }
     try:

@@ -68,6 +68,28 @@ def test_sqlite_hash_dedup_is_scoped_by_user_id(tmp_path):
     assert [r.id for r in store.search_by_metadata({"user_id": "bob"}, top_k=10)] == ["bob-memory"]
 
 
+def test_sqlite_update_rejects_current_hash_collision(tmp_path):
+    store = _store(tmp_path)
+    store.add(
+        ["Alice works at XMem."],
+        [[1.0, 0.0, 0.0]],
+        ids=["profile-1"],
+        metadata=[{"user_id": "alice"}],
+    )
+    store.add(
+        ["Alice works at XortexAI."],
+        [[0.0, 1.0, 0.0]],
+        ids=["profile-2"],
+        metadata=[{"user_id": "alice"}],
+    )
+
+    assert store.update("profile-1", text="Alice works at XortexAI.") is False
+
+    visible = store.search_by_metadata({"user_id": "alice"}, top_k=10)
+    assert {result.id for result in visible} == {"profile-1", "profile-2"}
+    assert store.get(["profile-1"])[0]["content"] == "Alice works at XMem."
+
+
 def test_lifecycle_fields_cannot_be_overridden_by_caller_metadata(tmp_path):
     store = _store(tmp_path)
 

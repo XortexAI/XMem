@@ -205,6 +205,9 @@ class SQLiteVectorStore(BaseVectorStore):
         current_meta.update(metadata or {})
         new_text = text if text is not None else row["content"]
         current_meta[CONTENT_HASH_KEY] = compute_memory_hash(new_text)
+        existing_id = self._find_current_by_hash(current_meta[CONTENT_HASH_KEY], current_meta)
+        if existing_id and existing_id != id:
+            return False
         new_embedding = embedding if embedding is not None else json.loads(row["embedding"])
         if len(new_embedding) != self._dimension:
             raise VectorStoreValidationError(

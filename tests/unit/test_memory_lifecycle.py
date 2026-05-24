@@ -148,6 +148,59 @@ def test_sqlite_add_version_duplicate_supersedes_parent(tmp_path):
     assert [result.id for result in visible] == ["profile-existing"]
 
 
+def test_sqlite_add_version_rejects_forgotten_parent(tmp_path):
+    store = _store(tmp_path)
+    store.add(
+        ["Alice revoked this memory."],
+        [[1.0, 0.0, 0.0]],
+        ids=["profile-1"],
+        metadata=[{"user_id": "alice", "domain": "profile"}],
+    )
+    store.forget(["profile-1"], reason="user requested deletion")
+
+    version_id = store.add_version(
+        "profile-1",
+        "Alice revoked this memory but changed.",
+        [0.0, 1.0, 0.0],
+        id="profile-2",
+        metadata={"user_id": "alice", "domain": "profile"},
+    )
+
+    assert version_id is None
+    assert store.get(["profile-2"]) == []
+    assert store.search_by_metadata({"user_id": "alice"}, top_k=10) == []
+
+
+def test_sqlite_add_version_rejects_superseded_parent(tmp_path):
+    store = _store(tmp_path)
+    store.add(
+        ["Alice works at XMem."],
+        [[1.0, 0.0, 0.0]],
+        ids=["profile-1"],
+        metadata=[{"user_id": "alice", "domain": "profile"}],
+    )
+    store.add_version(
+        "profile-1",
+        "Alice works at XortexAI.",
+        [0.0, 1.0, 0.0],
+        id="profile-2",
+        metadata={"user_id": "alice", "domain": "profile"},
+    )
+
+    version_id = store.add_version(
+        "profile-1",
+        "Alice works somewhere else.",
+        [0.0, 0.0, 1.0],
+        id="profile-3",
+        metadata={"user_id": "alice", "domain": "profile"},
+    )
+
+    assert version_id is None
+    assert store.get(["profile-3"]) == []
+    visible = store.search_by_metadata({"user_id": "alice"}, top_k=10)
+    assert [result.id for result in visible] == ["profile-2"]
+
+
 def test_sqlite_forget_soft_deletes_memory_from_retrieval(tmp_path):
     store = _store(tmp_path)
     store.add(

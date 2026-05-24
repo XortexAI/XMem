@@ -241,6 +241,8 @@ class SQLiteVectorStore(BaseVectorStore):
         parent = self.get([parent_id])
         if not parent:
             return None
+        if not is_retrievable_memory(parent[0]["metadata"] or {}):
+            return None
         if len(embedding) != self._dimension:
             raise VectorStoreValidationError(
                 f"Embedding dimension {len(embedding)} doesn't match {self._dimension}",

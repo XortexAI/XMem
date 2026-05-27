@@ -2,6 +2,7 @@ package pipelines
 
 import (
 	"context"
+	json "github.com/goccy/go-json"
 	"fmt"
 	"math"
 	"strings"
@@ -29,17 +30,17 @@ func (p *RetrievalPipeline) Run(ctx context.Context, req contracts.RetrieveReque
 
 	catalogStr := formatProfileCatalog(catalog)
 	systemPrompt := prompts.BuildRetrievalSystemPrompt(catalogStr)
-	toolResp, err := p.Model.SelectTools(ctx, req.Query, catalog)
+	toolResp, err := selectToolsWithRetrievalPrompt(ctx, p.Model, req.Query, catalog, systemPrompt)
 	if err != nil {
 		return contracts.RetrieveResponse{}, err
 	}
-	_ = systemPrompt
 
-	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sources := []contracts.SourceRecord{}
+	toolResults := make([][]contracts.SourceRecord, len(toolResp.ToolCalls))
 	calledSummary := false
-	for _, call := range toolResp.ToolCalls {
+	for i, call := range toolResp.ToolCalls {
+		i := i
 		call := call
 		if normalizeToolName(call.Name) == "searchsummary" {
 			calledSummary = true
@@ -47,18 +48,27 @@ func (p *RetrievalPipeline) Run(ctx context.Context, req contracts.RetrieveReque
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			records := p.executeTool(ctx, call, req.Query, userID, req.TopK, profileRecords)
-			mu.Lock()
-			sources = append(sources, records...)
-			mu.Unlock()
+			toolResults[i] = p.executeTool(ctx, call, req.Query, userID, req.TopK, profileRecords)
 		}()
 	}
 	wg.Wait()
-	if !calledSummary {
-		sources = append(sources, p.searchSummary(ctx, req.Query, userID, 20)...)
+	if len(toolResp.ToolCalls) == 0 {
+		answer := strings.TrimSpace(toolResp.Content)
+		return contracts.RetrieveResponse{Model: p.Model.Name(), Answer: answer, Sources: sources, Confidence: 0.1}, nil
 	}
 
-	contextText := formatSources(sources)
+	contextBlocks := make([]string, 0, len(toolResults)+1)
+	for _, records := range toolResults {
+		sources = append(sources, records...)
+		contextBlocks = append(contextBlocks, formatToolResults(records))
+	}
+	if !calledSummary {
+		extra := p.searchSummary(ctx, req.Query, userID, 20)
+		sources = append(sources, extra...)
+		contextBlocks = append(contextBlocks, "[Auto-fetched summary context]\n"+formatToolResults(extra))
+	}
+
+	contextText := strings.Join(contextBlocks, "\n")
 	answerPrompt := prompts.BuildAnswerPrompt(contextText, req.Query)
 	answerResp, err := p.Model.GenerateWithMessages(ctx, []models.Message{
 		{Role: "user", Content: answerPrompt},
@@ -71,6 +81,66 @@ func (p *RetrievalPipeline) Run(ctx context.Context, req contracts.RetrieveReque
 		confidence = math.Min(1, float64(len(sources))*0.2)
 	}
 	return contracts.RetrieveResponse{Model: p.Model.Name(), Answer: answerResp.Content, Sources: sources, Confidence: confidence}, nil
+}
+
+func selectToolsWithRetrievalPrompt(ctx context.Context, model models.ChatModel, query string, catalog []map[string]string, systemPrompt string) (models.Response, error) {
+	messages := []models.Message{
+		{Role: "system", Content: systemPrompt + "\n\n" + toolSelectionOutputInstructions},
+		{Role: "user", Content: query},
+	}
+	resp, err := model.GenerateWithMessages(ctx, messages)
+	if err != nil {
+		return model.SelectTools(ctx, query, catalog)
+	}
+
+	toolCalls, directAnswer, ok := parseToolCalls(resp.Content)
+	if !ok {
+		fallbackResp, fallbackErr := model.SelectTools(ctx, query, catalog)
+		if fallbackErr != nil {
+			return resp, nil
+		}
+		return fallbackResp, nil
+	}
+	resp.ToolCalls = toolCalls
+	if directAnswer != "" {
+		resp.Content = directAnswer
+	}
+	return resp, nil
+}
+
+const toolSelectionOutputInstructions = `You have access to these retrieval tools: search_profile, search_temporal, search_summary, search_snippet.
+Return only JSON in this exact shape, with no markdown or commentary:
+{"tool_calls":[{"name":"search_profile","args":{"topic":"work"}},{"name":"search_temporal","args":{"query":"dentist appointment"}},{"name":"search_summary","args":{"query":"..."}},{"name":"search_snippet","args":{"query":"..."}}]}
+If you can answer directly without searching, return {"tool_calls":[],"answer":"..."}.`
+
+func parseToolCalls(text string) ([]models.ToolCall, string, bool) {
+	if strings.Contains(text, "Return only JSON in this exact shape") {
+		return nil, "", false
+	}
+
+	var parsed struct {
+		ToolCalls []models.ToolCall `json:"tool_calls"`
+		Answer    string            `json:"answer"`
+	}
+	if err := json.Unmarshal([]byte(extractJSONObject(text)), &parsed); err != nil {
+		return nil, "", false
+	}
+	for i := range parsed.ToolCalls {
+		if parsed.ToolCalls[i].ID == "" {
+			parsed.ToolCalls[i].ID = fmt.Sprintf("call-%d", i+1)
+		}
+	}
+	return parsed.ToolCalls, parsed.Answer, true
+}
+
+func extractJSONObject(text string) string {
+	text = strings.TrimSpace(text)
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start >= 0 && end > start {
+		return text[start : end+1]
+	}
+	return ""
 }
 
 func (p *RetrievalPipeline) Search(ctx context.Context, req contracts.SearchRequest, userID string) (contracts.SearchResponse, error) {
@@ -124,7 +194,7 @@ func (p *RetrievalPipeline) executeTool(ctx context.Context, call models.ToolCal
 			store = p.VectorStore
 		}
 		records, _ := store.SearchByText(ctx, q, 5, map[string]any{"domain": "snippet"})
-		return toSources("snippet", records)
+		return toSnippetSources(records)
 	default:
 		return nil
 	}
@@ -163,6 +233,13 @@ func searchProfile(topic string, records []storage.SearchResult) []contracts.Sou
 		}
 		meta := cloneMeta(record.Metadata)
 		meta["id"] = record.ID
+		meta["topic"] = topic
+		parts := strings.SplitN(main, "_", 2)
+		if len(parts) == 2 {
+			meta["sub_topic"] = parts[1]
+		} else {
+			meta["sub_topic"] = ""
+		}
 		out = append(out, contracts.SourceRecord{Domain: "profile", Content: record.Content, Score: round3(record.Score), Metadata: meta})
 	}
 	return out
@@ -182,6 +259,21 @@ func toSources(domain string, records []storage.SearchResult) []contracts.Source
 		meta := cloneMeta(record.Metadata)
 		meta["id"] = record.ID
 		out = append(out, contracts.SourceRecord{Domain: domain, Content: record.Content, Score: round3(record.Score), Metadata: meta})
+	}
+	return out
+}
+
+func toSnippetSources(records []storage.SearchResult) []contracts.SourceRecord {
+	out := make([]contracts.SourceRecord, 0, len(records))
+	for _, record := range records {
+		meta := cloneMeta(record.Metadata)
+		meta["id"] = record.ID
+		content := record.Content
+		if snippet, ok := record.Metadata["code_snippet"].(string); ok && snippet != "" {
+			lang, _ := record.Metadata["language"].(string)
+			content += fmt.Sprintf("\n```%s\n%s\n```", lang, snippet)
+		}
+		out = append(out, contracts.SourceRecord{Domain: "snippet", Content: content, Score: round3(record.Score), Metadata: meta})
 	}
 	return out
 }
@@ -220,13 +312,17 @@ func eventsToSources(events []graph.Event) []contracts.SourceRecord {
 	return out
 }
 
-func formatSources(sources []contracts.SourceRecord) string {
-	if len(sources) == 0 {
+func formatToolResults(records []contracts.SourceRecord) string {
+	if len(records) == 0 {
 		return "No results found."
 	}
-	lines := make([]string, 0, len(sources))
-	for i, src := range sources {
-		lines = append(lines, fmt.Sprintf("%d. [%s] %s", i+1, src.Domain, src.Content))
+	lines := make([]string, 0, len(records))
+	for i, rec := range records {
+		score := ""
+		if rec.Score > 0 {
+			score = fmt.Sprintf(" (score: %.2f)", rec.Score)
+		}
+		lines = append(lines, fmt.Sprintf("%d. [%s]%s %s", i+1, rec.Domain, score, rec.Content))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -255,11 +351,7 @@ func formatProfileCatalog(catalog []map[string]string) string {
 	for _, item := range catalog {
 		topic := item["topic"]
 		subTopic := item["sub_topic"]
-		if subTopic != "" {
-			lines = append(lines, fmt.Sprintf("  - %s / %s", topic, subTopic))
-		} else {
-			lines = append(lines, fmt.Sprintf("  - %s", topic))
-		}
+		lines = append(lines, fmt.Sprintf("  - %s / %s", topic, subTopic))
 	}
 	return strings.Join(lines, "\n")
 }

@@ -2,7 +2,8 @@ package api
 
 import (
 	"bytes"
-	"encoding/json"
+	"context"
+	json "github.com/goccy/go-json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,29 @@ import (
 	"github.com/xortexai/xmem-go/internal/weaver"
 )
 
+type testModel struct{}
+
+func (testModel) Name() string { return "test-model" }
+func (testModel) Generate(_ context.Context, prompt string) (models.Response, error) {
+	return models.Response{Content: prompt, ModelName: "test-model"}, nil
+}
+func (testModel) GenerateWithMessages(_ context.Context, msgs []models.Message) (models.Response, error) {
+	content := ""
+	for _, m := range msgs {
+		content += m.Content + "\n"
+	}
+	return models.Response{Content: strings.TrimSpace(content), ModelName: "test-model"}, nil
+}
+func (testModel) GenerateVision(_ context.Context, _ string, userText string, _ string) (models.Response, error) {
+	return models.Response{Content: userText, ModelName: "test-model"}, nil
+}
+func (testModel) SelectTools(_ context.Context, query string, _ []map[string]string) (models.Response, error) {
+	return models.Response{
+		ToolCalls: []models.ToolCall{{ID: "call-1", Name: "search_summary", Args: map[string]any{"query": query}}},
+		ModelName: "test-model",
+	}, nil
+}
+
 func testHandler() http.Handler {
 	settings := config.Settings{
 		APIHost:             "127.0.0.1",
@@ -35,7 +59,7 @@ func testHandler() http.Handler {
 	vectorStore := storage.NewMemoryVectorStore()
 	snippetStore := storage.NewMemoryVectorStore()
 	temporalStore := graph.NewMemoryTemporalStore()
-	model := models.NewLocalModel("test-model")
+	model := testModel{}
 	w := &weaver.Weaver{
 		VectorStore:        vectorStore,
 		SnippetVectorStore: snippetStore,
@@ -51,7 +75,7 @@ func testHandler() http.Handler {
 		Summarizer: agents.SummarizerAgent{Model: model},
 		Image:      agents.ImageAgent{Model: model},
 		Snippet:    agents.SnippetAgent{Model: model},
-		Judge:      agents.JudgeAgent{Model: model, VectorStore: vectorStore, TopK: 3},
+		Judge:      agents.JudgeAgent{Model: model, VectorStore: vectorStore, TemporalStore: temporalStore, TopK: 3},
 	}
 	retrieval := &pipelines.RetrievalPipeline{
 		Model:         model,

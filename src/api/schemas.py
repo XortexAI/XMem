@@ -9,9 +9,27 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+import re
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+
+def normalize_user_id(value: Any) -> str:
+    """Convert friendly user input into XMem's canonical storage id."""
+    text = str(value or "").strip()
+    text = re.sub(r"[^A-Za-z0-9_.@-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text[:256]
+
+
+class UserScopedModel(BaseModel):
+    """Base model for requests that scope data to a user."""
+
+    @field_validator("user_id", mode="before", check_fields=False)
+    @classmethod
+    def normalize_user_id_field(cls, v: Any) -> str:
+        return normalize_user_id(v)
 
 
 # ── Shared envelope ────────────────────────────────────────────────────────
@@ -42,7 +60,7 @@ class HealthResponse(BaseModel):
 
 # ── Ingest (save memory) ──────────────────────────────────────────────────
 
-class IngestRequest(BaseModel):
+class IngestRequest(UserScopedModel):
     """Store a new memory from a conversation turn."""
     user_query: str = Field(
         ..., min_length=1, max_length=10_000,
@@ -53,8 +71,8 @@ class IngestRequest(BaseModel):
         description="The assistant's reply (used for summary extraction)",
     )
     user_id: str = Field(
-        ..., min_length=1, max_length=256, pattern=r"^[\w.\-@]+$",
-        description="Unique user identifier (alphanumeric, dots, hyphens, underscores, @)",
+        ..., min_length=1, max_length=256,
+        description="User identifier. Friendly names are normalized internally.",
     )
     session_datetime: str = Field(
         default="",
@@ -73,7 +91,6 @@ class IngestRequest(BaseModel):
     @classmethod
     def strip_query(cls, v: str) -> str:
         return v.strip()
-
 
 class OperationDetail(BaseModel):
     type: str
@@ -117,14 +134,14 @@ class BatchIngestResponse(BaseModel):
 
 # ── Retrieve (answer a question from memory) ──────────────────────────────
 
-class RetrieveRequest(BaseModel):
+class RetrieveRequest(UserScopedModel):
     """Ask a question answered from stored memories."""
     query: str = Field(
         ..., min_length=1, max_length=5_000,
         description="The question to answer from memory",
     )
     user_id: str = Field(
-        ..., min_length=1, max_length=256, pattern=r"^[\w.\-@]+$",
+        ..., min_length=1, max_length=256,
     )
     top_k: int = Field(default=5, ge=1, le=50)
 
@@ -132,7 +149,6 @@ class RetrieveRequest(BaseModel):
     @classmethod
     def strip_query(cls, v: str) -> str:
         return v.strip()
-
 
 class SourceRecord(BaseModel):
     domain: str
@@ -150,13 +166,13 @@ class RetrieveResponse(BaseModel):
 
 # ── Search (raw vector / graph search without LLM answer) ─────────────────
 
-class SearchRequest(BaseModel):
+class SearchRequest(UserScopedModel):
     """Raw semantic search across memory domains."""
     query: str = Field(
         ..., min_length=1, max_length=5_000,
     )
     user_id: str = Field(
-        ..., min_length=1, max_length=256, pattern=r"^[\w.\-@]+$",
+        ..., min_length=1, max_length=256,
     )
     domains: List[str] = Field(
         default=["profile", "temporal", "summary"],
@@ -199,7 +215,7 @@ class ScrapeResponse(BaseModel):
 
 # ── Code retrieval (IDE mode) ─────────────────────────────────────────────
 
-class CodeQueryRequest(BaseModel):
+class CodeQueryRequest(UserScopedModel):
     """Query a codebase via the code retrieval pipeline."""
     org_id: str = Field(..., min_length=1, max_length=256)
     repo: str = Field(..., min_length=1, max_length=256)
@@ -219,7 +235,7 @@ class CodeQueryResponse(BaseModel):
     confidence: float = 0.0
 
 
-class ExecuteToolRequest(BaseModel):
+class ExecuteToolRequest(UserScopedModel):
     """Execute a specific raw code retrieval tool natively."""
     org_id: str = Field(..., min_length=1, max_length=256)
     repo: str = Field(..., min_length=1, max_length=256)

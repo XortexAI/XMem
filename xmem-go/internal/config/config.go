@@ -2,7 +2,7 @@ package config
 
 import (
 	"bufio"
-	"encoding/json"
+	json "github.com/goccy/go-json"
 	"errors"
 	"net"
 	"os"
@@ -89,14 +89,14 @@ func Load() (Settings, error) {
 		PineconeMetric:      "cosine",
 		PineconeCloud:       "aws",
 		PineconeRegion:      "us-east-1",
-		VectorStoreProvider: "memory",
-		EmbeddingProvider:   "local",
-		EmbeddingModel:      "local-hash",
+		VectorStoreProvider: "pinecone",
+		EmbeddingProvider:   "openai",
+		EmbeddingModel:      "text-embedding-3-small",
 		MongoDBURI:          "mongodb://localhost:27017",
 		MongoDBDatabase:     "xmem_go",
 		Neo4jURI:            "bolt://localhost:7687",
 		Neo4jUsername:       "neo4j",
-		AppStoreProvider:    "memory",
+		AppStoreProvider:    "mongo",
 		APIHost:             "0.0.0.0",
 		APIPort:             8081,
 		CORSOrigins:         []string{"http://localhost:3000", "http://localhost:5173"},
@@ -174,6 +174,17 @@ func Load() (Settings, error) {
 	}
 	if net.ParseIP(strings.TrimSpace(s.APIHost)) == nil && s.APIHost != "localhost" {
 		return s, errors.New("API_HOST must be an IP address or localhost")
+	}
+	if s.Environment != "development" && s.Environment != "test" {
+		if s.Neo4jPassword == "" {
+			return s, errors.New("NEO4J_PASSWORD is required in non-development environments")
+		}
+		if s.PineconeAPIKey == "" {
+			return s, errors.New("PINECONE_API_KEY is required in non-development environments")
+		}
+		if s.OpenAIAPIKey == "" {
+			return s, errors.New("OPENAI_API_KEY is required in non-development environments")
+		}
 	}
 	return s, nil
 }

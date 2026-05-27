@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import smtplib
+import threading
 import time
 import itertools
 from collections import deque
@@ -937,20 +938,35 @@ async def get_user_trail(
 # ═══════════════════════════════════════════════════════════════════════════
 
 _outreach_db = None
+_outreach_indexes_ready = False
 _scrape_tasks: Dict[str, asyncio.Task] = {}
-_scrape_stop_events: Dict[str, asyncio.Event] = {}
+_scrape_stop_events: Dict[str, threading.Event] = {}
 _scrape_queues: Dict[str, deque] = {}  # job_id -> deque of new emails for SSE
+
+_SCRAPED_BATCH_SIZE = 50
+_PROGRESS_UPDATE_INTERVAL = 20
+_STARGAZERS_PER_PAGE = 100
+_GITHUB_THROTTLE_SECONDS = 0.3
 
 
 def _get_outreach_db():
-    global _outreach_db
+    global _outreach_db, _outreach_indexes_ready
     if _outreach_db is not None:
         return _outreach_db
     try:
-        from pymongo import MongoClient
+        from pymongo import ASCENDING, MongoClient
         client = MongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=3000)
         client.admin.command("ping")
         _outreach_db = client[settings.mongodb_database]
+        if not _outreach_indexes_ready:
+            try:
+                _outreach_db["outreach_scanned_users"].create_index(
+                    [("repo_slug", ASCENDING), ("username", ASCENDING)],
+                    unique=True,
+                )
+            except Exception as exc:
+                logger.warning("[outreach] scanned-users index setup: %s", exc)
+            _outreach_indexes_ready = True
         return _outreach_db
     except Exception as exc:
         logger.error("Outreach MongoDB connection failed: %s", exc)
@@ -1104,8 +1120,32 @@ def _get_best_pat(db) -> Optional[Dict]:
     return None
 
 
-async def _gh_get(url: str, pat_doc: Optional[Dict], db, client: httpx.AsyncClient) -> Optional[httpx.Response]:
-    """Make a GitHub API GET with rate-limit tracking, rotation, and connection pooling."""
+# ── Scraping Jobs ─────────────────────────────────────────────────────────
+
+class StartJobRequest(BaseModel):
+    repo_url: str
+    target_email_count: int = 500
+
+
+def _extract_repo_slug(url: str) -> str:
+    url = url.strip().rstrip("/")
+    if url.startswith("https://github.com/"):
+        url = url[len("https://github.com/"):]
+    elif url.startswith("http://github.com/"):
+        url = url[len("http://github.com/"):]
+    parts = url.split("/")
+    if len(parts) >= 2:
+        return f"{parts[0]}/{parts[1]}"
+    return url
+
+
+def _gh_get_sync(
+    url: str,
+    pat_doc: Optional[Dict],
+    db,
+    client: httpx.Client,
+) -> Optional[httpx.Response]:
+    """Make a GitHub API GET with rate-limit tracking and PAT rotation (sync, thread-safe)."""
     for attempt in range(5):
         if pat_doc is None:
             pat_doc = _get_best_pat(db)
@@ -1114,7 +1154,7 @@ async def _gh_get(url: str, pat_doc: Optional[Dict], db, client: httpx.AsyncClie
             return None
         try:
             token_val = pat_doc["token"].strip()
-            resp = await client.get(
+            resp = client.get(
                 url,
                 headers={
                     "Authorization": f"token {token_val}",
@@ -1135,7 +1175,7 @@ async def _gh_get(url: str, pat_doc: Optional[Dict], db, client: httpx.AsyncClie
                     {"$set": {"active": False, "remaining": 0}},
                 )
                 pat_doc = None
-                await asyncio.sleep(0.5)
+                time.sleep(0.5)
                 continue
 
             if resp.status_code in (403, 429):
@@ -1146,45 +1186,31 @@ async def _gh_get(url: str, pat_doc: Optional[Dict], db, client: httpx.AsyncClie
                     {"$set": {"remaining": 0, "reset_at": reset_at}},
                 )
                 pat_doc = None
-                await asyncio.sleep(1)
+                time.sleep(1)
                 continue
             return resp
         except Exception as exc:
             logger.warning("[outreach] _gh_get exception: %s", exc)
-            await asyncio.sleep(1)
+            time.sleep(1)
             pat_doc = None
     return None
 
 
-# ── Scraping Jobs ─────────────────────────────────────────────────────────
-
-class StartJobRequest(BaseModel):
-    repo_url: str
-    target_email_count: int = 500
-
-
-def _extract_repo_slug(url: str) -> str:
-    url = url.strip().rstrip("/")
-    if url.startswith("https://github.com/"):
-        url = url[len("https://github.com/"):]
-    elif url.startswith("http://github.com/"):
-        url = url[len("http://github.com/"):]
-    parts = url.split("/")
-    if len(parts) >= 2:
-        return f"{parts[0]}/{parts[1]}"
-    return url
-
-
-async def _get_email_for_user(username: str, pat_doc: Dict, db, client: httpx.AsyncClient) -> Optional[str]:
+def _get_email_for_user_sync(
+    username: str,
+    pat_doc: Dict,
+    db,
+    client: httpx.Client,
+) -> Optional[str]:
     """3-step email discovery: profile -> push events -> recent repo commit."""
-    resp = await _gh_get(f"https://api.github.com/users/{username}", pat_doc, db, client)
+    resp = _gh_get_sync(f"https://api.github.com/users/{username}", pat_doc, db, client)
     if resp and resp.status_code == 200:
         data = resp.json()
         email = data.get("email")
         if email and "noreply" not in email and email.lower().endswith("@gmail.com"):
             return email
 
-    resp = await _gh_get(
+    resp = _gh_get_sync(
         f"https://api.github.com/users/{username}/events/public?per_page=15",
         pat_doc, db, client,
     )
@@ -1196,7 +1222,7 @@ async def _get_email_for_user(username: str, pat_doc: Dict, db, client: httpx.As
                     if email and "noreply" not in email and email.lower().endswith("@gmail.com"):
                         return email
 
-    resp = await _gh_get(
+    resp = _gh_get_sync(
         f"https://api.github.com/users/{username}/repos?sort=updated&per_page=1",
         pat_doc, db, client,
     )
@@ -1205,7 +1231,7 @@ async def _get_email_for_user(username: str, pat_doc: Dict, db, client: httpx.As
         if repos and isinstance(repos, list) and repos:
             repo_name = repos[0].get("name")
             if repo_name:
-                c_resp = await _gh_get(
+                c_resp = _gh_get_sync(
                     f"https://api.github.com/repos/{username}/{repo_name}/commits?per_page=1",
                     pat_doc, db, client,
                 )
@@ -1218,15 +1244,52 @@ async def _get_email_for_user(username: str, pat_doc: Dict, db, client: httpx.As
     return None
 
 
+def _flush_scanned_batch(scanned_coll, pending: List[dict]) -> None:
+    """Bulk-insert scanned-user records; ignore duplicate-key races."""
+    if not pending:
+        return
+    from pymongo.errors import BulkWriteError
+
+    batch = list(pending)
+    pending.clear()
+    try:
+        scanned_coll.insert_many(batch, ordered=False)
+    except BulkWriteError:
+        pass
+
+
+def _claim_username(scanned_coll, username: str, repo_slug: str, pending: List[dict]) -> bool:
+    """Reserve a username for scanning. Returns False if already scanned for this repo."""
+    if scanned_coll.find_one(
+        {"repo_slug": repo_slug, "username": username},
+        {"_id": 1},
+    ):
+        return False
+    pending.append({
+        "username": username,
+        "repo_slug": repo_slug,
+        "scanned_at": datetime.now(timezone.utc),
+    })
+    if len(pending) >= _SCRAPED_BATCH_SIZE:
+        _flush_scanned_batch(scanned_coll, pending)
+    return True
+
+
 def _push_status(queue, msg_type: str, message: str, **extra):
-    """Push a status/progress event into the SSE queue."""
+    """Push a status/progress event into the SSE queue (thread-safe append)."""
     if queue is not None:
         event = {"_type": msg_type, "message": message, **extra}
         queue.append(event)
 
 
-async def _scrape_worker(job_id: str, repo_slug: str, target: int, resume_page: int, resume_index: int):
-    """Background async task that scrapes stargazer emails with connection pooling."""
+def _scrape_worker_sync(
+    job_id: str,
+    repo_slug: str,
+    target: int,
+    resume_page: int,
+    resume_index: int,
+):
+    """Run the scrape loop in a background thread so the API event loop stays free."""
     db = _get_outreach_db()
     if db is None:
         return
@@ -1235,6 +1298,7 @@ async def _scrape_worker(job_id: str, repo_slug: str, target: int, resume_page: 
     queue = _scrape_queues.get(job_id)
     jobs_coll = db["outreach_jobs"]
     emails_coll = db["outreach_emails"]
+    scanned_coll = db["outreach_scanned_users"]
 
     def _set_job_error(error_msg: str):
         jobs_coll.update_one(
@@ -1243,182 +1307,223 @@ async def _scrape_worker(job_id: str, repo_slug: str, target: int, resume_page: 
         )
         _push_status(queue, "error", error_msg)
 
+    def _should_stop() -> bool:
+        return stop_event is not None and stop_event.is_set()
+
+    def _update_job_progress(global_index: int, *, force: bool = False) -> None:
+        if not force and global_index % _PROGRESS_UPDATE_INTERVAL != 0:
+            return
+        jobs_coll.update_one(
+            {"_id": ObjectId(job_id)},
+            {"$set": {
+                "processed_index": global_index,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+
     try:
-        async with httpx.AsyncClient(
+        with httpx.Client(
             timeout=15,
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         ) as client:
-            stargazers = []
-            per_page = 100
-            page = (resume_index // per_page) + 1
-            page_offset = resume_index % per_page
+            per_page = _STARGAZERS_PER_PAGE
+            page = max(resume_page, (resume_index // per_page) + 1)
+            page_offset = resume_index % per_page if page == (resume_index // per_page) + 1 else 0
+            global_index = resume_index
+            found_count = emails_coll.count_documents({"job_id": job_id})
+            scanned_count = 0
+            consecutive_no_pat = 0
+            pending_scanned: List[dict] = []
+            saw_stargazers = False
 
-            _push_status(queue, "status", f"Fetching stargazers for {repo_slug}...")
+            _push_status(queue, "status", f"Scanning stargazers for {repo_slug} (target: {target} emails)...")
 
-            while len(stargazers) < 2000:
-                if stop_event and stop_event.is_set():
+            while found_count < target:
+                if _should_stop():
                     break
+
                 pat = _get_best_pat(db)
                 if pat is None:
                     _push_status(queue, "warning", "All PATs exhausted, waiting 10s for rate limit reset...")
-                    await asyncio.sleep(10)
+                    time.sleep(10)
                     pat = _get_best_pat(db)
                     if pat is None:
-                        _set_job_error("All GitHub PATs have exhausted their rate limits. Add more PATs or wait for reset.")
-                        _scrape_tasks.pop(job_id, None)
-                        _scrape_stop_events.pop(job_id, None)
+                        _set_job_error(
+                            "All GitHub PATs have exhausted their rate limits. Add more PATs or wait for reset."
+                        )
                         return
 
-                resp = await _gh_get(
+                resp = _gh_get_sync(
                     f"https://api.github.com/repos/{repo_slug}/stargazers?per_page={per_page}&page={page}",
                     pat, db, client,
                 )
                 if resp is None:
                     active_pats = list(db["outreach_pats"].find({"active": True}))
                     if not active_pats:
-                        _set_job_error("All PATs have been marked inactive (likely invalid/expired). Delete them and add fresh PATs.")
+                        _set_job_error(
+                            "All PATs have been marked inactive (likely invalid/expired). "
+                            "Delete them and add fresh PATs."
+                        )
                     else:
-                        _set_job_error("GitHub API unreachable after multiple retries. Check network or PAT validity.")
-                    _scrape_tasks.pop(job_id, None)
-                    _scrape_stop_events.pop(job_id, None)
+                        _set_job_error(
+                            "GitHub API unreachable after multiple retries. Check network or PAT validity."
+                        )
                     return
                 if resp.status_code == 404:
                     _set_job_error(f"Repository '{repo_slug}' not found on GitHub. Check the URL.")
-                    _scrape_tasks.pop(job_id, None)
-                    _scrape_stop_events.pop(job_id, None)
                     return
                 if resp.status_code != 200:
                     _set_job_error(f"GitHub API returned HTTP {resp.status_code}: {resp.text[:200]}")
-                    _scrape_tasks.pop(job_id, None)
-                    _scrape_stop_events.pop(job_id, None)
                     return
 
                 users = resp.json()
                 if not users:
                     break
 
-                # If this is the first page we are fetching, skip the users we already processed
-                if page == (resume_index // per_page) + 1 and page_offset > 0:
+                saw_stargazers = True
+                if page_offset:
                     users = users[page_offset:]
+                    page_offset = 0
 
-                for u in users:
-                    login = u.get("login")
-                    if login:
-                        stargazers.append(login)
+                for user in users:
+                    if _should_stop() or found_count >= target:
+                        break
+
+                    username = user.get("login")
+                    if not username:
+                        continue
+
+                    global_index += 1
+
+                    if not _claim_username(scanned_coll, username, repo_slug, pending_scanned):
+                        _update_job_progress(global_index)
+                        continue
+
+                    pat = _get_best_pat(db)
+                    if pat is None:
+                        consecutive_no_pat += 1
+                        if consecutive_no_pat >= 3:
+                            _set_job_error(
+                                "All PATs are inactive or exhausted during email scanning. Add valid PATs."
+                            )
+                            return
+                        _push_status(queue, "warning", "No available PAT, waiting...")
+                        time.sleep(5)
+                        continue
+
+                    consecutive_no_pat = 0
+                    email = _get_email_for_user_sync(username, pat, db, client)
+                    scanned_count += 1
+                    _update_job_progress(global_index)
+
+                    if email:
+                        email_doc = {
+                            "job_id": job_id,
+                            "username": username,
+                            "email": email,
+                            "scraped_at": datetime.now(timezone.utc),
+                            "sent": False,
+                            "sent_at": None,
+                            "opened": False,
+                            "opened_at": None,
+                            "clicked": False,
+                            "clicked_at": None,
+                        }
+                        result = emails_coll.insert_one(email_doc)
+                        email_doc["_id"] = str(result.inserted_id)
+                        found_count += 1
+
+                        jobs_coll.update_one(
+                            {"_id": ObjectId(job_id)},
+                            {"$set": {"emails_found": found_count, "updated_at": datetime.now(timezone.utc)}},
+                        )
+
+                        if queue is not None:
+                            queue.append(email_doc)
+                    elif scanned_count % 10 == 0:
+                        _push_status(
+                            queue,
+                            "progress",
+                            f"Scanned {scanned_count} users, found {found_count} emails so far...",
+                            scanned=scanned_count,
+                            found=found_count,
+                        )
+
+                    time.sleep(_GITHUB_THROTTLE_SECONDS)
+
+                _flush_scanned_batch(scanned_coll, pending_scanned)
+
+                jobs_coll.update_one(
+                    {"_id": ObjectId(job_id)},
+                    {"$set": {
+                        "total_stargazers_fetched": global_index,
+                        "last_stargazer_page": page + 1,
+                        "processed_index": global_index,
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                )
+                _push_status(
+                    queue,
+                    "progress",
+                    f"Processed {global_index} stargazers, found {found_count} emails...",
+                    stargazers_fetched=global_index,
+                    found=found_count,
+                )
                 page += 1
-                jobs_coll.update_one(
-                    {"_id": ObjectId(job_id)},
-                    {"$set": {
-                        "total_stargazers_fetched": len(stargazers) + resume_index,
-                        "last_stargazer_page": page,
-                        "updated_at": datetime.now(timezone.utc),
-                    }},
-                )
-                _push_status(queue, "progress", f"Fetched {len(stargazers)} stargazers...",
-                             stargazers_fetched=len(stargazers))
 
-            if not stargazers:
-                _set_job_error(f"No stargazers found for '{repo_slug}'. The repo may have 0 stars or the URL is wrong.")
-                _scrape_tasks.pop(job_id, None)
-                _scrape_stop_events.pop(job_id, None)
+            _flush_scanned_batch(scanned_coll, pending_scanned)
+            _update_job_progress(global_index, force=True)
+
+            if not saw_stargazers and global_index == resume_index:
+                _set_job_error(
+                    f"No stargazers found for '{repo_slug}'. The repo may have 0 stars or the URL is wrong."
+                )
                 return
-
-            _push_status(queue, "status",
-                         f"Found {len(stargazers)} stargazers. Now scanning for emails (target: {target})...")
-
-            scanned_coll = db["outreach_scanned_users"]
-            existing_usernames = set(
-                doc["username"] for doc in scanned_coll.find({"repo_slug": repo_slug}, {"username": 1})
-            )
-
-            found_count = emails_coll.count_documents({"job_id": job_id})
-            scanned_count = 0
-
-            consecutive_no_pat = 0
-            for i, username in enumerate(stargazers):
-                if stop_event and stop_event.is_set():
-                    break
-                if found_count >= target:
-                    break
-                if username in existing_usernames:
-                    continue
-
-                # Mark as scanned immediately
-                existing_usernames.add(username)
-                scanned_coll.insert_one({"username": username, "repo_slug": repo_slug, "scanned_at": datetime.now(timezone.utc)})
-
-                pat = _get_best_pat(db)
-                if pat is None:
-                    consecutive_no_pat += 1
-                    if consecutive_no_pat >= 3:
-                        _set_job_error("All PATs are inactive or exhausted during email scanning. Add valid PATs.")
-                        _scrape_tasks.pop(job_id, None)
-                        _scrape_stop_events.pop(job_id, None)
-                        return
-                    _push_status(queue, "warning", "No available PAT, waiting...")
-                    await asyncio.sleep(5)
-                    continue
-                consecutive_no_pat = 0
-                email = await _get_email_for_user(username, pat, db, client)
-                scanned_count += 1
-
-                jobs_coll.update_one(
-                    {"_id": ObjectId(job_id)},
-                    {"$set": {
-                        "processed_index": resume_index + i + 1,
-                        "updated_at": datetime.now(timezone.utc),
-                    }},
-                )
-
-                if email:
-                    email_doc = {
-                        "job_id": job_id,
-                        "username": username,
-                        "email": email,
-                        "scraped_at": datetime.now(timezone.utc),
-                        "sent": False,
-                        "sent_at": None,
-                        "opened": False,
-                        "opened_at": None,
-                        "clicked": False,
-                        "clicked_at": None,
-                    }
-                    emails_coll.insert_one(email_doc)
-                    email_doc["_id"] = str(email_doc["_id"])
-                    found_count += 1
-
-                    jobs_coll.update_one(
-                        {"_id": ObjectId(job_id)},
-                        {"$set": {"emails_found": found_count}},
-                    )
-
-                    if queue is not None:
-                        queue.append(email_doc)
-                else:
-                    if scanned_count % 10 == 0:
-                        _push_status(queue, "progress",
-                                     f"Scanned {scanned_count} users, found {found_count} emails so far...",
-                                     scanned=scanned_count, found=found_count)
-
-                # Throttle: yield control to the event loop between user scans
-                await asyncio.sleep(0.3)
 
             final_status = "completed" if found_count >= target else "stopped"
             jobs_coll.update_one(
                 {"_id": ObjectId(job_id)},
-                {"$set": {"status": final_status, "emails_found": found_count,
-                           "updated_at": datetime.now(timezone.utc)}},
+                {"$set": {
+                    "status": final_status,
+                    "emails_found": found_count,
+                    "processed_index": global_index,
+                    "updated_at": datetime.now(timezone.utc),
+                }},
             )
-            _push_status(queue, "done",
-                         f"Finished. Found {found_count} emails from {scanned_count} scanned users.",
-                         found=found_count, scanned=scanned_count, status=final_status)
+            _push_status(
+                queue,
+                "done",
+                f"Finished. Found {found_count} emails from {scanned_count} scanned users.",
+                found=found_count,
+                scanned=scanned_count,
+                status=final_status,
+            )
 
     except Exception as exc:
         logger.exception("[outreach] Scrape worker crashed for job %s", job_id)
         _set_job_error(f"Scraper crashed: {exc}")
 
-    _scrape_tasks.pop(job_id, None)
-    _scrape_stop_events.pop(job_id, None)
+
+async def _scrape_worker(
+    job_id: str,
+    repo_slug: str,
+    target: int,
+    resume_page: int,
+    resume_index: int,
+):
+    """Async wrapper — runs the sync scrape loop off the API event loop."""
+    try:
+        await asyncio.to_thread(
+            _scrape_worker_sync,
+            job_id,
+            repo_slug,
+            target,
+            resume_page,
+            resume_index,
+        )
+    finally:
+        _scrape_tasks.pop(job_id, None)
+        _scrape_stop_events.pop(job_id, None)
 
 
 @router.post("/api/outreach/jobs/start")
@@ -1454,7 +1559,7 @@ async def start_scrape_job(req: StartJobRequest, user: dict = Depends(_verify_ad
     result = db["outreach_jobs"].insert_one(job)
     job_id = str(result.inserted_id)
 
-    stop_event = asyncio.Event()
+    stop_event = threading.Event()
     _scrape_stop_events[job_id] = stop_event
     _scrape_queues[job_id] = deque(maxlen=500)
 
@@ -1503,7 +1608,7 @@ async def resume_scrape_job(job_id: str, user: dict = Depends(_verify_admin_toke
         {"$set": {"status": "running", "updated_at": datetime.now(timezone.utc)}},
     )
 
-    stop_event = asyncio.Event()
+    stop_event = threading.Event()
     _scrape_stop_events[job_id] = stop_event
     _scrape_queues[job_id] = deque(maxlen=500)
 

@@ -34,12 +34,15 @@ func buildRuntime(ctx context.Context, settings config.Settings, logger *slog.Lo
 		return runtimeDeps{}, err
 	}
 
-	temporalStore, err := buildTemporalStore(ctx, settings, logger)
+	temporalStore, err := buildTemporalStore(ctx, settings, embedder, logger)
 	if err != nil {
 		return runtimeDeps{}, err
 	}
 
-	model := models.NewRegistry(settings)
+	model, err := models.NewRegistry(settings)
+	if err != nil {
+		return runtimeDeps{}, fmt.Errorf("LLM model initialization failed: %w", err)
+	}
 	ingest, retrieval := buildPipelines(model, vectorStore, snippetStore, temporalStore, embedder)
 
 	keyStore, jobStore, err := buildAppStores(ctx, settings, logger)
@@ -56,21 +59,23 @@ func buildRuntime(ctx context.Context, settings config.Settings, logger *slog.Lo
 }
 
 func buildEmbedder(settings config.Settings, logger *slog.Logger) (storage.Embedder, error) {
-	fallback := storage.HashEmbedder{Dimension: settings.PineconeDimension}
-	if settings.EmbeddingProvider != "openai" {
-		return fallback, nil
-	}
-
-	openAIEmbedder, err := storage.NewOpenAIEmbedder(settings)
-	if err == nil {
+	if settings.EmbeddingProvider == "openai" || settings.EmbeddingProvider == "" {
+		openAIEmbedder, err := storage.NewOpenAIEmbedder(settings)
+		if err != nil {
+			if production(settings) {
+				return nil, fmt.Errorf("openai embedder initialization failed: %w", err)
+			}
+			logger.Warn("openai embedder unavailable, falling back to hash embedder (dev only)", "error", err)
+			return storage.HashEmbedder{Dimension: settings.PineconeDimension}, nil
+		}
 		logger.Info("using OpenAI embedder", "model", settings.OpenAIEmbeddingModel, "dimension", settings.PineconeDimension)
 		return openAIEmbedder, nil
 	}
 	if production(settings) {
-		return nil, fmt.Errorf("openai embedder initialization failed: %w", err)
+		return nil, fmt.Errorf("unsupported EMBEDDING_PROVIDER=%q; only 'openai' is supported in production", settings.EmbeddingProvider)
 	}
-	logger.Warn("openai embedder unavailable, using hash embedder", "error", err)
-	return fallback, nil
+	logger.Warn("using hash embedder (dev only)", "provider", settings.EmbeddingProvider)
+	return storage.HashEmbedder{Dimension: settings.PineconeDimension}, nil
 }
 
 func buildVectorStores(ctx context.Context, settings config.Settings, embedder storage.Embedder, logger *slog.Logger) (storage.VectorStore, storage.VectorStore, error) {
@@ -106,13 +111,16 @@ func buildVectorStores(ctx context.Context, settings config.Settings, embedder s
 	return vectorStore, snippetStore, nil
 }
 
-func buildTemporalStore(ctx context.Context, settings config.Settings, logger *slog.Logger) (graph.TemporalStore, error) {
-	fallback := graph.NewMemoryTemporalStore()
+func buildTemporalStore(ctx context.Context, settings config.Settings, embedder storage.Embedder, logger *slog.Logger) (graph.TemporalStore, error) {
 	if settings.Neo4jPassword == "" {
-		return fallback, nil
+		if production(settings) {
+			return nil, fmt.Errorf("NEO4J_PASSWORD is required in production")
+		}
+		logger.Warn("NEO4J_PASSWORD not set, using memory temporal store (dev only)")
+		return graph.NewMemoryTemporalStore(), nil
 	}
 
-	neoStore, err := graph.NewNeo4jTemporalStore(ctx, settings)
+	neoStore, err := graph.NewNeo4jTemporalStore(ctx, settings, embedder)
 	if err == nil {
 		logger.Info("using Neo4j temporal store")
 		return neoStore, nil
@@ -121,7 +129,7 @@ func buildTemporalStore(ctx context.Context, settings config.Settings, logger *s
 		return nil, fmt.Errorf("neo4j initialization failed: %w", err)
 	}
 	logger.Warn("neo4j unavailable, using memory temporal store", "error", err)
-	return fallback, nil
+	return graph.NewMemoryTemporalStore(), nil
 }
 
 func buildPipelines(model models.ChatModel, vectorStore storage.VectorStore, snippetStore storage.VectorStore, temporalStore graph.TemporalStore, embedder storage.Embedder) (*pipelines.IngestPipeline, *pipelines.RetrievalPipeline) {
@@ -140,8 +148,9 @@ func buildPipelines(model models.ChatModel, vectorStore storage.VectorStore, sni
 		Temporal:   agents.TemporalAgent{Model: model},
 		Summarizer: agents.SummarizerAgent{Model: model},
 		Image:      agents.ImageAgent{Model: model},
+		Code:       agents.CodeAgent{Model: model},
 		Snippet:    agents.SnippetAgent{Model: model},
-		Judge:      agents.JudgeAgent{Model: model, VectorStore: vectorStore, TopK: 3},
+		Judge:      agents.JudgeAgent{Model: model, VectorStore: vectorStore, TemporalStore: temporalStore, TopK: 3},
 	}
 	retrieval := &pipelines.RetrievalPipeline{
 		Model:         model,

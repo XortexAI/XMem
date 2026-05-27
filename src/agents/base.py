@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from langchain_core.language_models import BaseChatModel
 import time
 
+from src.config import settings
+
 @dataclass
 class BaseAgent(ABC):
     model: BaseChatModel
@@ -34,7 +36,16 @@ class BaseAgent(ABC):
     async def _call_model(self, messages: list) -> str:
         import asyncio
         start = time.perf_counter()
-        response = await asyncio.wait_for(self.model.ainvoke(messages), timeout=45.0)
+        timeout = float(getattr(settings, "llm_timeout_seconds", 45.0) or 45.0)
+        try:
+            response = await asyncio.wait_for(self.model.ainvoke(messages), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            model_name = getattr(self.model, "model", getattr(self.model, "model_name", type(self.model).__name__))
+            raise TimeoutError(
+                f"LLM call timed out after {timeout:.0f}s in agent '{self.name}' "
+                f"using model '{model_name}'. For local Ollama, increase "
+                "LLM_TIMEOUT_SECONDS or configure a cloud LLM key."
+            ) from exc
         elapsed = time.perf_counter() - start
 
         content = response.content

@@ -2,6 +2,7 @@ package pipelines
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/xortexai/xmem-go/internal/agents"
@@ -17,6 +18,7 @@ type IngestPipeline struct {
 	Temporal   agents.TemporalAgent
 	Summarizer agents.SummarizerAgent
 	Image      agents.ImageAgent
+	Code       agents.CodeAgent
 	Snippet    agents.SnippetAgent
 	Judge      agents.JudgeAgent
 }
@@ -69,17 +71,26 @@ func (p *IngestPipeline) invoke(ctx context.Context, req contracts.IngestRequest
 	state.Classification = p.Classifier.Run(ctx, req.UserQuery, req.ImageURL)
 
 	hasProfile, hasTemporal, hasCode, hasImage := false, false, false, false
+	profileQueries, temporalQueries, codeQueries, imageQueries := []string{}, []string{}, []string{}, []string{}
 	for _, c := range state.Classification {
 		switch c.Source {
 		case "profile":
 			hasProfile = true
+			profileQueries = append(profileQueries, c.Query)
 		case "event":
 			hasTemporal = true
+			temporalQueries = append(temporalQueries, c.Query)
 		case "code":
 			hasCode = true
+			codeQueries = append(codeQueries, c.Query)
 		case "image":
 			hasImage = true
+			imageQueries = append(imageQueries, c.Query)
 		}
+	}
+	if req.ImageURL != "" && len(imageQueries) == 0 {
+		hasImage = true
+		imageQueries = append(imageQueries, "Analyze this image for memory-relevant details.")
 	}
 	isTrivial := len(splitWords(req.UserQuery)) < 4 && !hasProfile && !hasTemporal && !hasCode && !hasImage
 
@@ -105,28 +116,28 @@ func (p *IngestPipeline) invoke(ctx context.Context, req contracts.IngestRequest
 	}
 	if hasProfile {
 		run(func() IngestState {
-			facts := p.Profiler.Run(ctx, req.UserQuery)
-			judge := p.Judge.JudgeProfile(ctx, facts)
+			facts := p.Profiler.Run(ctx, strings.Join(profileQueries, " "))
+			judge := p.Judge.JudgeProfile(ctx, facts, userID)
 			return IngestState{ProfileJudge: judge, ProfileWeaver: p.Weaver.Execute(ctx, judge, weaver.DomainProfile, userID)}
 		})
 	}
 	if hasTemporal {
 		run(func() IngestState {
-			events := p.Temporal.Run(ctx, req.UserQuery, req.SessionDatetime)
-			judge := p.Judge.JudgeTemporal(ctx, events)
+			events := p.Temporal.Run(ctx, strings.Join(temporalQueries, " "), req.SessionDatetime)
+			judge := p.Judge.JudgeTemporal(ctx, events, userID)
 			return IngestState{TemporalJudge: judge, TemporalWeaver: p.Weaver.Execute(ctx, judge, weaver.DomainTemporal, userID)}
 		})
 	}
 	if hasImage {
 		run(func() IngestState {
-			items := p.Image.Run(ctx, req.ImageURL)
+			items := p.Image.Run(ctx, strings.Join(imageQueries, " "), req.ImageURL)
 			judge := p.Judge.JudgeItems(ctx, weaver.DomainSummary, items, userID, 0.8)
 			return IngestState{ImageJudge: judge, ImageWeaver: p.Weaver.Execute(ctx, judge, weaver.DomainSummary, userID)}
 		})
 	}
 	if hasCode {
 		run(func() IngestState {
-			items := p.Snippet.Run(ctx, req.UserQuery)
+			items := p.Snippet.Run(ctx, strings.Join(codeQueries, " "))
 			judge := p.Judge.JudgeItems(ctx, weaver.DomainSnippet, items, userID, 0.8)
 			return IngestState{SnippetJudge: judge, SnippetWeaver: p.Weaver.Execute(ctx, judge, weaver.DomainSnippet, userID)}
 		})

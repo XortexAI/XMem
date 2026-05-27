@@ -52,9 +52,6 @@ logs/
 
 # Dev-only folders
 frontend/
-scripts/
-!scripts/
-!scripts/benchmark_v2_ingest.py
 tests/
 !tests/
 !tests/**/*.py
@@ -65,7 +62,6 @@ rust/
 
 # Empty root files
 Makefile
-CHANGELOG.md
 ruff.toml
 
 # GitHub templates (empty)
@@ -96,3 +92,8 @@ src/api/routes/search.py
 # Misc
 error.json
 MIGRATION_PLAN.md
+node_modules/
+repos/
+exports/
+tmp/
+.xmem/

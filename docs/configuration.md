@@ -30,6 +30,17 @@ APP_POSTGRES_URL=postgresql://xmem:xmem@localhost:5432/xmem
 
 If `APP_POSTGRES_URL` is omitted, XMem uses `PGVECTOR_URL`.
 
+The generated local `.env` points Postgres settings at Docker-managed Postgres
+on `localhost:15432`. If you set `PGVECTOR_URL` or `APP_POSTGRES_URL` to your
+own Postgres URL, `npm run setup` and `npm run dev` skip the Docker Postgres
+container and use that database instead. Keep the custom Postgres server running
+before starting XMem.
+
+The same rule applies to MongoDB. The generated local `.env` points
+`MONGODB_URI` at Docker-managed Mongo on `localhost:27018`. If you set
+`MONGODB_URI` to your own local or external MongoDB URI, XMem skips the Docker
+Mongo container and uses that database instead.
+
 For throwaway local testing without persistence:
 
 ```env

@@ -48,6 +48,7 @@ import json
 import re
 from playwright.sync_api import sync_playwright
 
+from src.config import settings
 from src.jobs.durable import (
     QUEUED,
     get_default_job_store,
@@ -58,6 +59,7 @@ from src.jobs.durable import (
 logger = logging.getLogger("xmem.api.routes.memory")
 
 _ingest_semaphore = asyncio.Semaphore(5)
+_LOCAL_ENVIRONMENTS = {"development", "dev", "local", "test"}
 
 router = APIRouter(
     prefix="/v1/memory",
@@ -124,6 +126,8 @@ def _error(
     code: int,
     elapsed_ms: float = 0,
 ) -> JSONResponse:
+    if code >= 500 and settings.environment.lower() not in _LOCAL_ENVIRONMENTS:
+        detail = "The request could not be completed. Check the server logs with the request_id."
     body = APIResponse(
         status=StatusEnum.ERROR,
         request_id=getattr(request.state, "request_id", None),
@@ -133,8 +137,24 @@ def _error(
     return JSONResponse(content=body.model_dump(), status_code=code)
 
 
-def _current_user_id(user: dict) -> str:
+def _is_static_key_user(user: dict) -> bool:
+    return user.get("email") == "static@xmem.ai" or user.get("name") == "Static Key User"
+
+
+def _current_user_id(user: dict, requested_user_id: str = "") -> str:
+    if (
+        requested_user_id
+        and settings.environment.lower() in _LOCAL_ENVIRONMENTS
+        and _is_static_key_user(user)
+    ):
+        return requested_user_id
     return user.get("username") or user.get("name") or user["id"]
+
+
+def _scoped_ingest_payload(user: dict, item: IngestRequest) -> Dict[str, Any]:
+    payload = item.model_dump()
+    payload["user_id"] = _current_user_id(user, payload.get("user_id", ""))
+    return payload
 
 
 def _job_status_data(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -212,11 +232,11 @@ async def _run_ingest_payload(
 
 async def _run_batch_ingest_payload(
     payload: Dict[str, Any],
-    user_id: str,
 ) -> Dict[str, Any]:
     results = []
     for item in payload["items"]:
-        results.append(await _run_ingest_payload(item, user_id))
+        item_user_id = item.get("user_id") or payload["user_id"]
+        results.append(await _run_ingest_payload(item, item_user_id))
     return {"results": results}
 
 
@@ -677,13 +697,13 @@ async def _scrape_chat_share(url: str) -> Dict[str, Any]:
 )
 async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depends(require_api_key)):
     start = time.perf_counter()
-    user_id = _current_user_id(user)
+    user_id = _current_user_id(user, req.user_id)
     payload = req.model_dump()
 
     try:
         data = await asyncio.wait_for(
             _run_ingest_payload(payload, user_id),
-            timeout=120.0,
+            timeout=float(settings.memory_ingest_timeout_seconds),
         )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         return _wrap(request, data, elapsed)
@@ -702,7 +722,8 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
 )
 async def ingest_memory_v2(req: IngestRequest, request: Request, user: dict = Depends(require_api_key)):
     start = time.perf_counter()
-    user_id = _current_user_id(user)
+    user_id = _current_user_id(user, req.user_id)
+    job_user_id = _current_user_id(user)
     payload = req.model_dump()
     payload["user_id"] = user_id
 
@@ -720,8 +741,8 @@ async def ingest_memory_v2(req: IngestRequest, request: Request, user: dict = De
                 "image_url": req.image_url,
                 "effort_level": req.effort_level,
             },
-            user_id=user_id,
-            timeout_seconds=120.0,
+            user_id=job_user_id,
+            timeout_seconds=float(settings.memory_ingest_timeout_seconds),
             max_attempts=3,
         )
         _schedule_job(
@@ -802,9 +823,10 @@ async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: d
     try:
         results = []
         for item in req.items:
+            payload = _scoped_ingest_payload(user, item)
             data = await asyncio.wait_for(
-                _run_ingest_payload(item.model_dump(), user_id),
-                timeout=120.0,
+                _run_ingest_payload(payload, payload["user_id"]),
+                timeout=float(settings.memory_ingest_timeout_seconds),
             )
             results.append(IngestResponse(**data))
 
@@ -829,6 +851,7 @@ async def batch_ingest_memory_v2(req: BatchIngestRequest, request: Request, user
     user_id = _current_user_id(user)
     payload = req.model_dump()
     payload["user_id"] = user_id
+    payload["items"] = [_scoped_ingest_payload(user, item) for item in req.items]
 
     try:
         store = get_default_job_store()
@@ -841,12 +864,15 @@ async def batch_ingest_memory_v2(req: BatchIngestRequest, request: Request, user
                 "items": payload["items"],
             },
             user_id=user_id,
-            timeout_seconds=max(120.0, min(len(req.items) * 120.0, 3600.0)),
+            timeout_seconds=max(
+                float(settings.memory_ingest_timeout_seconds),
+                min(len(req.items) * float(settings.memory_ingest_timeout_seconds), 3600.0),
+            ),
             max_attempts=3,
         )
         _schedule_job(
             job,
-            lambda: _run_batch_ingest_payload(payload, user_id),
+            lambda: _run_batch_ingest_payload(payload),
         )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         return _job_accepted(
@@ -875,7 +901,7 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
     pipeline = get_retrieval_pipeline()
     
     # Get username from authenticated user
-    user_id = user.get("username") or user.get("name") or user["id"]
+    user_id = _current_user_id(user, req.user_id)
 
     try:
         result = await pipeline.run(query=req.query, user_id=user_id, top_k=req.top_k)
@@ -911,7 +937,7 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
     pipeline = get_retrieval_pipeline()
     
     # Get username from authenticated user
-    user_id = user.get("username") or user.get("name") or user["id"]
+    user_id = _current_user_id(user, req.user_id)
 
     try:
         all_results: List[SourceRecord] = []

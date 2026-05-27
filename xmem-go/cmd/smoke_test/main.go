@@ -48,6 +48,14 @@ func (t *TimedModel) GenerateWithMessages(ctx context.Context, msgs []models.Mes
 	return resp, err
 }
 
+func (t *TimedModel) GenerateVision(ctx context.Context, systemPrompt string, userText string, imageURL string) (models.Response, error) {
+	start := time.Now()
+	resp, err := t.inner.GenerateVision(ctx, systemPrompt, userText, imageURL)
+	atomic.AddInt64(&t.llmTime, int64(time.Since(start)))
+	atomic.AddInt64(&t.calls, 1)
+	return resp, err
+}
+
 func (t *TimedModel) SelectTools(ctx context.Context, query string, catalog []map[string]string) (models.Response, error) {
 	start := time.Now()
 	resp, err := t.inner.SelectTools(ctx, query, catalog)
@@ -85,7 +93,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	realModel := models.NewRegistry(settings)
+	realModel, err := models.NewRegistry(settings)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "model registry error: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Printf("Model: %s\n\n", realModel.Name())
 
 	ctx := context.Background()
@@ -109,7 +121,7 @@ func main() {
 		total := time.Since(start)
 		t := timing{"Classifier Agent", total, tm.LLMDuration(), total - tm.LLMDuration(), tm.CallCount(), false}
 		timings = append(timings, t)
-		fmt.Printf("  %-30s total=%-10s llm=%-10s overhead=%-10s calls=%d  results=%d\n", t.name, t.total.Round(time.Millisecond), t.llm.Round(time.Millisecond), t.overhead.Round(time.Microsecond), t.calls, len(result))
+		fmt.Printf("  %-30s results=%d\n", t.name, len(result))
 	}
 
 	// Profiler
@@ -121,7 +133,7 @@ func main() {
 		total := time.Since(start)
 		t := timing{"Profiler Agent", total, tm.LLMDuration(), total - tm.LLMDuration(), tm.CallCount(), false}
 		timings = append(timings, t)
-		fmt.Printf("  %-30s total=%-10s llm=%-10s overhead=%-10s calls=%d  facts=%d\n", t.name, t.total.Round(time.Millisecond), t.llm.Round(time.Millisecond), t.overhead.Round(time.Microsecond), t.calls, len(result))
+		fmt.Printf("  %-30s facts=%d\n", t.name, len(result))
 	}
 
 	// Temporal
@@ -133,7 +145,7 @@ func main() {
 		total := time.Since(start)
 		t := timing{"Temporal Agent", total, tm.LLMDuration(), total - tm.LLMDuration(), tm.CallCount(), false}
 		timings = append(timings, t)
-		fmt.Printf("  %-30s total=%-10s llm=%-10s overhead=%-10s calls=%d  events=%d\n", t.name, t.total.Round(time.Millisecond), t.llm.Round(time.Millisecond), t.overhead.Round(time.Microsecond), t.calls, len(result))
+		fmt.Printf("  %-30s events=%d\n", t.name, len(result))
 	}
 
 	// Summarizer
@@ -145,7 +157,7 @@ func main() {
 		total := time.Since(start)
 		t := timing{"Summarizer Agent", total, tm.LLMDuration(), total - tm.LLMDuration(), tm.CallCount(), false}
 		timings = append(timings, t)
-		fmt.Printf("  %-30s total=%-10s llm=%-10s overhead=%-10s calls=%d  bullets=%d\n", t.name, t.total.Round(time.Millisecond), t.llm.Round(time.Millisecond), t.overhead.Round(time.Microsecond), t.calls, len(result))
+		fmt.Printf("  %-30s bullets=%d\n", t.name, len(result))
 	}
 
 	// Judge (deterministic profile path — no LLM)
@@ -158,11 +170,11 @@ func main() {
 			{Topic: "work", SubTopic: "title", Memo: "Senior Software Engineer"},
 		}
 		start := time.Now()
-		result := agent.JudgeProfile(ctx, facts)
+		result := agent.JudgeProfile(ctx, facts, "bench-user")
 		total := time.Since(start)
 		t := timing{"Judge (deterministic)", total, tm.LLMDuration(), total - tm.LLMDuration(), tm.CallCount(), false}
 		timings = append(timings, t)
-		fmt.Printf("  %-30s total=%-10s llm=%-10s overhead=%-10s calls=%d  ops=%d\n", t.name, t.total.Round(time.Millisecond), t.llm.Round(time.Millisecond), t.overhead.Round(time.Microsecond), t.calls, len(result.Operations))
+		fmt.Printf("  %-30s ops=%d\n", t.name, len(result.Operations))
 	}
 
 	// Judge (LLM path — summary domain)
@@ -179,7 +191,7 @@ func main() {
 		total := time.Since(start)
 		t := timing{"Judge (LLM)", total, tm.LLMDuration(), total - tm.LLMDuration(), tm.CallCount(), false}
 		timings = append(timings, t)
-		fmt.Printf("  %-30s total=%-10s llm=%-10s overhead=%-10s calls=%d  ops=%d\n", t.name, t.total.Round(time.Millisecond), t.llm.Round(time.Millisecond), t.overhead.Round(time.Microsecond), t.calls, len(result.Operations))
+		fmt.Printf("  %-30s ops=%d\n", t.name, len(result.Operations))
 	}
 
 	fmt.Println(strings.Repeat("─", 70))
@@ -205,7 +217,7 @@ func main() {
 			Summarizer: agents.SummarizerAgent{Model: tm},
 			Image:      agents.ImageAgent{Model: tm},
 			Snippet:    agents.SnippetAgent{Model: tm},
-			Judge:      agents.JudgeAgent{Model: tm, VectorStore: memStore, TopK: 3},
+			Judge:      agents.JudgeAgent{Model: tm, VectorStore: memStore, TemporalStore: tempStore, TopK: 3},
 		}
 
 		req := contracts.IngestRequest{
@@ -222,7 +234,7 @@ func main() {
 		} else {
 			t := timing{"Full Ingest Pipeline", total, tm.LLMDuration(), total - tm.LLMDuration(), tm.CallCount(), true}
 			timings = append(timings, t)
-			fmt.Printf("  %-30s total=%-10s llm_sum=%-10s calls=%d (parallel — LLM sum > wall clock)\n", t.name, t.total.Round(time.Millisecond), t.llm.Round(time.Millisecond), t.calls)
+			fmt.Printf("  %-30s calls=%d (parallel)\n", t.name, t.calls)
 			fmt.Printf("  classifications=%d", len(resp.Classification))
 			if resp.Profile != nil {
 				fmt.Printf("  profile_ops=%d", len(resp.Profile.Operations))
@@ -262,7 +274,7 @@ func main() {
 		} else {
 			t := timing{"Full Retrieval Pipeline", total, tm.LLMDuration(), total - tm.LLMDuration(), tm.CallCount(), false}
 			timings = append(timings, t)
-			fmt.Printf("  %-30s total=%-10s llm=%-10s overhead=%-10s calls=%d\n", t.name, t.total.Round(time.Millisecond), t.llm.Round(time.Millisecond), t.overhead.Round(time.Microsecond), t.calls)
+			fmt.Printf("  %-30s calls=%d\n", t.name, t.calls)
 			fmt.Printf("  answer=%q  sources=%d  confidence=%.2f\n", truncate(resp.Answer, 80), len(resp.Sources), resp.Confidence)
 		}
 	}
@@ -294,7 +306,7 @@ func main() {
 		total := time.Since(start)
 		t := timing{"Concurrent Pipeline Sim", total, tm.LLMDuration(), total - tm.LLMDuration(), tm.CallCount(), true}
 		timings = append(timings, t)
-		fmt.Printf("  %-30s total=%-10s llm_sum=%-10s calls=%d (parallel — LLM sum > wall clock)\n", t.name, t.total.Round(time.Millisecond), t.llm.Round(time.Millisecond), t.calls)
+		fmt.Printf("  %-30s calls=%d (parallel)\n", t.name, t.calls)
 	}
 
 	// --- Summary Table ---

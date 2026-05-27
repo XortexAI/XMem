@@ -104,6 +104,14 @@ class Settings(BaseSettings):
         default=0.4,
         description="LLM temperature for generation"
     )
+    llm_timeout_seconds: float = Field(
+        default=45.0,
+        description="Per-agent LLM call timeout in seconds",
+    )
+    memory_ingest_timeout_seconds: float = Field(
+        default=120.0,
+        description="Overall memory ingest timeout in seconds",
+    )
     fallback_order: List[str] = Field(
         default=["openrouter", "gemini", "claude", "openai"],
         description="Order of LLM providers to try on failure"
@@ -408,6 +416,18 @@ class Settings(BaseSettings):
     frontend_url: str = Field(
         default="http://localhost:5173",
         description="Frontend URL for redirects after auth"
+    )
+    razorpay_key_id: Optional[str] = Field(
+        default=None,
+        description="Razorpay public key ID used for checkout order creation"
+    )
+    razorpay_key_secret: Optional[str] = Field(
+        default=None,
+        description="Razorpay key secret used only on the API server"
+    )
+    razorpay_webhook_secret: Optional[str] = Field(
+        default=None,
+        description="Optional Razorpay webhook signing secret"
     )
 
     @field_validator("fallback_order")

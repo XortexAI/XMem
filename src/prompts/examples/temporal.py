@@ -63,6 +63,12 @@ TEMPORAL_EXAMPLES: List[Tuple[str, str, str]] = [
         "2:35 pm on 16 March, 2023",
         "DATE: 03-09\nEVENT_NAME: Started Gym\nYEAR: 2023\nDESC: Started going to the gym\nTIME: \nDATE_EXPRESSION: last week",
     ),
+    # Relative date — today
+    (
+        "I started a new job at Vercel as a frontend developer today!",
+        "4:00 pm on 20 May, 2026",
+        "DATE: 05-20\nEVENT_NAME: Started New Job\nYEAR: 2026\nDESC: Started a new job at Vercel as a frontend developer\nTIME: \nDATE_EXPRESSION: today",
+    ),
     # Relative date — next month
     (
         "I'm getting ready for a dance comp near me next month.",

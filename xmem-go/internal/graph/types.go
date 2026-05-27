@@ -10,6 +10,7 @@ type Event struct {
 	Year            string
 	Time            string
 	DateExpression  string
+	Embedding       []float64
 	SimilarityScore float64
 }
 

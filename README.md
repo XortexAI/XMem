@@ -309,34 +309,54 @@ The industry standard benchmark for long-term conversational memory. Tests wheth
 
 ## Quickstart
 
-### 1. Start the XMem Server
+### Local XMem
 
 ```bash
-git clone https://github.com/XortexAI/XMem.git
-cd XMem
-
-# Install (requires Python 3.11+)
-pip install -e .
-
-# Configure environment
-cp .env.example .env  # Add your API keys
-
-# Start
-uvicorn src.api.app:create_app --factory --host 0.0.0.0 --port 8000
+npx create-xmem@latest
+cd xmem
+npm run dev
 ```
 
-### 2. Install the Chrome Extension
+This works on Windows, macOS, and Linux. It creates a local XMem workspace, installs the backend, starts local storage, builds the Chrome extension, and launches the API at `http://localhost:8000`.
+
+Local prerequisites:
+
+- Git
+- Node.js 20+
+- Python 3.11+
+- Docker Desktop
+- Ollama, unless you add a cloud LLM key to `.env`
+
+After setup, load the extension from:
+
+```text
+repos/xmem-extension/dist
+```
+
+Chrome path: `chrome://extensions` -> enable Developer mode -> Load unpacked.
+
+### Local Commands
 
 ```bash
-git clone https://github.com/XortexAI/xmem-extension.git
-npm install && npm run build
+npm run setup
+npm run start
+npm run verify
+npm run doctor
 ```
 
-Load `dist/` in Chrome via `chrome://extensions` &rarr; "Load unpacked". Point it to your server URL.
+If `.env` contains a real cloud LLM key, XMem uses that provider and keeps embeddings local with FastEmbed. If no cloud key is configured, XMem falls back to local Ollama and pulls the required local models during setup.
 
-https://github.com/user-attachments/assets/605985c3-ef27-4096-a28c-b0b4cc6f8b8d
+### Context Portability
 
-### 3. Index a Repository (Optional)
+```bash
+npm run context:export
+npm run context:import -- --file ./exports/xmem-context.json
+npm run context:sync -- --file ./exports/xmem-context.json --server https://api.xmem.in --api-key <key>
+```
+
+`context:export` writes a local context bundle that can be imported later or synced to an XMem server.
+
+### Index a Repository
 
 ```bash
 python -m src.scanner.runner \
@@ -351,8 +371,8 @@ python -m src.scanner.runner \
 >
 > ```ini
 > FALLBACK_ORDER='["ollama"]'
-> EMBEDDING_PROVIDER=fastembed
-> VECTOR_STORE_PROVIDER=chroma
+> EMBEDDING_PROVIDER=ollama
+> VECTOR_STORE_PROVIDER=pgvector
 > ```
 >
 > Then install local extras: `pip install -e ".[local]"`

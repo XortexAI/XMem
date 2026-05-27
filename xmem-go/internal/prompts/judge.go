@@ -225,7 +225,7 @@ func PackJudgeQuery(newItems []string, similarExisting []string, domain string) 
 	}
 	newBlock := strings.Join(numberedItems, "\n")
 
-	similarBlock := "(No similar records found — vector store is empty or search returned nothing)"
+	similarBlock := "(No similar records found — store is empty or search returned nothing)"
 	if len(similarExisting) > 0 {
 		similarBlock = strings.Join(similarExisting, "\n")
 	}

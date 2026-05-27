@@ -3,7 +3,7 @@ package jobs
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	json "github.com/goccy/go-json"
 	"sort"
 	"strings"
 )
@@ -43,9 +43,41 @@ func Redact(payload map[string]any) map[string]any {
 }
 
 func stableHash(value any) string {
-	encoded, _ := json.Marshal(value)
+	encoded := canonicalJSON(value)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
+}
+
+func canonicalJSON(v any) []byte {
+	switch val := v.(type) {
+	case map[string]any:
+		keys := SortedKeys(val)
+		buf := []byte("{")
+		for i, k := range keys {
+			if i > 0 {
+				buf = append(buf, ',')
+			}
+			keyBytes, _ := json.Marshal(k)
+			buf = append(buf, keyBytes...)
+			buf = append(buf, ':')
+			buf = append(buf, canonicalJSON(val[k])...)
+		}
+		buf = append(buf, '}')
+		return buf
+	case []any:
+		buf := []byte("[")
+		for i, item := range val {
+			if i > 0 {
+				buf = append(buf, ',')
+			}
+			buf = append(buf, canonicalJSON(item)...)
+		}
+		buf = append(buf, ']')
+		return buf
+	default:
+		b, _ := json.Marshal(v)
+		return b
+	}
 }
 
 func toMap(value any) map[string]any {

@@ -33,6 +33,7 @@ Your task is to extract ALL structured temporal event information from user inpu
 You will be given a CONTEXT_DATE which is the date/time when the conversation occurred.
 Use this to resolve relative expressions:
 
+- "today" → use CONTEXT_DATE
 - "yesterday" → subtract 1 day from CONTEXT_DATE
 - "tomorrow" → add 1 day to CONTEXT_DATE
 - "next Friday" → find the next Friday after CONTEXT_DATE

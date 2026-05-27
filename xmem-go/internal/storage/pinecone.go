@@ -3,7 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	json "github.com/goccy/go-json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/xortexai/xmem-go/internal/config"
+	"github.com/xortexai/xmem-go/internal/utils"
 )
 
 type PineconeVectorStore struct {
@@ -171,6 +172,12 @@ func (s *PineconeVectorStore) resolveHost(ctx context.Context) (string, error) {
 }
 
 func (s *PineconeVectorStore) do(ctx context.Context, method string, path string, body any, out any) error {
+	return utils.RetryWithBackoff(ctx, 3, time.Second, func() error {
+		return s.doOnce(ctx, method, path, body, out)
+	})
+}
+
+func (s *PineconeVectorStore) doOnce(ctx context.Context, method string, path string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)

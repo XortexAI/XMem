@@ -62,6 +62,11 @@ var temporalExamples = []struct {
 		"DATE: 03-09\nEVENT_NAME: Started Gym\nYEAR: 2023\nDESC: Started going to the gym\nTIME: \nDATE_EXPRESSION: last week",
 	},
 	{
+		"I started a new job at Vercel as a frontend developer today!",
+		"4:00 pm on 20 May, 2026",
+		"DATE: 05-20\nEVENT_NAME: Started New Job\nYEAR: 2026\nDESC: Started a new job at Vercel as a frontend developer\nTIME: \nDATE_EXPRESSION: today",
+	},
+	{
 		"I'm getting ready for a dance comp near me next month.",
 		"10:43 am on 4 February, 2023",
 		"DATE: 03-04\nEVENT_NAME: Dance Competition\nYEAR: 2023\nDESC: Dance competition preparation\nTIME: \nDATE_EXPRESSION: next month",
@@ -118,6 +123,7 @@ Your task is to extract ALL structured temporal event information from user inpu
 You will be given a CONTEXT_DATE which is the date/time when the conversation occurred.
 Use this to resolve relative expressions:
 
+- "today" → use CONTEXT_DATE
 - "yesterday" → subtract 1 day from CONTEXT_DATE
 - "tomorrow" → add 1 day to CONTEXT_DATE
 - "next Friday" → find the next Friday after CONTEXT_DATE

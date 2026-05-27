@@ -3,7 +3,6 @@ package models
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,12 +10,25 @@ import (
 	"strings"
 	"time"
 
+	json "github.com/goccy/go-json"
 	"github.com/xortexai/xmem-go/internal/config"
+	"golang.org/x/net/http2"
 )
 
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+type ContentBlock struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+}
+
+type MultimodalMessage struct {
+	Role    string
+	Content []ContentBlock
 }
 
 type ToolCall struct {
@@ -26,152 +38,47 @@ type ToolCall struct {
 }
 
 type Response struct {
-	Content   string
-	ToolCalls []ToolCall
-	ModelName string
+	Content      string
+	ToolCalls    []ToolCall
+	ModelName    string
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
 }
 
 type ChatModel interface {
 	Name() string
 	Generate(ctx context.Context, prompt string) (Response, error)
 	GenerateWithMessages(ctx context.Context, messages []Message) (Response, error)
+	GenerateVision(ctx context.Context, systemPrompt string, userText string, imageURL string) (Response, error)
 	SelectTools(ctx context.Context, query string, profileCatalog []map[string]string) (Response, error)
 }
 
-type LocalModel struct {
-	name string
-}
-
-func NewLocalModel(name string) LocalModel {
-	if name == "" {
-		name = "local-rule-model"
-	}
-	return LocalModel{name: name}
-}
-
-func NewRegistry(settings config.Settings) ChatModel {
+func NewRegistry(settings config.Settings) (ChatModel, error) {
 	for _, provider := range settings.FallbackOrder {
 		provider = strings.ToLower(provider)
 		switch provider {
 		case "ollama":
-			return NewOllamaModel(settings)
+			return NewOllamaModel(settings), nil
 		case "gemini":
 			if settings.GeminiAPIKey != "" {
-				return NewGeminiModel(settings)
+				return NewGeminiModel(settings), nil
 			}
 		case "claude":
 			if settings.ClaudeAPIKey != "" {
-				return NewClaudeModel(settings)
+				return NewClaudeModel(settings), nil
 			}
 		case "openai":
 			if settings.OpenAIAPIKey != "" {
-				return NewOpenAICompatibleModel("openai", settings.OpenAIModel, "https://api.openai.com/v1/chat/completions", settings.OpenAIAPIKey)
+				return NewOpenAICompatibleModel("openai", settings.OpenAIModel, "https://api.openai.com/v1/chat/completions", settings.OpenAIAPIKey), nil
 			}
 		case "openrouter":
 			if settings.OpenRouterAPIKey != "" {
-				return NewOpenAICompatibleModel("openrouter", settings.OpenRouterModel, "https://openrouter.ai/api/v1/chat/completions", settings.OpenRouterAPIKey)
-			}
-		case "bedrock":
-			if settings.AWSAccessKeyID != "" {
-				return NewLocalModel(settings.BedrockModel)
+				return NewOpenAICompatibleModel("openrouter", settings.OpenRouterModel, "https://openrouter.ai/api/v1/chat/completions", settings.OpenRouterAPIKey), nil
 			}
 		}
 	}
-	return NewLocalModel("local-rule-model")
-}
-
-func (m LocalModel) Name() string {
-	return m.name
-}
-
-func (m LocalModel) Generate(_ context.Context, prompt string) (Response, error) {
-	answer := strings.TrimSpace(prompt)
-	if strings.Contains(prompt, "CONTEXT:") {
-		answer = synthesizeFromPrompt(prompt)
-	}
-	return Response{Content: answer, ModelName: m.name}, nil
-}
-
-func (m LocalModel) GenerateWithMessages(_ context.Context, messages []Message) (Response, error) {
-	combined := ""
-	for _, msg := range messages {
-		combined += msg.Content + "\n"
-	}
-	return Response{Content: strings.TrimSpace(combined), ModelName: m.name}, nil
-}
-
-func (m LocalModel) SelectTools(_ context.Context, query string, catalog []map[string]string) (Response, error) {
-	lowered := strings.ToLower(query)
-	calls := []ToolCall{}
-	id := 1
-	add := func(name string, args map[string]any) {
-		calls = append(calls, ToolCall{ID: "call-" + string(rune('0'+id)), Name: name, Args: args})
-		id++
-	}
-
-	for _, item := range catalog {
-		topic := item["topic"]
-		if topic != "" && strings.Contains(lowered, strings.ToLower(topic)) {
-			add("search_profile", map[string]any{"topic": topic})
-			break
-		}
-	}
-	if len(calls) == 0 && containsAny(lowered, "name", "work", "job", "company", "hobby", "food", "like", "prefer", "profile") {
-		topic := "personal"
-		if containsAny(lowered, "work", "job", "company") {
-			topic = "work"
-		} else if containsAny(lowered, "food", "eat", "prefer") {
-			topic = "food"
-		} else if containsAny(lowered, "hobby", "like", "enjoy") {
-			topic = "interest"
-		}
-		add("search_profile", map[string]any{"topic": topic})
-	}
-	if containsAny(lowered, "when", "date", "schedule", "appointment", "birthday", "tomorrow", "today", "event") {
-		add("search_temporal", map[string]any{"query": query})
-	}
-	if containsAny(lowered, "code", "script", "function", "snippet") {
-		add("search_snippet", map[string]any{"query": query})
-	}
-	if len(calls) == 0 || containsAny(lowered, "remember", "conversation", "summary", "context", "what") {
-		add("search_summary", map[string]any{"query": query})
-	}
-	return Response{ToolCalls: calls, ModelName: m.name}, nil
-}
-
-func synthesizeFromPrompt(prompt string) string {
-	context := after(prompt, "CONTEXT:")
-	if idx := strings.Index(context, "QUERY:"); idx >= 0 {
-		context = context[:idx]
-	}
-	lines := []string{}
-	for _, line := range strings.Split(context, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && line != "No results found." {
-			lines = append(lines, line)
-		}
-	}
-	if len(lines) == 0 {
-		return "I could not find any stored memories that answer that."
-	}
-	return "Based on stored memories, " + strings.Trim(strings.Join(lines, " "), ". ") + "."
-}
-
-func after(text, marker string) string {
-	idx := strings.Index(text, marker)
-	if idx < 0 {
-		return ""
-	}
-	return strings.TrimSpace(text[idx+len(marker):])
-}
-
-func containsAny(text string, words ...string) bool {
-	for _, word := range words {
-		if strings.Contains(text, word) {
-			return true
-		}
-	}
-	return false
+	return nil, errors.New("no LLM provider configured: set at least one API key (OPENROUTER_API_KEY, GEMINI_API_KEY, CLAUDE_API_KEY, or OPENAI_API_KEY)")
 }
 
 func MarshalJSON(v any) string {
@@ -185,24 +92,34 @@ type HTTPModel struct {
 	url      string
 	apiKey   string
 	client   *http.Client
-	local    LocalModel
+}
+
+func newHTTP2Client(timeout time.Duration) *http.Client {
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+		ForceAttemptHTTP2:   true,
+	}
+	http2.ConfigureTransport(transport)
+	return &http.Client{Timeout: timeout, Transport: transport}
 }
 
 func NewOpenAICompatibleModel(provider, model, url, apiKey string) HTTPModel {
-	return HTTPModel{provider: provider, model: model, url: url, apiKey: apiKey, client: &http.Client{Timeout: 90 * time.Second}, local: NewLocalModel(model)}
+	return HTTPModel{provider: provider, model: model, url: url, apiKey: apiKey, client: newHTTP2Client(90 * time.Second)}
 }
 
 func NewGeminiModel(settings config.Settings) HTTPModel {
 	url := "https://generativelanguage.googleapis.com/v1beta/models/" + settings.GeminiModel + ":generateContent?key=" + settings.GeminiAPIKey
-	return HTTPModel{provider: "gemini", model: settings.GeminiModel, url: url, apiKey: settings.GeminiAPIKey, client: &http.Client{Timeout: 90 * time.Second}, local: NewLocalModel(settings.GeminiModel)}
+	return HTTPModel{provider: "gemini", model: settings.GeminiModel, url: url, apiKey: settings.GeminiAPIKey, client: newHTTP2Client(90 * time.Second)}
 }
 
 func NewClaudeModel(settings config.Settings) HTTPModel {
-	return HTTPModel{provider: "claude", model: settings.ClaudeModel, url: "https://api.anthropic.com/v1/messages", apiKey: settings.ClaudeAPIKey, client: &http.Client{Timeout: 90 * time.Second}, local: NewLocalModel(settings.ClaudeModel)}
+	return HTTPModel{provider: "claude", model: settings.ClaudeModel, url: "https://api.anthropic.com/v1/messages", apiKey: settings.ClaudeAPIKey, client: newHTTP2Client(90 * time.Second)}
 }
 
 func NewOllamaModel(settings config.Settings) HTTPModel {
-	return HTTPModel{provider: "ollama", model: settings.OllamaModel, url: strings.TrimRight(settings.OllamaBaseURL, "/") + "/api/chat", client: &http.Client{Timeout: 120 * time.Second}, local: NewLocalModel(settings.OllamaModel)}
+	return HTTPModel{provider: "ollama", model: settings.OllamaModel, url: strings.TrimRight(settings.OllamaBaseURL, "/") + "/api/chat", client: newHTTP2Client(120 * time.Second)}
 }
 
 func (m HTTPModel) Name() string {
@@ -210,26 +127,123 @@ func (m HTTPModel) Name() string {
 }
 
 func (m HTTPModel) Generate(ctx context.Context, prompt string) (Response, error) {
-	content, err := m.complete(ctx, prompt, false)
-	if err != nil {
-		return m.local.Generate(ctx, prompt)
-	}
-	return Response{Content: content, ModelName: m.model}, nil
+	return m.complete(ctx, prompt, false)
 }
 
 func (m HTTPModel) GenerateWithMessages(ctx context.Context, messages []Message) (Response, error) {
-	content, err := m.completeWithMessages(ctx, messages)
-	if err != nil {
-		combined := ""
-		for _, msg := range messages {
-			combined += strings.ToUpper(msg.Role) + ":\n" + msg.Content + "\n\n"
-		}
-		return m.Generate(ctx, strings.TrimSpace(combined))
-	}
-	return Response{Content: content, ModelName: m.model}, nil
+	return m.completeWithMessages(ctx, messages)
 }
 
-func (m HTTPModel) completeWithMessages(ctx context.Context, messages []Message) (string, error) {
+func (m HTTPModel) GenerateVision(ctx context.Context, systemPrompt string, userText string, imageURL string) (Response, error) {
+	switch m.provider {
+	case "openai", "openrouter":
+		contentParts := []map[string]any{
+			{"type": "text", "text": userText},
+		}
+		if imageURL != "" {
+			contentParts = append(contentParts, map[string]any{
+				"type": "image_url", "image_url": map[string]string{"url": imageURL},
+			})
+		}
+		messages := []map[string]any{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": contentParts},
+		}
+		body := map[string]any{"model": m.model, "messages": messages, "temperature": 0.1}
+		var out struct {
+			Choices []struct {
+				Message struct{ Content string `json:"content"` } `json:"message"`
+			} `json:"choices"`
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+		if err := m.doJSON(ctx, http.MethodPost, m.url, body, &out, func(req *http.Request) {
+			req.Header.Set("Authorization", "Bearer "+m.apiKey)
+			if m.provider == "openrouter" {
+				req.Header.Set("HTTP-Referer", "http://localhost:8081")
+				req.Header.Set("X-Title", "xmem-go")
+			}
+		}); err != nil {
+			return Response{}, err
+		}
+		if len(out.Choices) == 0 {
+			return Response{}, errors.New("empty model response")
+		}
+		return Response{Content: out.Choices[0].Message.Content, ModelName: m.model, InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens, TotalTokens: out.Usage.TotalTokens}, nil
+	case "gemini":
+		parts := []map[string]any{{"text": userText}}
+		if imageURL != "" {
+			parts = append(parts, map[string]any{
+				"inline_data": map[string]string{"mime_type": "image/jpeg", "data": imageURL},
+			})
+		}
+		body := map[string]any{
+			"contents":         []map[string]any{{"role": "user", "parts": parts}},
+			"generationConfig": map[string]any{"temperature": 0.1},
+			"system_instruction": map[string]any{
+				"parts": []map[string]string{{"text": systemPrompt}},
+			},
+		}
+		var out struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct{ Text string `json:"text"` } `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+			UsageMetadata struct {
+				PromptTokenCount     int `json:"promptTokenCount"`
+				CandidatesTokenCount int `json:"candidatesTokenCount"`
+				TotalTokenCount      int `json:"totalTokenCount"`
+			} `json:"usageMetadata"`
+		}
+		if err := m.doJSON(ctx, http.MethodPost, m.url, body, &out, nil); err != nil {
+			return Response{}, err
+		}
+		if len(out.Candidates) == 0 || len(out.Candidates[0].Content.Parts) == 0 {
+			return Response{}, errors.New("empty gemini response")
+		}
+		return Response{Content: out.Candidates[0].Content.Parts[0].Text, ModelName: m.model, InputTokens: out.UsageMetadata.PromptTokenCount, OutputTokens: out.UsageMetadata.CandidatesTokenCount, TotalTokens: out.UsageMetadata.TotalTokenCount}, nil
+	case "claude":
+		contentBlocks := []map[string]any{
+			{"type": "text", "text": userText},
+		}
+		if imageURL != "" {
+			contentBlocks = append(contentBlocks, map[string]any{
+				"type": "image", "source": map[string]string{"type": "url", "url": imageURL},
+			})
+		}
+		body := map[string]any{
+			"model":      m.model,
+			"max_tokens": 4096,
+			"system":     systemPrompt,
+			"messages":   []map[string]any{{"role": "user", "content": contentBlocks}},
+		}
+		var out struct {
+			Content []struct{ Text string `json:"text"` } `json:"content"`
+			Usage   struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if err := m.doJSON(ctx, http.MethodPost, m.url, body, &out, func(req *http.Request) {
+			req.Header.Set("x-api-key", m.apiKey)
+			req.Header.Set("anthropic-version", "2023-06-01")
+		}); err != nil {
+			return Response{}, err
+		}
+		if len(out.Content) == 0 {
+			return Response{}, errors.New("empty claude response")
+		}
+		return Response{Content: out.Content[0].Text, ModelName: m.model, InputTokens: out.Usage.InputTokens, OutputTokens: out.Usage.OutputTokens, TotalTokens: out.Usage.InputTokens + out.Usage.OutputTokens}, nil
+	default:
+		return m.GenerateWithMessages(ctx, []Message{{Role: "system", Content: systemPrompt}, {Role: "user", Content: userText + "\n[Image URL: " + imageURL + "]"}})
+	}
+}
+
+func (m HTTPModel) completeWithMessages(ctx context.Context, messages []Message) (Response, error) {
 	switch m.provider {
 	case "openai", "openrouter":
 		return m.completeOpenAIMessages(ctx, messages)
@@ -240,11 +254,11 @@ func (m HTTPModel) completeWithMessages(ctx context.Context, messages []Message)
 	case "ollama":
 		return m.completeOllamaMessages(ctx, messages)
 	default:
-		return "", errors.New("unsupported provider")
+		return Response{}, errors.New("unsupported provider")
 	}
 }
 
-func (m HTTPModel) completeOpenAIMessages(ctx context.Context, messages []Message) (string, error) {
+func (m HTTPModel) completeOpenAIMessages(ctx context.Context, messages []Message) (Response, error) {
 	apiMessages := make([]map[string]string, 0, len(messages))
 	for _, msg := range messages {
 		apiMessages = append(apiMessages, map[string]string{"role": msg.Role, "content": msg.Content})
@@ -260,6 +274,11 @@ func (m HTTPModel) completeOpenAIMessages(ctx context.Context, messages []Messag
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := m.doJSON(ctx, http.MethodPost, m.url, body, &out, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+m.apiKey)
@@ -268,15 +287,15 @@ func (m HTTPModel) completeOpenAIMessages(ctx context.Context, messages []Messag
 			req.Header.Set("X-Title", "xmem-go")
 		}
 	}); err != nil {
-		return "", err
+		return Response{}, err
 	}
 	if len(out.Choices) == 0 {
-		return "", errors.New("empty model response")
+		return Response{}, errors.New("empty model response")
 	}
-	return out.Choices[0].Message.Content, nil
+	return Response{Content: out.Choices[0].Message.Content, ModelName: m.model, InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens, TotalTokens: out.Usage.TotalTokens}, nil
 }
 
-func (m HTTPModel) completeGeminiMessages(ctx context.Context, messages []Message) (string, error) {
+func (m HTTPModel) completeGeminiMessages(ctx context.Context, messages []Message) (Response, error) {
 	var systemText string
 	contents := []map[string]any{}
 	for _, msg := range messages {
@@ -310,17 +329,22 @@ func (m HTTPModel) completeGeminiMessages(ctx context.Context, messages []Messag
 				} `json:"parts"`
 			} `json:"content"`
 		} `json:"candidates"`
+		UsageMetadata struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			TotalTokenCount      int `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
 	}
 	if err := m.doJSON(ctx, http.MethodPost, m.url, body, &out, nil); err != nil {
-		return "", err
+		return Response{}, err
 	}
 	if len(out.Candidates) == 0 || len(out.Candidates[0].Content.Parts) == 0 {
-		return "", errors.New("empty gemini response")
+		return Response{}, errors.New("empty gemini response")
 	}
-	return out.Candidates[0].Content.Parts[0].Text, nil
+	return Response{Content: out.Candidates[0].Content.Parts[0].Text, ModelName: m.model, InputTokens: out.UsageMetadata.PromptTokenCount, OutputTokens: out.UsageMetadata.CandidatesTokenCount, TotalTokens: out.UsageMetadata.TotalTokenCount}, nil
 }
 
-func (m HTTPModel) completeClaudeMessages(ctx context.Context, messages []Message) (string, error) {
+func (m HTTPModel) completeClaudeMessages(ctx context.Context, messages []Message) (Response, error) {
 	var systemText string
 	apiMessages := []map[string]string{}
 	for _, msg := range messages {
@@ -342,20 +366,24 @@ func (m HTTPModel) completeClaudeMessages(ctx context.Context, messages []Messag
 		Content []struct {
 			Text string `json:"text"`
 		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := m.doJSON(ctx, http.MethodPost, m.url, body, &out, func(req *http.Request) {
 		req.Header.Set("x-api-key", m.apiKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}); err != nil {
-		return "", err
+		return Response{}, err
 	}
 	if len(out.Content) == 0 {
-		return "", errors.New("empty claude response")
+		return Response{}, errors.New("empty claude response")
 	}
-	return out.Content[0].Text, nil
+	return Response{Content: out.Content[0].Text, ModelName: m.model, InputTokens: out.Usage.InputTokens, OutputTokens: out.Usage.OutputTokens, TotalTokens: out.Usage.InputTokens + out.Usage.OutputTokens}, nil
 }
 
-func (m HTTPModel) completeOllamaMessages(ctx context.Context, messages []Message) (string, error) {
+func (m HTTPModel) completeOllamaMessages(ctx context.Context, messages []Message) (Response, error) {
 	apiMessages := make([]map[string]string, 0, len(messages))
 	for _, msg := range messages {
 		apiMessages = append(apiMessages, map[string]string{"role": msg.Role, "content": msg.Content})
@@ -369,11 +397,13 @@ func (m HTTPModel) completeOllamaMessages(ctx context.Context, messages []Messag
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		PromptEvalCount int `json:"prompt_eval_count"`
+		EvalCount       int `json:"eval_count"`
 	}
 	if err := m.doJSON(ctx, http.MethodPost, m.url, body, &out, nil); err != nil {
-		return "", err
+		return Response{}, err
 	}
-	return out.Message.Content, nil
+	return Response{Content: out.Message.Content, ModelName: m.model, InputTokens: out.PromptEvalCount, OutputTokens: out.EvalCount, TotalTokens: out.PromptEvalCount + out.EvalCount}, nil
 }
 
 func (m HTTPModel) SelectTools(ctx context.Context, query string, catalog []map[string]string) (Response, error) {
@@ -383,25 +413,27 @@ Return only JSON in this exact shape:
 Allowed names: search_profile, search_temporal, search_summary, search_snippet.
 Available profile catalog: ` + MarshalJSON(catalog) + `
 Query: ` + query
-	content, err := m.complete(ctx, prompt, true)
+	resp, err := m.complete(ctx, prompt, true)
 	if err != nil {
-		return m.local.SelectTools(ctx, query, catalog)
+		return Response{}, err
 	}
 	var parsed struct {
 		ToolCalls []ToolCall `json:"tool_calls"`
 	}
-	if err := json.Unmarshal([]byte(extractJSONObject(content)), &parsed); err != nil || len(parsed.ToolCalls) == 0 {
-		return m.local.SelectTools(ctx, query, catalog)
+	if err := json.Unmarshal([]byte(extractJSONObject(resp.Content)), &parsed); err != nil || len(parsed.ToolCalls) == 0 {
+		return resp, nil
 	}
 	for i := range parsed.ToolCalls {
 		if parsed.ToolCalls[i].ID == "" {
 			parsed.ToolCalls[i].ID = fmt.Sprintf("call-%d", i+1)
 		}
 	}
-	return Response{ToolCalls: parsed.ToolCalls, ModelName: m.model}, nil
+	resp.ToolCalls = parsed.ToolCalls
+	resp.Content = ""
+	return resp, nil
 }
 
-func (m HTTPModel) complete(ctx context.Context, prompt string, jsonMode bool) (string, error) {
+func (m HTTPModel) complete(ctx context.Context, prompt string, jsonMode bool) (Response, error) {
 	switch m.provider {
 	case "openai", "openrouter":
 		return m.completeOpenAI(ctx, prompt, jsonMode)
@@ -412,11 +444,11 @@ func (m HTTPModel) complete(ctx context.Context, prompt string, jsonMode bool) (
 	case "ollama":
 		return m.completeOllama(ctx, prompt, jsonMode)
 	default:
-		return "", errors.New("unsupported provider")
+		return Response{}, errors.New("unsupported provider")
 	}
 }
 
-func (m HTTPModel) completeOpenAI(ctx context.Context, prompt string, jsonMode bool) (string, error) {
+func (m HTTPModel) completeOpenAI(ctx context.Context, prompt string, jsonMode bool) (Response, error) {
 	body := map[string]any{
 		"model": m.model,
 		"messages": []map[string]string{
@@ -433,6 +465,11 @@ func (m HTTPModel) completeOpenAI(ctx context.Context, prompt string, jsonMode b
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := m.doJSON(ctx, http.MethodPost, m.url, body, &out, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+m.apiKey)
@@ -441,15 +478,15 @@ func (m HTTPModel) completeOpenAI(ctx context.Context, prompt string, jsonMode b
 			req.Header.Set("X-Title", "xmem-go")
 		}
 	}); err != nil {
-		return "", err
+		return Response{}, err
 	}
 	if len(out.Choices) == 0 {
-		return "", errors.New("empty model response")
+		return Response{}, errors.New("empty model response")
 	}
-	return out.Choices[0].Message.Content, nil
+	return Response{Content: out.Choices[0].Message.Content, ModelName: m.model, InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens, TotalTokens: out.Usage.TotalTokens}, nil
 }
 
-func (m HTTPModel) completeGemini(ctx context.Context, prompt string) (string, error) {
+func (m HTTPModel) completeGemini(ctx context.Context, prompt string) (Response, error) {
 	body := map[string]any{
 		"contents": []map[string]any{{"parts": []map[string]string{{"text": prompt}}}},
 		"generationConfig": map[string]any{
@@ -464,17 +501,22 @@ func (m HTTPModel) completeGemini(ctx context.Context, prompt string) (string, e
 				} `json:"parts"`
 			} `json:"content"`
 		} `json:"candidates"`
+		UsageMetadata struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			TotalTokenCount      int `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
 	}
 	if err := m.doJSON(ctx, http.MethodPost, m.url, body, &out, nil); err != nil {
-		return "", err
+		return Response{}, err
 	}
 	if len(out.Candidates) == 0 || len(out.Candidates[0].Content.Parts) == 0 {
-		return "", errors.New("empty gemini response")
+		return Response{}, errors.New("empty gemini response")
 	}
-	return out.Candidates[0].Content.Parts[0].Text, nil
+	return Response{Content: out.Candidates[0].Content.Parts[0].Text, ModelName: m.model, InputTokens: out.UsageMetadata.PromptTokenCount, OutputTokens: out.UsageMetadata.CandidatesTokenCount, TotalTokens: out.UsageMetadata.TotalTokenCount}, nil
 }
 
-func (m HTTPModel) completeClaude(ctx context.Context, prompt string) (string, error) {
+func (m HTTPModel) completeClaude(ctx context.Context, prompt string) (Response, error) {
 	body := map[string]any{
 		"model":      m.model,
 		"max_tokens": 1024,
@@ -486,20 +528,24 @@ func (m HTTPModel) completeClaude(ctx context.Context, prompt string) (string, e
 		Content []struct {
 			Text string `json:"text"`
 		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := m.doJSON(ctx, http.MethodPost, m.url, body, &out, func(req *http.Request) {
 		req.Header.Set("x-api-key", m.apiKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}); err != nil {
-		return "", err
+		return Response{}, err
 	}
 	if len(out.Content) == 0 {
-		return "", errors.New("empty claude response")
+		return Response{}, errors.New("empty claude response")
 	}
-	return out.Content[0].Text, nil
+	return Response{Content: out.Content[0].Text, ModelName: m.model, InputTokens: out.Usage.InputTokens, OutputTokens: out.Usage.OutputTokens, TotalTokens: out.Usage.InputTokens + out.Usage.OutputTokens}, nil
 }
 
-func (m HTTPModel) completeOllama(ctx context.Context, prompt string, jsonMode bool) (string, error) {
+func (m HTTPModel) completeOllama(ctx context.Context, prompt string, jsonMode bool) (Response, error) {
 	body := map[string]any{
 		"model":  m.model,
 		"stream": false,
@@ -514,11 +560,13 @@ func (m HTTPModel) completeOllama(ctx context.Context, prompt string, jsonMode b
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		PromptEvalCount int `json:"prompt_eval_count"`
+		EvalCount       int `json:"eval_count"`
 	}
 	if err := m.doJSON(ctx, http.MethodPost, m.url, body, &out, nil); err != nil {
-		return "", err
+		return Response{}, err
 	}
-	return out.Message.Content, nil
+	return Response{Content: out.Message.Content, ModelName: m.model, InputTokens: out.PromptEvalCount, OutputTokens: out.EvalCount, TotalTokens: out.PromptEvalCount + out.EvalCount}, nil
 }
 
 func (m HTTPModel) doJSON(ctx context.Context, method, url string, body any, out any, decorate func(*http.Request)) error {

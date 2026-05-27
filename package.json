@@ -1,0 +1,22 @@
+{
+  "name": "xmem",
+  "version": "0.1.0",
+  "private": true,
+  "description": "XMem local-first memory layer.",
+  "scripts": {
+    "setup": "node ./scripts/xmem.js setup",
+    "dev": "node ./scripts/xmem.js dev",
+    "start": "node ./scripts/xmem.js start",
+    "verify": "node ./scripts/xmem.js verify",
+    "doctor": "node ./scripts/xmem.js doctor",
+    "context:export": "node ./scripts/xmem.js context:export",
+    "context:import": "node ./scripts/xmem.js context:import",
+    "context:sync": "node ./scripts/xmem.js context:sync",
+    "check:npm": "node ./scripts/check-npm-publish.js",
+    "pack:create": "npm pack ./packages/create-xmem --dry-run",
+    "publish:create": "npm publish ./packages/create-xmem --access public"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

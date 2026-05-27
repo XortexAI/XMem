@@ -22,6 +22,10 @@ api_key_store = APIKeyStore()
 class APIKeyCreateRequest(BaseModel):
     """Request model for creating a new API key."""
     name: str = Field(default="Default", description="Name for this API key")
+    scopes: List[str] = Field(default_factory=lambda: ["*"], description="Allowed API scopes")
+    expires_at: Optional[datetime] = Field(default=None, description="Optional key expiration time")
+    org_id: Optional[str] = Field(default=None, description="Optional organization binding")
+    project_id: Optional[str] = Field(default=None, description="Optional project binding")
 
 
 class APIKeyCreateResponse(BaseModel):
@@ -32,6 +36,10 @@ class APIKeyCreateResponse(BaseModel):
     key: str = Field(..., description="The full API key (only shown once)")
     key_id: str = Field(..., description="ID of the API key for reference")
     name: str = Field(..., description="Name of the API key")
+    scopes: List[str] = Field(default_factory=list, description="Allowed API scopes")
+    expires_at: Optional[datetime] = Field(None, description="Optional key expiration time")
+    org_id: Optional[str] = Field(None, description="Optional organization binding")
+    project_id: Optional[str] = Field(None, description="Optional project binding")
     created_at: datetime = Field(..., description="Creation timestamp")
 
 
@@ -40,6 +48,10 @@ class APIKeyResponse(BaseModel):
     id: str = Field(..., description="API key ID")
     key_prefix: str = Field(..., description="First 8 characters of the key")
     name: str = Field(..., description="Name of the API key")
+    scopes: List[str] = Field(default_factory=list, description="Allowed API scopes")
+    expires_at: Optional[datetime] = Field(None, description="Optional key expiration time")
+    org_id: Optional[str] = Field(None, description="Optional organization binding")
+    project_id: Optional[str] = Field(None, description="Optional project binding")
     created_at: datetime = Field(..., description="Creation timestamp")
     last_used: Optional[datetime] = Field(None, description="Last usage timestamp")
     is_active: bool = Field(..., description="Whether the key is active")
@@ -98,6 +110,10 @@ async def list_api_keys(
             id=key["id"],
             key_prefix=key.get("key_prefix", "xxxx-xxxx"),
             name=key["name"],
+            scopes=key.get("scopes", ["*"]),
+            expires_at=key.get("expires_at"),
+            org_id=key.get("org_id"),
+            project_id=key.get("project_id"),
             created_at=key["created_at"],
             last_used=key.get("last_used"),
             is_active=key.get("is_active", True),
@@ -121,12 +137,20 @@ async def create_api_key(
     result = api_key_store.create_api_key(
         user_id=current_user["id"],
         name=request.name,
+        scopes=request.scopes,
+        expires_at=request.expires_at,
+        org_id=request.org_id,
+        project_id=request.project_id,
     )
 
     return APIKeyCreateResponse(
         key=result["key"],
         key_id=result["key_id"],
         name=result["name"],
+        scopes=result["scopes"],
+        expires_at=result.get("expires_at"),
+        org_id=result.get("org_id"),
+        project_id=result.get("project_id"),
         created_at=result["created_at"],
     )
 
@@ -164,6 +188,10 @@ async def update_api_key(
         id=updated_key["id"],
         key_prefix=updated_key.get("key_prefix", "xxxx-xxxx"),
         name=updated_key["name"],
+        scopes=updated_key.get("scopes", ["*"]),
+        expires_at=updated_key.get("expires_at"),
+        org_id=updated_key.get("org_id"),
+        project_id=updated_key.get("project_id"),
         created_at=updated_key["created_at"],
         last_used=updated_key.get("last_used"),
         is_active=updated_key.get("is_active", True),

@@ -1,0 +1,66 @@
+name: xmem
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: xmem-postgres
+    environment:
+      POSTGRES_DB: xmem
+      POSTGRES_USER: xmem
+      POSTGRES_PASSWORD: xmem
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xmem -d xmem"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    container_name: xmem-mongo
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet --eval \"db.adminCommand('ping').ok\" || exit 1"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: xmem-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/local-password
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 2G
+      NEO4J_server_memory_pagecache_size: 1G
+    ports:
+      - "17474:7474"
+      - "17687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -u neo4j -p local-password 'RETURN 1' || exit 1"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  postgres_data:
+  mongo_data:
+  neo4j_data:
+  neo4j_logs:

@@ -1,0 +1,23 @@
+services:
+  xmem-go:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    env_file:
+      - ../.env
+    ports:
+      - "8081:8081"
+
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: neo4j/dev-password
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+

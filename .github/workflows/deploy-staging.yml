@@ -1,0 +1,226 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Deploy PR to Staging for Review
+#
+# Triggered when a PR is opened or updated targeting `develop` or `main`.
+# Deploys the PR branch to the staging server so reviewers can test it live.
+#
+# Flow:
+#   1. PR opened/updated → deploy PR branch to staging
+#   2. Smoke tests run against staging
+#   3. Results posted as a comment on the PR
+#   4. Reviewer tests on staging URL
+#   5. If happy → comment `/promote` to merge to main & deploy to production
+#
+# ┌──────────────┐  PR opened   ┌──────────┐  auto-deploy   ┌──────────┐
+# │ feature/fix  │ ──────────►  │  GitHub  │ ─────────────► │ STAGING  │
+# └──────────────┘              └──────────┘                └──────────┘
+#                                                                │
+#                                                     smoke tests run
+#                                                                │
+#                                                       ┌────────▼────────┐
+#                                                       │ Comment posted  │
+#                                                       │ on the PR       │
+#                                                       └────────┬────────┘
+#                                                                │
+#                                              /promote comment  │
+#                                                                ▼
+#                                                        ┌──────────────┐
+#                                                        │  PRODUCTION  │
+#                                                        │  (main)      │
+#                                                        └──────────────┘
+#
+# ── Required secrets (Settings → Secrets → Actions) ──────────────────────────
+#   STAGING_EC2_HOST        Public DNS / Elastic IP of the staging instance
+#   STAGING_EC2_USER        SSH user (e.g. ubuntu)
+#   STAGING_EC2_SSH_KEY     Private key (same format as your .pem)
+#   STAGING_EC2_DEPLOY_PATH Absolute path on the staging server
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: Deploy PR to Staging
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [develop, main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy (branch, tag, or SHA)"
+        required: false
+        default: develop
+
+concurrency:
+  group: deploy-staging-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true    # latest push wins — old staging deploy is stale
+
+permissions:
+  contents: read
+  deployments: write
+  statuses: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  # ── 1. Deploy PR branch to staging EC2 ─────────────────────────────────────
+  deploy:
+    name: Deploy to staging EC2
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+
+    steps:
+      - name: Create GitHub deployment
+        uses: chrnorm/deployment-action@v2
+        id: deployment
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          environment: staging
+
+      - name: Deploy PR branch over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.STAGING_EC2_HOST }}
+          username: ${{ secrets.STAGING_EC2_USER }}
+          key: ${{ secrets.STAGING_EC2_SSH_KEY }}
+          passphrase: ${{ secrets.STAGING_EC2_SSH_KEY_PASSPHRASE }}
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.STAGING_EC2_DEPLOY_PATH }}"
+
+            PR_BRANCH="${{ github.head_ref || github.event.inputs.ref || 'develop' }}"
+            echo "── Deploying branch: $PR_BRANCH ──"
+
+            git fetch origin "$PR_BRANCH"
+            git checkout "$PR_BRANCH"
+            git pull origin "$PR_BRANCH"
+
+            echo "── Restarting XMem staging service ──"
+            sudo systemctl restart xmem-staging
+
+            echo "── Waiting for health endpoint ──"
+            for i in $(seq 1 30); do
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/health || true)
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "Health check passed (attempt $i)"
+                exit 0
+              fi
+              echo "Health check attempt $i: HTTP $HTTP_CODE — retrying in 10s"
+              sleep 10
+            done
+            echo "FATAL: Health check never returned 200 after 300s"
+            exit 1
+
+      - name: Update deployment status (success)
+        if: success()
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deployment-id: ${{ steps.deployment.outputs.deployment_id }}
+          state: success
+          environment-url: ${{ vars.STAGING_URL }}
+
+      - name: Update deployment status (failure)
+        if: failure()
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deployment-id: ${{ steps.deployment.outputs.deployment_id }}
+          state: failure
+
+  # ── 2. Smoke tests against live staging ────────────────────────────────────
+  smoke-test:
+    name: Smoke test staging
+    runs-on: ubuntu-latest
+    needs: deploy
+    timeout-minutes: 10
+    environment:
+      name: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for staging to stabilize
+        run: sleep 15
+
+      - name: Health check
+        run: |
+          STATUS=$(curl -sf "${{ vars.STAGING_URL }}/health" | jq -r '.data.status')
+          echo "Staging health status: $STATUS"
+          if [ "$STATUS" != "ready" ] && [ "$STATUS" != "loading" ]; then
+            echo "FAIL: staging is not healthy"
+            exit 1
+          fi
+
+      - name: API contract — /health response shape
+        run: |
+          RESPONSE=$(curl -sf "${{ vars.STAGING_URL }}/health")
+          echo "$RESPONSE" | jq -e '.status'
+          echo "$RESPONSE" | jq -e '.data.pipelines_ready'
+
+      - name: API contract — /docs returns OpenAPI
+        run: |
+          curl -sf "${{ vars.STAGING_URL }}/docs" | grep -q "swagger-ui"
+
+      - name: API contract — auth endpoints exist
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${{ vars.STAGING_URL }}/auth/google")
+          echo "Auth endpoint returned: $HTTP_CODE"
+          # 307 (redirect) or 405 (method not allowed) are both valid — means route exists
+          if [ "$HTTP_CODE" = "404" ]; then
+            echo "FAIL: auth route missing"
+            exit 1
+          fi
+
+      - name: API contract — memory ingest rejects empty body
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "${{ vars.STAGING_URL }}/v1/memory/ingest" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          echo "Memory ingest with empty body: $HTTP_CODE"
+          # 422 = validation error (expected), 401 = auth required (also valid)
+          if [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "500" ]; then
+            echo "FAIL: unexpected response from memory ingest"
+            exit 1
+          fi
+
+      # ── Post deployment report as PR comment ──────────────────────────────
+      - name: Post result to PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}' === 'success' ? '✅' : '❌';
+            const url = '${{ vars.STAGING_URL }}';
+            const sha = context.sha.substring(0, 7);
+            const prNumber = context.payload.pull_request.number;
+            const branch = context.payload.pull_request.head.ref;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: [
+                `## ${status} Staging Deployment Report`,
+                '',
+                `| Item | Value |`,
+                `|------|-------|`,
+                `| **Branch** | \`${branch}\` |`,
+                `| **Commit** | \`${sha}\` |`,
+                `| **Environment** | [Staging](${url}) |`,
+                `| **Health** | ${url}/health |`,
+                `| **API Docs** | ${url}/docs |`,
+                `| **Smoke Tests** | ${{ job.status }} |`,
+                '',
+                status === '✅'
+                  ? [
+                      '🟢 **Staging is live and healthy!** Test your changes at the staging URL above.',
+                      '',
+                      '**Ready to ship?** Comment `/promote` on this PR to merge to `main` and deploy to production.',
+                    ].join('\n')
+                  : '🔴 Smoke tests failed. Check the [workflow run](../actions/runs/${{ github.run_id }}) for details.',
+              ].join('\n'),
+            });

@@ -12,7 +12,7 @@ import hmac
 import logging
 import time
 from collections import defaultdict
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -23,6 +23,9 @@ from src.database.api_key_store import APIKeyStore
 from src.database.user_store import UserStore
 from src.pipelines.ingest import IngestPipeline
 from src.pipelines.retrieval import RetrievalPipeline
+
+if TYPE_CHECKING:
+    from src.pipelines.code_retrieval import CodeRetrievalPipeline
 
 logger = logging.getLogger("xmem.api.deps")
 
@@ -181,7 +184,15 @@ async def require_api_key(
         if user_id:
             user = _user_store.get_user_by_id(user_id)
             if user:
+                user = dict(user)
                 user["id"] = str(user.pop("_id"))
+                user["api_key"] = {
+                    "id": key_doc.get("id"),
+                    "scopes": key_doc.get("scopes", ["*"]),
+                    "org_id": key_doc.get("org_id"),
+                    "project_id": key_doc.get("project_id"),
+                    "expires_at": key_doc.get("expires_at"),
+                }
                 request.state.user = user
                 return user
 

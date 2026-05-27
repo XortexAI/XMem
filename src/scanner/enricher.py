@@ -32,7 +32,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.scanner.code_store import CodeStore
 from src.graph.code_graph_client import CodeGraphClient
-from src.storage.pinecone import PineconeVectorStore
+from src.storage.base import BaseVectorStore
+from src.storage.factory import get_vector_store
 from src.schemas.code import symbols_namespace, files_namespace
 from src.config import settings
 
@@ -171,7 +172,7 @@ class Enricher:
             self.code_graph = code_graph
 
         # Pinecone (lazily created per namespace)
-        self._pinecone_stores: Dict[str, PineconeVectorStore] = {}
+        self._pinecone_stores: Dict[str, BaseVectorStore] = {}
 
         self._stats: Dict[str, int] = defaultdict(int)
 
@@ -207,15 +208,9 @@ class Enricher:
     # Pinecone helper
     # ------------------------------------------------------------------
 
-    def _get_pinecone(self, namespace: str) -> PineconeVectorStore:
+    def _get_pinecone(self, namespace: str) -> BaseVectorStore:
         if namespace not in self._pinecone_stores:
-            self._pinecone_stores[namespace] = PineconeVectorStore(
-                api_key=settings.pinecone_api_key,
-                index_name=settings.pinecone_index_name,
-                dimension=settings.pinecone_dimension,
-                metric=settings.pinecone_metric,
-                cloud=settings.pinecone_cloud,
-                region=settings.pinecone_region,
+            self._pinecone_stores[namespace] = get_vector_store(
                 namespace=namespace,
                 create_if_not_exists=False,
             )

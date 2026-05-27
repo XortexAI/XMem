@@ -1,5 +1,5 @@
 """
-/v1/memory/* routes â€” production endpoints for XMem memory operations.
+/v1/memory/* and /v2/memory/* routes - production endpoints for XMem memory operations.
 
 All routes require a valid Bearer API key and respect the per-key rate limit.
 """
@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import threading
 import time
 from typing import Any, Dict, List
 
@@ -49,9 +50,18 @@ import json
 import re
 from playwright.sync_api import sync_playwright
 
+from src.config import settings
+from src.jobs.durable import (
+    QUEUED,
+    get_default_job_store,
+    run_job,
+    serialize_job,
+)
+
 logger = logging.getLogger("xmem.api.routes.memory")
 
 _ingest_semaphore = asyncio.Semaphore(5)
+_LOCAL_ENVIRONMENTS = {"development", "dev", "local", "test"}
 
 router = APIRouter(
     prefix="/v1/memory",
@@ -61,6 +71,18 @@ router = APIRouter(
 
 scrape_router = APIRouter(
     prefix="/v1/memory",
+    tags=["memory"],
+    dependencies=[Depends(enforce_rate_limit)],
+)
+
+v2_router = APIRouter(
+    prefix="/v2/memory",
+    tags=["memory"],
+    dependencies=[Depends(require_ready), Depends(enforce_rate_limit)],
+)
+
+v2_scrape_router = APIRouter(
+    prefix="/v2/memory",
     tags=["memory"],
     dependencies=[Depends(enforce_rate_limit)],
 )
@@ -112,7 +134,14 @@ def _wrap(request: Request, data: Any, elapsed_ms: float) -> JSONResponse:
     return resp
 
 
-def _error(request: Request, detail: str, code: int, elapsed_ms: float = 0) -> JSONResponse:
+def _error(
+    request: Request,
+    detail: str,
+    code: int,
+    elapsed_ms: float = 0,
+) -> JSONResponse:
+    if code >= 500 and settings.environment.lower() not in _LOCAL_ENVIRONMENTS:
+        detail = "The request could not be completed. Check the server logs with the request_id."
     body = APIResponse(
         status=StatusEnum.ERROR,
         request_id=getattr(request.state, "request_id", None),
@@ -120,6 +149,122 @@ def _error(request: Request, detail: str, code: int, elapsed_ms: float = 0) -> J
         elapsed_ms=elapsed_ms,
     )
     return JSONResponse(content=body.model_dump(), status_code=code)
+
+
+def _is_static_key_user(user: dict) -> bool:
+    return user.get("email") == "static@xmem.ai" or user.get("name") == "Static Key User"
+
+
+def _current_user_id(user: dict, requested_user_id: str = "") -> str:
+    if (
+        requested_user_id
+        and settings.environment.lower() in _LOCAL_ENVIRONMENTS
+        and _is_static_key_user(user)
+    ):
+        return requested_user_id
+    return user.get("username") or user.get("name") or user["id"]
+
+
+def _scoped_ingest_payload(user: dict, item: IngestRequest) -> Dict[str, Any]:
+    payload = item.model_dump()
+    payload["user_id"] = _current_user_id(user, payload.get("user_id", ""))
+    return payload
+
+
+def _job_status_data(job: Dict[str, Any]) -> Dict[str, Any]:
+    public = serialize_job(job) or {}
+    return {
+        "job_id": public.get("job_id"),
+        "job_type": public.get("job_type"),
+        "status": public.get("status"),
+        "retry_count": public.get("retry_count", 0),
+        "max_attempts": public.get("max_attempts", 0),
+        "timeout_seconds": public.get("timeout_seconds"),
+        "error": public.get("error"),
+        "error_state": public.get("error_state"),
+        "result": public.get("result"),
+        "created_at": public.get("created_at"),
+        "updated_at": public.get("updated_at"),
+        "started_at": public.get("started_at"),
+        "completed_at": public.get("completed_at"),
+        "dead_lettered_at": public.get("dead_lettered_at"),
+    }
+
+
+def _job_accepted(
+    request: Request,
+    job: Dict[str, Any],
+    created: bool,
+    status_url: str,
+    elapsed_ms: float,
+) -> JSONResponse:
+    data = {
+        "job_id": job["job_id"],
+        "status": job.get("status", QUEUED),
+        "created": created,
+        "status_url": status_url,
+    }
+    return _wrap(request, data, elapsed_ms)
+
+
+async def _run_ingest_payload(
+    payload: Dict[str, Any],
+    user_id: str,
+) -> Dict[str, Any]:
+    pipeline = get_ingest_pipeline()
+    async with _ingest_semaphore:
+        result = await pipeline.run(
+            user_query=payload["user_query"],
+            agent_response=payload.get("agent_response") or "Acknowledged.",
+            user_id=user_id,
+            session_datetime=payload.get("session_datetime", ""),
+            image_url=payload.get("image_url", ""),
+            effort_level=payload.get("effort_level", "low"),
+        )
+    data = IngestResponse(
+        model=_model_name(pipeline.model),
+        classification=_safe_classifications(result),
+        profile=_build_domain_result(
+            result.get("profile_judge"),
+            result.get("profile_weaver"),
+        ),
+        temporal=_build_domain_result(
+            result.get("temporal_judge"),
+            result.get("temporal_weaver"),
+        ),
+        summary=_build_domain_result(
+            result.get("summary_judge"),
+            result.get("summary_weaver"),
+        ),
+        image=_build_domain_result(
+            result.get("image_judge"),
+            result.get("image_weaver"),
+        ),
+    )
+    return data.model_dump()
+
+
+async def _run_batch_ingest_payload(
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    results = []
+    for item in payload["items"]:
+        item_user_id = item.get("user_id") or payload["user_id"]
+        results.append(await _run_ingest_payload(item, item_user_id))
+    return {"results": results}
+
+
+async def _run_scrape_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    result = await _scrape_chat_share(payload["url"])
+    pairs = result["pairs"]
+    if not pairs:
+        raise ValueError(_chat_share_error_message(result))
+    return ScrapeResponse(pairs=pairs).model_dump()
+
+
+def _schedule_job(job: Dict[str, Any], handler) -> None:
+    if job.get("status") == QUEUED:
+        asyncio.create_task(run_job(get_default_job_store(), job["job_id"], handler))
 
 
 def _detect_chat_provider(*urls: str) -> str:
@@ -158,8 +303,6 @@ async def _render_chat_share(url: str) -> tuple[str, str]:
 # Launching Chromium from cold takes 3-5s. We keep a singleton alive and
 # reuse it across scrape requests. The browser is thread-safe when each
 # request uses its own BrowserContext.
-
-import threading
 
 _browser_lock = threading.Lock()
 _pw_instance = None
@@ -568,31 +711,13 @@ async def _scrape_chat_share(url: str) -> Dict[str, Any]:
 )
 async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depends(require_api_key)):
     start = time.perf_counter()
-    pipeline = get_ingest_pipeline()
-
-    # Get username from authenticated user
-    user_id = user.get("username") or user.get("name") or user["id"]
+    user_id = _current_user_id(user, req.user_id)
+    payload = req.model_dump()
 
     try:
-        async with _ingest_semaphore:
-            result = await asyncio.wait_for(
-                pipeline.run(
-                    user_query=req.user_query,
-                    agent_response=req.agent_response or "Acknowledged.",
-                    user_id=user_id,
-                    session_datetime=req.session_datetime,
-                    image_url=req.image_url,
-                    effort_level=req.effort_level,
-                ),
-                timeout=120.0
-            )
-        data = IngestResponse(
-            model=_model_name(pipeline.model),
-            classification=_safe_classifications(result),
-            profile=_build_domain_result(result.get("profile_judge"), result.get("profile_weaver")),
-            temporal=_build_domain_result(result.get("temporal_judge"), result.get("temporal_weaver")),
-            summary=_build_domain_result(result.get("summary_judge"), result.get("summary_weaver")),
-            image=_build_domain_result(result.get("image_judge"), result.get("image_weaver")),
+        data = await asyncio.wait_for(
+            _run_ingest_payload(payload, user_id),
+            timeout=float(settings.memory_ingest_timeout_seconds),
         )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         return _wrap(request, data, elapsed)
@@ -603,11 +728,100 @@ async def ingest_memory(req: IngestRequest, request: Request, user: dict = Depen
         return _error(request, str(exc), 500, elapsed)
 
 
+# POST /v2/memory/ingest
+@v2_router.post(
+    "/ingest",
+    response_model=APIResponse,
+    summary="Start an async durable memory ingest job",
+)
+async def ingest_memory_v2(req: IngestRequest, request: Request, user: dict = Depends(require_api_key)):
+    start = time.perf_counter()
+    user_id = _current_user_id(user, req.user_id)
+    job_user_id = _current_user_id(user)
+    payload = req.model_dump()
+    payload["user_id"] = user_id
+
+    try:
+        store = get_default_job_store()
+        job, created = await asyncio.to_thread(
+            store.enqueue,
+            job_type="memory_ingest",
+            payload=payload,
+            idempotency_fields={
+                "user_id": user_id,
+                "user_query": req.user_query,
+                "agent_response": req.agent_response or "",
+                "session_datetime": req.session_datetime,
+                "image_url": req.image_url,
+                "effort_level": req.effort_level,
+            },
+            user_id=job_user_id,
+            timeout_seconds=float(settings.memory_ingest_timeout_seconds),
+            max_attempts=3,
+        )
+        _schedule_job(
+            job,
+            lambda: _run_ingest_payload(payload, user_id),
+        )
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _job_accepted(
+            request,
+            job,
+            created,
+            f"/v2/memory/ingest/{job['job_id']}/status",
+            elapsed,
+        )
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Ingest enqueue failed for user=%s", user_id)
+        return _error(request, str(exc), 500, elapsed)
+
+
 def _safe_classifications(result: Dict[str, Any]) -> list:
     cr = result.get("classification_result")
     if cr and getattr(cr, "classifications", None):
         return cr.classifications
     return []
+
+
+async def _read_user_job(job_id: str, user_id: str) -> Dict[str, Any] | None:
+    job = await asyncio.to_thread(get_default_job_store().get, job_id)
+    if not job:
+        return None
+    if job.get("user_id") != user_id:
+        return None
+    return job
+
+
+@v2_router.get(
+    "/ingest/{job_id}/status",
+    response_model=APIResponse,
+    summary="Poll an async memory ingest job",
+)
+async def ingest_job_status(job_id: str, request: Request, user: dict = Depends(require_api_key)):
+    start = time.perf_counter()
+    job = await _read_user_job(job_id, _current_user_id(user))
+    if not job:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _error(request, "Job not found.", 404, elapsed)
+    elapsed = round((time.perf_counter() - start) * 1000, 2)
+    return _wrap(request, _job_status_data(job), elapsed)
+
+
+@v2_router.get(
+    "/jobs/{job_id}/status",
+    response_model=APIResponse,
+    summary="Poll an async memory job",
+)
+async def memory_job_status(job_id: str, request: Request, user: dict = Depends(require_api_key)):
+    start = time.perf_counter()
+    job = await _read_user_job(job_id, _current_user_id(user))
+    if not job:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _error(request, "Job not found.", 404, elapsed)
+    elapsed = round((time.perf_counter() - start) * 1000, 2)
+    return _wrap(request, _job_status_data(job), elapsed)
 
 
 # POST /v1/memory/batch-ingest
@@ -618,38 +832,75 @@ def _safe_classifications(result: Dict[str, Any]) -> list:
 )
 async def batch_ingest_memory(req: BatchIngestRequest, request: Request, user: dict = Depends(require_api_key)):
     start = time.perf_counter()
-    pipeline = get_ingest_pipeline()
-    user_id = user.get("username") or user.get("name") or user["id"]
+    user_id = _current_user_id(user)
 
-    results = []
+    try:
+        results = []
+        for item in req.items:
+            payload = _scoped_ingest_payload(user, item)
+            data = await asyncio.wait_for(
+                _run_ingest_payload(payload, payload["user_id"]),
+                timeout=float(settings.memory_ingest_timeout_seconds),
+            )
+            results.append(IngestResponse(**data))
 
-    for item in req.items:
-        result = await asyncio.wait_for(
-            pipeline.run(
-                user_query=item.user_query,
-                agent_response=item.agent_response or "Acknowledged.",
-                user_id=user_id,
-                session_datetime=item.session_datetime,
-                image_url=item.image_url,
-                effort_level=item.effort_level,
+        response_data = BatchIngestResponse(results=results)
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _wrap(request, response_data, elapsed)
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Batch ingest failed for user=%s", user_id)
+        return _error(request, str(exc), 500, elapsed)
+
+
+# POST /v2/memory/batch-ingest
+@v2_router.post(
+    "/batch-ingest",
+    response_model=APIResponse,
+    summary="Start an async durable batch memory ingest job",
+)
+async def batch_ingest_memory_v2(req: BatchIngestRequest, request: Request, user: dict = Depends(require_api_key)):
+    start = time.perf_counter()
+    user_id = _current_user_id(user)
+    payload = req.model_dump()
+    payload["user_id"] = user_id
+    payload["items"] = [_scoped_ingest_payload(user, item) for item in req.items]
+
+    try:
+        store = get_default_job_store()
+        job, created = await asyncio.to_thread(
+            store.enqueue,
+            job_type="memory_batch_ingest",
+            payload=payload,
+            idempotency_fields={
+                "user_id": user_id,
+                "items": payload["items"],
+            },
+            user_id=user_id,
+            timeout_seconds=max(
+                float(settings.memory_ingest_timeout_seconds),
+                min(len(req.items) * float(settings.memory_ingest_timeout_seconds), 3600.0),
             ),
-            timeout=120.0
+            max_attempts=3,
         )
-        
-        data = IngestResponse(
-            model=_model_name(pipeline.model),
-            classification=_safe_classifications(result),
-            profile=_build_domain_result(result.get("profile_judge"), result.get("profile_weaver")),
-            temporal=_build_domain_result(result.get("temporal_judge"), result.get("temporal_weaver")),
-            summary=_build_domain_result(result.get("summary_judge"), result.get("summary_weaver")),
-            image=_build_domain_result(result.get("image_judge"), result.get("image_weaver")),
+        _schedule_job(
+            job,
+            lambda: _run_batch_ingest_payload(payload),
         )
-        results.append(data)
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _job_accepted(
+            request,
+            job,
+            created,
+            f"/v2/memory/jobs/{job['job_id']}/status",
+            elapsed,
+        )
 
-    response_data = BatchIngestResponse(results=results)
-    
-    elapsed = round((time.perf_counter() - start) * 1000, 2)
-    return _wrap(request, response_data, elapsed)
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Batch ingest enqueue failed for user=%s", user_id)
+        return _error(request, str(exc), 500, elapsed)
 
 
 
@@ -664,7 +915,7 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
     pipeline = get_retrieval_pipeline()
     
     # Get username from authenticated user
-    user_id = user.get("username") or user.get("name") or user["id"]
+    user_id = _current_user_id(user, req.user_id)
 
     try:
         result = await pipeline.run(query=req.query, user_id=user_id, top_k=req.top_k)
@@ -700,7 +951,7 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
     pipeline = get_retrieval_pipeline()
     
     # Get username from authenticated user
-    user_id = user.get("username") or user.get("name") or user["id"]
+    user_id = _current_user_id(user, req.user_id)
 
     try:
         if "code" in req.domains and not req.org_id:
@@ -847,7 +1098,7 @@ async def _search_summary(pipeline: RetrievalPipeline, query: str, user_id: str,
 async def scrape_chat_link(req: ScrapeRequest, request: Request):
     start = time.perf_counter()
     url = req.url
-    
+
     try:
         result = await _scrape_chat_share(url)
         pairs = result["pairs"]
@@ -864,6 +1115,58 @@ async def scrape_chat_link(req: ScrapeRequest, request: Request):
         elapsed = round((time.perf_counter() - start) * 1000, 2)
         logger.exception("Scrape failed for url=%s", url)
         return _error(request, str(exc) or repr(exc), 500, elapsed)
+
+
+# POST /v2/memory/scrape
+@v2_scrape_router.post(
+    "/scrape",
+    response_model=APIResponse,
+    summary="Start an async durable scrape job",
+)
+async def scrape_chat_link_v2(req: ScrapeRequest, request: Request):
+    start = time.perf_counter()
+    payload = req.model_dump()
+
+    try:
+        store = get_default_job_store()
+        job, created = await asyncio.to_thread(
+            store.enqueue,
+            job_type="memory_scrape",
+            payload=payload,
+            idempotency_fields={"url": req.url},
+            user_id="anonymous",
+            timeout_seconds=60.0,
+            max_attempts=2,
+        )
+        _schedule_job(job, lambda: _run_scrape_payload(payload))
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _job_accepted(
+            request,
+            job,
+            created,
+            f"/v2/memory/scrape/{job['job_id']}/status",
+            elapsed,
+        )
+
+    except Exception as exc:
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        logger.exception("Scrape enqueue failed for url=%s", req.url)
+        return _error(request, str(exc) or repr(exc), 500, elapsed)
+
+
+@v2_scrape_router.get(
+    "/scrape/{job_id}/status",
+    response_model=APIResponse,
+    summary="Poll an async scrape job",
+)
+async def scrape_job_status(job_id: str, request: Request):
+    start = time.perf_counter()
+    job = await asyncio.to_thread(get_default_job_store().get, job_id)
+    if not job or job.get("user_id") != "anonymous":
+        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        return _error(request, "Job not found.", 404, elapsed)
+    elapsed = round((time.perf_counter() - start) * 1000, 2)
+    return _wrap(request, _job_status_data(job), elapsed)
 
 
 

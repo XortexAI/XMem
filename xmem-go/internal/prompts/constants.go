@@ -1,0 +1,3 @@
+package prompts
+
+const LLMTabSeparator = "::"

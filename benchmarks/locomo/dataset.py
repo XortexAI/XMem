@@ -118,15 +118,11 @@ def build_ingest_items(
 ) -> list[IngestItem]:
     items: list[IngestItem] = []
     for session in example.sessions:
-        turns = session.turns
-        for index, turn in enumerate(turns):
-            next_turn = turns[index + 1] if index + 1 < len(turns) else None
-            user_query = _format_turn(turn)
-            agent_response = _format_turn(next_turn) if next_turn else ""
+        for user_turns, agent_turn in _exchange_pairs(session.turns):
             items.append(
                 IngestItem(
-                    user_query=user_query,
-                    agent_response=agent_response,
+                    user_query="\n".join(_format_turn(turn) for turn in user_turns),
+                    agent_response=_format_turn(agent_turn),
                     user_id=user_id,
                     session_datetime=session.date,
                     effort_level=effort_level,
@@ -139,13 +135,13 @@ def _parse_sessions(conversation: Any) -> list[ConversationSession]:
     if not isinstance(conversation, dict):
         return []
 
-    session_numbers = sorted(
+    session_numbers = sorted({
         _session_number(key)
         for key, value in conversation.items()
         if key.startswith("session_")
         and not key.endswith("_date_time")
         and isinstance(value, list)
-    )
+    })
     sessions: list[ConversationSession] = []
     for number in session_numbers:
         session_key = f"session_{number}"
@@ -190,6 +186,41 @@ def _format_turn(turn: ConversationTurn | None) -> str:
     if turn.dialog_id:
         prefix = f"{prefix} ({turn.dialog_id})"
     return f"{prefix}: {turn.content}"
+
+
+def _exchange_pairs(
+    turns: list[ConversationTurn],
+) -> list[tuple[list[ConversationTurn], ConversationTurn]]:
+    if any(_is_assistant_speaker(turn.speaker) for turn in turns):
+        return _role_aware_exchange_pairs(turns)
+
+    pairs: list[tuple[list[ConversationTurn], ConversationTurn]] = []
+    for index in range(0, len(turns) - 1, 2):
+        pairs.append(([turns[index]], turns[index + 1]))
+    return pairs
+
+
+def _role_aware_exchange_pairs(
+    turns: list[ConversationTurn],
+) -> list[tuple[list[ConversationTurn], ConversationTurn]]:
+    pairs: list[tuple[list[ConversationTurn], ConversationTurn]] = []
+    pending_user_turns: list[ConversationTurn] = []
+    for turn in turns:
+        if _is_assistant_speaker(turn.speaker):
+            if pending_user_turns:
+                pairs.append((pending_user_turns, turn))
+                pending_user_turns = []
+            continue
+        pending_user_turns.append(turn)
+    return pairs
+
+
+def _is_assistant_speaker(speaker: str) -> bool:
+    normalized = speaker.lower().replace("_", " ").replace("-", " ")
+    return any(
+        label in normalized
+        for label in ("assistant", "agent", "bot", "ai", "gpt")
+    )
 
 
 def _session_number(key: str) -> int:

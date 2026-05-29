@@ -136,14 +136,14 @@ def build_ingest_items(
 ) -> list[IngestItem]:
     items: list[IngestItem] = []
     for session in example.chat_sessions:
-        for index, turn in enumerate(session):
-            next_turn = session[index + 1] if index + 1 < len(session) else None
+        for user_turns, agent_turn in _exchange_pairs(session):
+            first_user_turn = user_turns[0]
             items.append(
                 IngestItem(
-                    user_query=_format_turn(turn),
-                    agent_response=_format_turn(next_turn) if next_turn else "",
+                    user_query="\n".join(_format_turn(turn) for turn in user_turns),
+                    agent_response=_format_turn(agent_turn),
                     user_id=user_id,
-                    session_datetime=turn.time_anchor,
+                    session_datetime=first_user_turn.time_anchor,
                     effort_level=effort_level,
                 )
             )
@@ -221,3 +221,38 @@ def _format_turn(turn: BeamTurn | None) -> str:
     if turn.time_anchor:
         prefix = f"{prefix} [{turn.time_anchor}]"
     return f"{prefix}: {turn.content}"
+
+
+def _exchange_pairs(
+    turns: list[BeamTurn],
+) -> list[tuple[list[BeamTurn], BeamTurn]]:
+    if any(_is_assistant_role(turn.role) for turn in turns):
+        return _role_aware_exchange_pairs(turns)
+
+    pairs: list[tuple[list[BeamTurn], BeamTurn]] = []
+    for index in range(0, len(turns) - 1, 2):
+        pairs.append(([turns[index]], turns[index + 1]))
+    return pairs
+
+
+def _role_aware_exchange_pairs(
+    turns: list[BeamTurn],
+) -> list[tuple[list[BeamTurn], BeamTurn]]:
+    pairs: list[tuple[list[BeamTurn], BeamTurn]] = []
+    pending_user_turns: list[BeamTurn] = []
+    for turn in turns:
+        if _is_assistant_role(turn.role):
+            if pending_user_turns:
+                pairs.append((pending_user_turns, turn))
+                pending_user_turns = []
+            continue
+        pending_user_turns.append(turn)
+    return pairs
+
+
+def _is_assistant_role(role: str) -> bool:
+    normalized = role.lower().replace("_", " ").replace("-", " ")
+    return any(
+        label in normalized
+        for label in ("assistant", "agent", "bot", "ai", "gpt")
+    )

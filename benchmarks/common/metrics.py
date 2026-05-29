@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Any
 
 
@@ -19,11 +19,7 @@ def token_f1(prediction: str, reference: str) -> float:
     ref_tokens = normalize_answer(reference).split()
     if not pred_tokens or not ref_tokens:
         return float(pred_tokens == ref_tokens)
-    common = set(pred_tokens) & set(ref_tokens)
-    overlap = sum(
-        min(pred_tokens.count(token), ref_tokens.count(token))
-        for token in common
-    )
+    overlap = sum((Counter(pred_tokens) & Counter(ref_tokens)).values())
     if overlap == 0:
         return 0.0
     precision = overlap / len(pred_tokens)

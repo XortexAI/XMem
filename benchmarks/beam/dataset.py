@@ -34,6 +34,7 @@ class BeamExample:
     question: str
     answer: str
     question_type: str = ""
+    rubric: list[str] = field(default_factory=list)
     split: str = "1M"
     chat_sessions: list[list[BeamTurn]] = field(default_factory=list)
 
@@ -83,7 +84,7 @@ def load_examples(path: Path, *, split: str = "1M") -> list[BeamExample]:
                 continue
             answer = _first_text(
                 question_record,
-                ("answer", "gold_answer", "reference"),
+                ("answer", "ideal_response", "gold_answer", "reference"),
             )
             question_type = _first_text(
                 question_record,
@@ -100,6 +101,10 @@ def load_examples(path: Path, *, split: str = "1M") -> list[BeamExample]:
                     question=question,
                     answer=answer,
                     question_type=question_type or "unknown",
+                    rubric=[
+                        str(item)
+                        for item in question_record.get("rubric") or []
+                    ],
                     split=split,
                     chat_sessions=chat_sessions,
                 )
@@ -182,8 +187,19 @@ def _parse_turn(raw_turn: Any) -> BeamTurn | None:
 def _parse_probing_questions(raw_questions: Any) -> list[dict[str, Any]]:
     raw_questions = _coerce_literal(raw_questions)
     if isinstance(raw_questions, dict):
-        values = raw_questions.values()
-        return [item for item in values if isinstance(item, dict)]
+        questions: list[dict[str, Any]] = []
+        for question_type, value in raw_questions.items():
+            if isinstance(value, dict):
+                item = dict(value)
+                item["question_type"] = str(question_type)
+                questions.append(item)
+            elif isinstance(value, list):
+                for question in value:
+                    if isinstance(question, dict):
+                        item = dict(question)
+                        item["question_type"] = str(question_type)
+                        questions.append(item)
+        return questions
     if isinstance(raw_questions, list):
         return [item for item in raw_questions if isinstance(item, dict)]
     return []

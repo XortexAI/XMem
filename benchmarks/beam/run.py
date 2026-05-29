@@ -40,6 +40,9 @@ def main() -> None:
             limit=args.limit,
             offset=args.offset,
             question_type=args.question_type,
+            sample_percent_per_question_type=args.sample_percent_per_question_type,
+            sample_min_per_question_type=args.sample_min_per_question_type,
+            sample_seed=args.sample_seed,
             split=args.split,
             skip_ingest=args.skip_ingest,
             resume=not args.no_resume,
@@ -101,6 +104,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--question-type")
+    parser.add_argument(
+        "--sample-percent-per-question-type",
+        type=float,
+        help="Select a balanced percent from each BEAM question_type.",
+    )
+    parser.add_argument("--sample-min-per-question-type", type=int, default=1)
+    parser.add_argument("--sample-seed", type=int, default=13)
     parser.add_argument("--skip-ingest", action="store_true")
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")

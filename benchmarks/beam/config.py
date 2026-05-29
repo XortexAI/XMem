@@ -45,6 +45,9 @@ class BenchmarkConfig:
     limit: int | None = None
     offset: int = 0
     question_type: str | None = None
+    sample_percent_per_question_type: float | None = None
+    sample_min_per_question_type: int = 1
+    sample_seed: int = 13
     split: str = DEFAULT_SPLIT
     skip_ingest: bool = False
     resume: bool = True

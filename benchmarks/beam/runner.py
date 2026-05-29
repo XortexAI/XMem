@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import math
+import random
 import time
+from collections import defaultdict
 from typing import Any
 
 from benchmarks.common.io import append_jsonl, read_jsonl, write_json
@@ -27,6 +30,7 @@ class BeamRunner:
             limit=self.config.limit,
             question_type=self.config.question_type,
         )
+        examples = self._sample_examples(examples)
         if self.config.dry_run:
             return self._dry_run_summary(examples)
 
@@ -62,6 +66,7 @@ class BeamRunner:
         summary["dataset_path"] = str(self.config.dataset_path)
         summary["api_base_url"] = self.config.api_base_url
         summary["split"] = self.config.split
+        summary["sample"] = self._sample_summary()
         summary["duration_seconds"] = round(time.time() - run_started, 2)
         write_json(self.summary_path, summary)
         return summary
@@ -98,6 +103,7 @@ class BeamRunner:
             "question": example.question,
             "reference_answer": example.answer,
             "prediction": prediction,
+            "rubric": example.rubric,
             "metrics": score_answer(prediction, example.answer),
             "source_count": len(retrieve.data.get("sources") or []),
             "confidence": retrieve.data.get("confidence"),
@@ -147,6 +153,27 @@ class BeamRunner:
     def _completed_question_ids(self) -> set[str]:
         return {str(row.get("question_id")) for row in read_jsonl(self.results_path)}
 
+    def _sample_examples(self, examples: list[BeamExample]) -> list[BeamExample]:
+        percent = self.config.sample_percent_per_question_type
+        if percent is None:
+            return examples
+        if percent <= 0 or percent > 100:
+            raise ValueError("--sample-percent-per-question-type must be in (0, 100].")
+
+        groups: dict[str, list[BeamExample]] = defaultdict(list)
+        for example in examples:
+            groups[example.question_type or "unknown"].append(example)
+
+        rng = random.Random(self.config.sample_seed)
+        selected: list[BeamExample] = []
+        for question_type in sorted(groups):
+            group = list(groups[question_type])
+            rng.shuffle(group)
+            count = math.ceil(len(group) * percent / 100)
+            count = max(self.config.sample_min_per_question_type, count)
+            selected.extend(group[: min(count, len(group))])
+        return selected
+
     def _dry_run_summary(self, examples: list[BeamExample]) -> dict[str, Any]:
         ingest_counts = [
             len(
@@ -158,18 +185,37 @@ class BeamRunner:
             )
             for example in examples
         ]
+        by_question_type = self._count_by_question_type(examples)
         summary = {
             "dry_run": True,
             "dataset_path": str(self.config.dataset_path),
             "split": self.config.split,
+            "sample": self._sample_summary(),
             "selected_examples": len(examples),
             "total_ingest_items": sum(ingest_counts),
             "min_ingest_items": min(ingest_counts) if ingest_counts else 0,
             "max_ingest_items": max(ingest_counts) if ingest_counts else 0,
-            "question_types": sorted(
-                {example.question_type or "unknown" for example in examples}
-            ),
+            "by_question_type": by_question_type,
+            "question_types": sorted(by_question_type),
             "conversations": sorted({example.conversation_id for example in examples}),
         }
         write_json(self.summary_path, summary)
         return summary
+
+    def _sample_summary(self) -> dict[str, Any]:
+        return {
+            "percent_per_question_type": (
+                self.config.sample_percent_per_question_type
+            ),
+            "min_per_question_type": self.config.sample_min_per_question_type,
+            "seed": self.config.sample_seed,
+        }
+
+    @staticmethod
+    def _count_by_question_type(
+        examples: list[BeamExample],
+    ) -> dict[str, int]:
+        counts: dict[str, int] = defaultdict(int)
+        for example in examples:
+            counts[example.question_type or "unknown"] += 1
+        return dict(sorted(counts.items()))

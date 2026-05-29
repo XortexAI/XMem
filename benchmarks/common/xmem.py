@@ -107,11 +107,16 @@ class XMemApiClient:
         if response is None:
             raise RuntimeError(f"No response from {method} {request_path}")
         elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
-        response.raise_for_status()
-        body = response.json()
-        if body.get("status") == "error":
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if isinstance(body, dict) and body.get("status") == "error":
             error = body.get("error") or f"XMem API error from {request_path}"
             raise RuntimeError(error)
+        response.raise_for_status()
+        if not isinstance(body, dict):
+            body = {}
         data = body.get("data")
         if data is None:
             data = {}

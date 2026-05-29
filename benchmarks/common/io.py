@@ -16,16 +16,22 @@ def download_file(
     timeout_seconds: float = 120.0,
 ) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with httpx.stream(
-        "GET",
-        url,
-        follow_redirects=True,
-        timeout=timeout_seconds,
-    ) as response:
-        response.raise_for_status()
-        with destination.open("wb") as handle:
-            for chunk in response.iter_bytes():
-                handle.write(chunk)
+    partial_destination = destination.with_suffix(destination.suffix + ".tmp")
+    try:
+        with httpx.stream(
+            "GET",
+            url,
+            follow_redirects=True,
+            timeout=timeout_seconds,
+        ) as response:
+            response.raise_for_status()
+            with partial_destination.open("wb") as handle:
+                for chunk in response.iter_bytes():
+                    handle.write(chunk)
+        partial_destination.replace(destination)
+    except BaseException:
+        partial_destination.unlink(missing_ok=True)
+        raise
     return destination
 
 

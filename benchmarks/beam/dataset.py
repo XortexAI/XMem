@@ -196,11 +196,11 @@ def _coerce_literal(value: Any) -> Any:
     if not text:
         return []
     try:
-        return ast.literal_eval(text)
-    except (SyntaxError, ValueError):
+        return json.loads(text)
+    except ValueError:
         try:
-            return json.loads(text)
-        except json.JSONDecodeError:
+            return ast.literal_eval(text)
+        except (SyntaxError, ValueError):
             return value
 
 

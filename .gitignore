@@ -66,6 +66,24 @@ benchmarks/longmemeval/**/*.pyc
 benchmarks/longmemeval/data/
 benchmarks/longmemeval/results/
 benchmarks/longmemeval/outputs/
+!benchmarks/common/
+!benchmarks/common/**
+benchmarks/common/**/__pycache__/
+benchmarks/common/**/*.pyc
+!benchmarks/locomo/
+!benchmarks/locomo/**
+benchmarks/locomo/**/__pycache__/
+benchmarks/locomo/**/*.pyc
+benchmarks/locomo/data/
+benchmarks/locomo/results/
+benchmarks/locomo/outputs/
+!benchmarks/beam/
+!benchmarks/beam/**
+benchmarks/beam/**/__pycache__/
+benchmarks/beam/**/*.pyc
+benchmarks/beam/data/
+benchmarks/beam/results/
+benchmarks/beam/outputs/
 backboard/
 rust/
 

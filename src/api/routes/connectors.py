@@ -19,6 +19,21 @@ ConnectorState = Literal["connected", "not_connected", "pending"]
 
 STATE_TTL_MINUTES = 10
 MAX_PENDING_STATES = 1000
+DEFAULT_PUBLIC_API_BASE_URL = "https://api.xmem.in"
+
+CLIENT_ID_ENV_NAMES: Dict[ConnectorId, tuple[str, ...]] = {
+    "notion": (
+        "NOTION_OAUTH_CLIENT_ID",
+        "NOTION_CLIENT_ID",
+        "NOTION_INTEGRATION_CLIENT_ID",
+        "NOTION_PUBLIC_CLIENT_ID",
+    ),
+    "google-drive": (
+        "GOOGLE_DRIVE_CLIENT_ID",
+        "GOOGLE_OAUTH_CLIENT_ID",
+        "GOOGLE_CLIENT_ID",
+    ),
+}
 
 
 class ConnectorDefinition(BaseModel):
@@ -93,22 +108,30 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _first_env(*names: str) -> Optional[str]:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
 def _client_id(connector_id: ConnectorId) -> Optional[str]:
-    if connector_id == "notion":
-        return os.getenv("NOTION_CLIENT_ID")
-    return os.getenv("GOOGLE_DRIVE_CLIENT_ID") or os.getenv("GOOGLE_CLIENT_ID")
+    return _first_env(*CLIENT_ID_ENV_NAMES[connector_id])
 
 
 def _redirect_uri(connector_id: ConnectorId) -> str:
-    if connector_id == "notion":
-        return os.getenv(
-            "NOTION_REDIRECT_URI",
-            "http://localhost:8000/api/connectors/notion/oauth/callback",
-        )
-    return os.getenv(
-        "GOOGLE_DRIVE_REDIRECT_URI",
-        "http://localhost:8000/api/connectors/google-drive/oauth/callback",
+    explicit_redirect_uri = _first_env(
+        "NOTION_REDIRECT_URI" if connector_id == "notion" else "GOOGLE_DRIVE_REDIRECT_URI"
     )
+    if explicit_redirect_uri:
+        return explicit_redirect_uri
+
+    public_api_base_url = _first_env("CONNECTOR_BASE_URL", "XMEM_SERVER_URL")
+    base_url = (public_api_base_url or DEFAULT_PUBLIC_API_BASE_URL).rstrip("/")
+    if connector_id == "notion":
+        return f"{base_url}/api/connectors/notion/oauth/callback"
+    return f"{base_url}/api/connectors/google-drive/oauth/callback"
 
 
 def _get_connector(connector_id: str) -> ConnectorDefinition:
@@ -148,9 +171,10 @@ def _status_for(user_id: str, connector: ConnectorDefinition) -> ConnectorStatus
 def _build_authorization_url(connector: ConnectorDefinition, state: str) -> str:
     client_id = _client_id(connector.id)
     if not client_id:
+        accepted_env_names = ", ".join(CLIENT_ID_ENV_NAMES[connector.id])
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"{connector.name} OAuth client ID is not configured",
+            detail=f"{connector.name} OAuth client ID is not configured. Set one of: {accepted_env_names}",
         )
 
     params = {

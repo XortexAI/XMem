@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 import time
 from typing import Any, Dict, List
@@ -83,6 +84,11 @@ v2_scrape_router = APIRouter(
     prefix="/v2/memory",
     tags=["memory"],
     dependencies=[Depends(enforce_rate_limit)],
+)
+
+search_router = APIRouter(
+    tags=["memory"],
+    dependencies=[Depends(require_ready), Depends(enforce_rate_limit)],
 )
 
 
@@ -207,6 +213,7 @@ async def _run_ingest_payload(
             image_url=payload.get("image_url", ""),
             effort_level=payload.get("effort_level", "low"),
         )
+    _invalidate_profile_cache(user_id)
     data = IngestResponse(
         model=_model_name(pipeline.model),
         classification=_safe_classifications(result),
@@ -251,6 +258,14 @@ async def _run_scrape_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 def _schedule_job(job: Dict[str, Any], handler) -> None:
     if job.get("status") == QUEUED:
         asyncio.create_task(run_job(get_default_job_store(), job["job_id"], handler))
+
+
+def _safe_score(score: Any) -> float:
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
 
 
 def _detect_chat_provider(*urls: str) -> str:
@@ -771,6 +786,13 @@ def _safe_classifications(result: Dict[str, Any]) -> list:
     return []
 
 
+def _invalidate_profile_cache(user_id: str) -> None:
+    try:
+        get_retrieval_pipeline().invalidate_profile_cache(user_id)
+    except Exception as exc:
+        logger.warning("Failed to invalidate profile cache for user=%s: %s", user_id, exc)
+
+
 async def _read_user_job(job_id: str, user_id: str) -> Dict[str, Any] | None:
     job = await asyncio.to_thread(get_default_job_store().get, job_id)
     if not job:
@@ -911,13 +933,14 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
             sources=[
                 SourceRecord(
                     domain=s.domain, content=s.content,
-                    score=round(s.score, 3), metadata=s.metadata,
+                    score=round(_safe_score(s.score), 3), metadata=s.metadata,
                 )
                 for s in result.sources
             ],
             confidence=result.confidence,
         )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
+        pipeline.record_latency("agentic", elapsed)
         return _wrap(request, data, elapsed)
 
     except Exception as exc:
@@ -927,10 +950,15 @@ async def retrieve_memory(req: RetrieveRequest, request: Request, user: dict = D
 
 
 # POST /v1/memory/search
+@search_router.post(
+    "/search",
+    response_model=APIResponse,
+    summary="Raw semantic search across memory domains with optional answer synthesis",
+)
 @router.post(
     "/search",
     response_model=APIResponse,
-    summary="Raw semantic search across memory domains (no LLM answer)",
+    summary="Raw semantic search across memory domains with optional answer synthesis",
 )
 async def search_memory(req: SearchRequest, request: Request, user: dict = Depends(require_api_key)):
     start = time.perf_counter()
@@ -940,17 +968,34 @@ async def search_memory(req: SearchRequest, request: Request, user: dict = Depen
     user_id = _current_user_id(user, req.user_id)
 
     try:
-        all_results: List[SourceRecord] = []
+        all_results = await pipeline.search_raw(
+            query=req.query,
+            user_id=user_id,
+            domains=req.domains,
+            top_k=req.top_k,
+        )
+        answer = ""
+        if req.answer:
+            answer = await pipeline.answer_from_sources(req.query, all_results)
 
-        if "profile" in req.domains:
-            all_results.extend(_search_profile(pipeline, user_id))
-        if "temporal" in req.domains:
-            all_results.extend(_search_temporal(pipeline, req.query, user_id, req.top_k))
-        if "summary" in req.domains:
-            all_results.extend(await _search_summary(pipeline, req.query, user_id, req.top_k))
-
-        data = SearchResponse(results=all_results, total=len(all_results))
         elapsed = round((time.perf_counter() - start) * 1000, 2)
+        pipeline.record_latency("answer" if req.answer else "raw", elapsed)
+        data = SearchResponse(
+            results=[
+                SourceRecord(
+                    domain=s.domain,
+                    content=s.content,
+                    score=round(_safe_score(s.score), 3),
+                    metadata=s.metadata,
+                )
+                for s in all_results
+            ],
+            total=len(all_results),
+            answer=answer,
+            model=_model_name(pipeline.model) if req.answer else "",
+            confidence=min(1.0, len(all_results) * 0.2) if answer else 0.0,
+            latency=pipeline.get_latency_snapshot(),
+        )
         return _wrap(request, data, elapsed)
 
     except Exception as exc:
@@ -964,7 +1009,7 @@ def _search_profile(pipeline: RetrievalPipeline, user_id: str) -> List[SourceRec
         raw = pipeline.vector_store.search_by_metadata(
             filters={"user_id": user_id, "domain": "profile"}, top_k=100,
         )
-        return [SourceRecord(domain="profile", content=r.content, score=r.score, metadata=r.metadata) for r in raw]
+        return [SourceRecord(domain="profile", content=r.content, score=_safe_score(r.score), metadata=r.metadata) for r in raw]
     except Exception as exc:
         logger.warning("Profile search error: %s", exc)
         return []
@@ -991,7 +1036,7 @@ def _search_temporal(pipeline: RetrievalPipeline, query: str, user_id: str, top_
                 parts.append(f"Time: {ev['time']}")
             results.append(SourceRecord(
                 domain="temporal", content=" | ".join(parts),
-                score=ev.get("similarity_score", 0.0), metadata=ev,
+                score=_safe_score(ev.get("similarity_score", 0.0)), metadata=ev,
             ))
         return results
     except Exception as exc:
@@ -1006,7 +1051,7 @@ async def _search_summary(pipeline: RetrievalPipeline, query: str, user_id: str,
             filters={"user_id": user_id, "domain": "summary"},
         )
         return [
-            SourceRecord(domain="summary", content=r.content, score=r.score, metadata={"id": r.id, **r.metadata})
+            SourceRecord(domain="summary", content=r.content, score=_safe_score(r.score), metadata={"id": r.id, **r.metadata})
             for r in raw
         ]
     except Exception as exc:

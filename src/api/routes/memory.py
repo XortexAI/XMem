@@ -1113,7 +1113,7 @@ async def _search_code(
 
     results: List[SourceRecord] = []
     for source in raw_records:
-        metadata = {"source_domain": source.domain, **source.metadata}
+        metadata = {**source.metadata, "source_domain": source.domain}
         results.append(
             SourceRecord(
                 domain="code",

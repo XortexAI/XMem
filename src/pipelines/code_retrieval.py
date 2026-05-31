@@ -548,7 +548,7 @@ class CodeRetrievalPipeline:
         top_k: int = 10,
     ) -> List[SourceRecord]:
         """Return direct code search hits without LLM answer synthesis."""
-        tool_results = await asyncio.gather(
+        raw_tool_results = await asyncio.gather(
             self._execute_tool(
                 tool_name="search_symbols",
                 tool_args={"query": query, "repo": repo},
@@ -563,9 +563,18 @@ class CodeRetrievalPipeline:
                 top_k=top_k,
                 user_id=user_id,
             ),
+            return_exceptions=True,
         )
 
-        return _fuse_source_records([*tool_results], limit=top_k)
+        tool_results = [
+            result
+            for result in raw_tool_results
+            if not isinstance(result, BaseException)
+        ]
+        if not tool_results:
+            return []
+
+        return _fuse_source_records(tool_results, limit=top_k)
 
     async def run(
         self,

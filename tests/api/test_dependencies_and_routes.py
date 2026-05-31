@@ -116,7 +116,7 @@ async def test_search_code_uses_public_raw_search(monkeypatch):
                     domain="file_code",
                     content="def handler(): pass",
                     score=0.8,
-                    metadata={"file_path": "src/app.py"},
+                    metadata={"file_path": "src/app.py", "source_domain": "stale"},
                 )
             ]
 

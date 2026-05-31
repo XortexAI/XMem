@@ -183,3 +183,39 @@ async def test_code_retrieval_raw_search_dedupes_and_limits_results(monkeypatch)
     assert [source.domain for source in results] == ["symbol", "file", "symbol"]
     assert [source.content for source in results].count("new handler") == 1
     assert all(source.content != "old handler" for source in results)
+
+
+@pytest.mark.asyncio
+async def test_code_retrieval_raw_search_keeps_successful_tool_results(monkeypatch):
+    monkeypatch.setattr(
+        "src.pipelines.code_retrieval._get_embed_fn",
+        lambda: (lambda text: [1.0, 0.0, 0.0]),
+    )
+    pipeline = CodeRetrievalPipeline(
+        org_id="acme",
+        repos=["sample"],
+        model=FakeChatModel(),
+        store=FakeCodeStore(),
+    )
+
+    async def fake_execute_tool(tool_name, tool_args, repo, top_k, user_id=""):
+        if tool_name == "search_symbols":
+            raise RuntimeError("symbol index unavailable")
+        return [
+            SourceRecord(
+                domain="file",
+                content="app file",
+                score=0.8,
+                metadata={"repo": repo, "file_path": "src/app.py"},
+            )
+        ]
+
+    monkeypatch.setattr(pipeline, "_execute_tool", fake_execute_tool)
+
+    results = await pipeline.raw_search(
+        "handler", user_id="alice", repo="sample", top_k=3
+    )
+
+    assert len(results) == 1
+    assert results[0].domain == "file"
+    assert results[0].content == "app file"

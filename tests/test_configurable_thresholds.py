@@ -74,3 +74,46 @@ def test_neo4j_client_respects_custom_settings(monkeypatch):
 
     finally:
         settings.temporal_search_similarity_threshold = original_threshold
+
+
+def test_settings_threshold_boundaries():
+    from pydantic import ValidationError
+    from src.config.settings import Settings
+
+    # Test valid thresholds
+    s = Settings(
+        neo4j_password="test",
+        summary_judge_similarity_threshold=0.5,
+        temporal_search_similarity_threshold=0.1
+    )
+    assert s.summary_judge_similarity_threshold == 0.5
+    assert s.temporal_search_similarity_threshold == 0.1
+
+    # Test out of bounds summary threshold < 0
+    with pytest.raises(ValidationError):
+        Settings(
+            neo4j_password="test",
+            summary_judge_similarity_threshold=-0.1,
+        )
+
+    # Test out of bounds summary threshold > 1
+    with pytest.raises(ValidationError):
+        Settings(
+            neo4j_password="test",
+            summary_judge_similarity_threshold=1.1,
+        )
+
+    # Test out of bounds temporal threshold < -1
+    with pytest.raises(ValidationError):
+        Settings(
+            neo4j_password="test",
+            temporal_search_similarity_threshold=-1.1,
+        )
+
+    # Test out of bounds temporal threshold > 1
+    with pytest.raises(ValidationError):
+        Settings(
+            neo4j_password="test",
+            temporal_search_similarity_threshold=1.1,
+        )
+

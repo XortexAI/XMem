@@ -88,7 +88,7 @@ def _format_similar_block(
     return "\n".join(lines)
 
 
-SUMMARY_JUDGE_SIMILARITY_THRESHOLD = settings.summary_judge_similarity_threshold
+# Similarity threshold is evaluated dynamically at runtime from settings.summary_judge_similarity_threshold
 
 
 def _has_summary_judge_candidates(
@@ -200,7 +200,7 @@ class JudgeAgent(BaseAgent):
         if domain == JudgeDomain.SUMMARY:
             matches_per_item = _filter_matches_by_threshold(
                 matches_per_item,
-                SUMMARY_JUDGE_SIMILARITY_THRESHOLD,
+                settings.summary_judge_similarity_threshold,
             )
 
         # 3. Build the prompt

@@ -136,6 +136,9 @@ class Settings(BaseSettings):
         default=0.4,
         description="LLM temperature for generation"
     )
+    # Summary matching thresholds are non-negative [0, 1] as standard embedding models
+    # produce positive cosine similarities, whereas Neo4j temporal event search can span the
+    # standard mathematical cosine range [-1, 1] for raw cosine dot products.
     summary_judge_similarity_threshold: float = Field(
         default=0.4,
         ge=0.0,

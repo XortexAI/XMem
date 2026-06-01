@@ -1,0 +1,48 @@
+{
+  "name": "opencode-xmem",
+  "version": "1.0.0",
+  "description": "OpenCode plugin that gives coding agents persistent memory using XMem",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "opencode-xmem": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target node && bun build ./src/cli.ts --outfile ./dist/cli.js --target node && tsc --emitDeclarationOnly",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "xmem",
+    "memory",
+    "ai",
+    "coding-agent"
+  ],
+  "author": "XMem",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xmem-ai/opencode-xmem"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.0.162",
+    "xmem-ai": "^2.0.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.3"
+  },
+  "opencode": {
+    "type": "plugin",
+    "hooks": [
+      "chat.message",
+      "event"
+    ]
+  },
+  "files": [
+    "dist"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "xmem-claude",
+  "version": "0.1.0",
+  "description": "Persistent XMem memory across Claude Code sessions",
+  "author": {
+    "name": "XMem",
+    "email": "support@xmem.in"
+  }
+}

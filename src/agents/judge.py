@@ -32,6 +32,7 @@ from src.schemas.judge import (
     OperationType,
 )
 from src.storage.base import BaseVectorStore, SearchResult
+from src.config import settings
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +86,44 @@ def _format_similar_block(
             lines.append(f'For item: "{item_str}"')
             lines.append("  - (no similar records)")
     return "\n".join(lines)
+
+
+
+def _has_summary_judge_candidates(
+    matches_per_item: Dict[str, List[SearchResult]],
+    threshold: Optional[float] = None,
+) -> bool:
+    if threshold is None:
+        threshold = settings.summary_judge_similarity_threshold
+    for matches in matches_per_item.values():
+        for match in matches:
+            if match.score >= threshold:
+                return True
+    return False
+
+
+def _filter_matches_by_threshold(
+    matches_per_item: Dict[str, List[SearchResult]],
+    threshold: float,
+) -> Dict[str, List[SearchResult]]:
+    filtered: Dict[str, List[SearchResult]] = {}
+    for item_str, matches in matches_per_item.items():
+        filtered[item_str] = [m for m in matches if m.score >= threshold]
+    return filtered
+
+
+def _deterministic_summary_add(items_strings: List[str], confidence: float = 0.8) -> JudgeResult:
+    threshold = settings.summary_judge_similarity_threshold
+    operations = [
+        Operation(
+            type=OperationType.ADD,
+            content=item,
+            reason=f"No similar summary at or above {threshold} — defaulting to ADD.",
+        )
+        for item in items_strings
+        if str(item).strip()
+    ]
+    return JudgeResult(operations=operations, confidence=confidence)
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +189,17 @@ class JudgeAgent(BaseAgent):
             user_id=user_id,
             domain=domain,
         )
+
+        if domain == JudgeDomain.SUMMARY and not _has_summary_judge_candidates(matches_per_item):
+            result = _deterministic_summary_add(items_strings)
+            self._log_result(domain, result)
+            return result
+
+        if domain == JudgeDomain.SUMMARY:
+            matches_per_item = _filter_matches_by_threshold(
+                matches_per_item,
+                settings.summary_judge_similarity_threshold,
+            )
 
         # 3. Build the prompt
         new_items_block = "\n".join(

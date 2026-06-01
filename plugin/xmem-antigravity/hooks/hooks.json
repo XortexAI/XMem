@@ -1,0 +1,27 @@
+{
+  "description": "XMem: Persistent memory for Antigravity",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${ANTIGRAVITY_PLUGIN_ROOT}/scripts/context-hook.cjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${ANTIGRAVITY_PLUGIN_ROOT}/scripts/summary-hook.cjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

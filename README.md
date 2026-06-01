@@ -11,17 +11,23 @@
   <p><strong>The Memory Layer for AI That Never Forgets</strong></p>
   <p>Give every AI agent and LLM interface persistent, cross-platform memory out of the box.</p>
 
-  <br/>
 
 <img src="https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white" alt="Python 3.11+"/>
 <img src="https://img.shields.io/badge/license-BSD--3--Clause-green" alt="BSD-3 License"/>
 <img src="https://img.shields.io/badge/FastAPI-00C7B7?logo=fastapi&logoColor=white" alt="FastAPI"/>
+<br/>
 <img src="https://img.shields.io/badge/LangGraph-6C47FF?logo=langchain&logoColor=white" alt="LangGraph"/>
 <img src="https://img.shields.io/badge/Rust-Weaver-b7410e?logo=rust&logoColor=white" alt="Rust Weaver"/>
 <img src="https://img.shields.io/badge/Multi--LLM-Gemini%20%7C%20Claude%20%7C%20GPT%20%7C%20Bedrock%20%7C%20Ollama-orange" alt="Multi-LLM"/>
 </div>
 
 <hr>
+
+<p align="center">
+  <a href="README.md">English</a> &nbsp;&bull;&nbsp;
+  <a href="README.zh-CN.md">简体中文</a> &nbsp;&bull;&nbsp;
+  <a href="README.ja.md">日本語</a>
+</p>
 
 <p align="center">
   <a href="#demo">Demo</a> &nbsp;&bull;&nbsp;
@@ -32,26 +38,30 @@
   <a href="#configuration">Configuration</a>
 </p>
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=XortexAI/XMem&type=date&theme=dark&legend=top-left" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=XortexAI/XMem&type=date&legend=top-left" />
+  <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=XortexAI/XMem&type=date&legend=top-left" />
+</picture>
+
+## Updates / News
+- **[1 June 2026]** XMem now has a native Golang implementation of its memory layer. Built for higher throughput, lower latency, and production-scale deployments where memory needs to operate reliably across millions of interactions.
+- **[25 May 2026]** Local workspace support is now live. Set up XMem locally in just 3 commands and start building with memory in minutes. See [Local.md](https://github.com/XortexAI/XMem/blob/main/Local.md) for setup instructions.
+ ```bash
+npx create-xmem@latest
+cd xmem
+npm run dev
+```
+
+
 ## What is XMem?
 
 Every conversation with an LLM starts from scratch. Switch tools, switch providers, come back next week and all context is gone.
 
-XMem is a unified memory system that sits behind every AI interface you use. It silently captures your interactions, classifies and stores the important parts, and surfaces the right memories at the right time across any platform.
+XMem is India's #1 Open Source Agentic Memory Layer, we’re introducing Memory-as-a-Service i.e memory layer for every AI use case, domain, whether it’s temporal memory for long-running agents, medical memory for patient context, enterprise memory for teams and projects, or developer memory for coding agents and workflows.
 
-<table>
-  <tr>
-    <td><strong>Multi-domain memory</strong></td>
-    <td>Not a flat key/value store. XMem has specialized agents that understand the <em>type</em> of information (personal facts, events, code, summaries, images) and routes each to purpose-built storage.</td>
-  </tr>
-  <tr>
-    <td><strong>Judge-before-write</strong></td>
-    <td>Every piece of memory passes through a Judge agent that checks it against existing data and decides: add, update, delete, or skip. No duplicates. No stale data.</td>
-  </tr>
-  <tr>
-    <td><strong>Works everywhere</strong></td>
-    <td>Chrome extension for ChatGPT/Claude/Gemini/DeepSeek/Perplexity. Python/TypeScript/Go SDKs for your own agents. One memory layer, every interface.</td>
-  </tr>
-</table>
+This is a first-of-its-kind agentic memory layer for stateful AI.
+Unlike traditional memory systems that simply store and retrieve chunks, XMem turns memory into an active reasoning process. It decides what to remember, what to update, what to forget, and dynamically routes each memory to the right specialized agent & store.
 
 ## Demo
 
@@ -65,11 +75,15 @@ https://github.com/user-attachments/assets/8e3349ab-63c9-4046-821d-ca8097948440
 
 The XMem Chrome extension brings persistent memory to ChatGPT, Claude, Gemini, DeepSeek, and Perplexity.
 
-**Live Search & Inject** &mdash; As you type a prompt, XMem searches your memory in real time and shows a floating chip. One click injects relevant context directly into your input, zero friction.
+**Live Search & Inject** - As you type a prompt, XMem searches your memory in real time and shows a floating chip. One click injects relevant context directly into your input, zero friction.
 
-**Background Auto-Save (Xingest)** &mdash; When you hit "Send", XMem asynchronously captures the conversation turn. A background queue extracts facts and summaries without touching your UI.
+**Background Auto-Save (Xingest)** - When you hit "Send", XMem asynchronously captures the conversation turn. A background queue extracts facts and summaries without touching your UI.
 
 https://github.com/user-attachments/assets/97793cf9-d247-4d02-9c31-3cc9bbbf89aa
+
+### Agent Plugins
+
+The new [plugin/](plugin/) folder brings XMem directly into developer agents and coding assistants. It includes first-party integrations for [Claude Code](plugin/xmem-claude/), [Codex](plugin/xmem-codex/), [Cursor](plugin/xmem-cursor/), [Hermes](plugin/xmem-hermes/), [OpenClaw](plugin/xmem-openclaw/), and [OpenCode](plugin/xmem-opencode/), so agents can search existing memory, save durable project knowledge, and carry context across sessions while keeping API keys in environment variables or client-specific secret stores.
 
 ### Context
 
@@ -142,8 +156,8 @@ Not all memory is the same, and treating it that way is why other solutions unde
 
 When you query XMem, retrieval is not a simple vector search. The LLM itself decides *what* to look up:
 
-1. **Tool Selection** &mdash; The retrieval LLM analyzes your query and calls the appropriate search tools (SearchProfile, SearchTemporal, SearchSummary, SearchSnippet), potentially multiple in parallel.
-2. **Synthesis** &mdash; Results from all search tools are aggregated and the LLM generates a cited answer with source references.
+1. **Tool Selection** - The retrieval LLM analyzes your query and calls the appropriate search tools (SearchProfile, SearchTemporal, SearchSummary, SearchSnippet), potentially multiple in parallel.
+2. **Synthesis** - Results from all search tools are aggregated and the LLM generates a cited answer with source references.
 
 This means asking *"What's my preferred tech stack and when did I last refactor the auth module?"* triggers both a profile lookup and a temporal search automatically.
 
@@ -315,36 +329,54 @@ The industry standard benchmark for long-term conversational memory. Tests wheth
 
 ## Quickstart
 
-### 1. Start the XMem Server
+### Local XMem
 
 ```bash
-git clone https://github.com/XortexLabs/xmem.git
+npx create-xmem@latest
 cd xmem
-
-# Install (requires Python 3.11+)
-pip install -e .
-
-# Configure environment
-cp .env.example .env  # Add your API keys
-
-# Start
-uvicorn src.api.app:create_app --factory --host 0.0.0.0 --port 8000
+npm run dev
 ```
 
-### 2. Install the Chrome Extension
+This works on Windows, macOS, and Linux. It creates a local XMem workspace, installs the backend, starts local storage, builds the Chrome extension, and launches the API at `http://localhost:8000`.
+
+Local prerequisites:
+
+- Git
+- Node.js 20+
+- Python 3.11+
+- Docker Desktop
+- Ollama, unless you add a cloud LLM key to `.env`
+
+After setup, load the extension from:
+
+```text
+repos/xmem-extension/dist
+```
+
+Chrome path: `chrome://extensions` -> enable Developer mode -> Load unpacked.
+
+### Local Commands
 
 ```bash
-git clone https://github.com/XortexAI/xmem-extension.git
-npm install && npm run build
+npm run setup
+npm run start
+npm run verify
+npm run doctor
 ```
 
-Load `dist/` in Chrome via `chrome://extensions` &rarr; "Load unpacked". Point it to your server URL.
+If `.env` contains a real cloud LLM key, XMem uses that provider and keeps embeddings local with FastEmbed. If no cloud key is configured, XMem falls back to local Ollama and pulls the required local models during setup.
 
+### Context Portability
 
-https://github.com/user-attachments/assets/605985c3-ef27-4096-a28c-b0b4cc6f8b8d
+```bash
+npm run context:export
+npm run context:import -- --file ./exports/xmem-context.json
+npm run context:sync -- --file ./exports/xmem-context.json --server https://api.xmem.in --api-key <key>
+```
 
+`context:export` writes a local context bundle that can be imported later or synced to an XMem server.
 
-### 3. Index a Repository (Optional)
+### Index a Repository
 
 ```bash
 python -m src.scanner.runner \
@@ -358,8 +390,8 @@ python -m src.scanner.runner \
 > For a fully local setup with no cloud dependencies:
 > ```ini
 > FALLBACK_ORDER='["ollama"]'
-> EMBEDDING_PROVIDER=fastembed
-> VECTOR_STORE_PROVIDER=chroma
+> EMBEDDING_PROVIDER=ollama
+> VECTOR_STORE_PROVIDER=pgvector
 > ```
 > Then install local extras: `pip install -e ".[local]"`
 
@@ -374,6 +406,8 @@ XMem is highly configurable. Override any agent's model, tune the fallback chain
     <th>Description</th>
   </tr>
   <tr><td><code>FALLBACK_ORDER</code></td><td><code>openrouter,gemini,claude,openai</code></td><td>Provider failover sequence</td></tr>
+  <tr><td><code>DEEPSEEK_API_KEY</code></td><td>empty</td><td>DeepSeek API key for the official OpenAI-compatible endpoint</td></tr>
+  <tr><td><code>MIMO_API_KEY</code></td><td>empty</td><td>Xiaomi MiMo API key for the official OpenAI-compatible endpoint</td></tr>
   <tr><td><code>CLASSIFIER_MODEL</code></td><td>default model</td><td>Override model for classifier agent</td></tr>
   <tr><td><code>JUDGE_MODEL</code></td><td>default model</td><td>Override model for judge agent</td></tr>
   <tr><td><code>RETRIEVAL_MODEL</code></td><td>default model</td><td>Override model for retrieval synthesis</td></tr>

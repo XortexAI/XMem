@@ -8,6 +8,7 @@ on:
     branches: [main, master, develop]
 
 permissions:
+  contents: read
   pull-requests: write
   statuses: write
 
@@ -23,18 +24,32 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Skip Danger for fork PRs
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "Danger is skipped for fork PRs because the pull_request token is read-only and cannot post review comments or statuses."
+          {
+            echo "### Danger skipped for fork PR"
+            echo
+            echo "This PR comes from a fork. GitHub correctly restricts the workflow token, so advisory Danger comments are skipped instead of failing CI."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@v4
+        if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
+        if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           node-version: "20"
 
       - name: Install Danger
+        if: github.event.pull_request.head.repo.full_name == github.repository
         run: npm install --save-dev danger
 
       - name: Run Danger
+        if: github.event.pull_request.head.repo.full_name == github.repository
         run: npx danger ci
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

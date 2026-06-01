@@ -76,6 +76,11 @@ class FakeRateLimitCollection:
         return dict(updated)
 
 
+class BrokenRateLimitCollection:
+    def find_one_and_update(self, filter_doc, pipeline, upsert=False, return_document=None):
+        raise RuntimeError("mongo unavailable")
+
+
 def _mongo_store(
     records: FakeRecordsCollection = None,
     rate_limits: FakeRateLimitCollection = None,
@@ -177,6 +182,13 @@ async def test_mongo_rate_limit_counter_uses_atomic_update_pipeline():
 
     assert len(rate_limits.calls) == 3
     assert len(rate_limits.docs["user-1"]["hits"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_mongo_rate_limit_failure_is_controlled():
+    store = _mongo_store(rate_limits=BrokenRateLimitCollection())
+
+    assert await store.check_rate_limit("user-1", max_requests=2, window_seconds=60) == (True, 0)
 
 
 def test_mongo_rate_limit_update_prunes_expired_hits():

@@ -10,7 +10,8 @@ import time
 import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
@@ -29,7 +30,9 @@ from src.api.middleware import (
 )
 from src.api.routes.api_keys import router as api_keys_router
 from src.api.routes.auth import router as auth_router
+from src.api.routes.billing import router as billing_router
 from src.api.routes.code import router as code_router
+from src.api.routes.connectors import router as connectors_router
 from src.api.routes.enterprise import router as enterprise_router
 from src.api.routes.health import router as health_router
 from src.api.routes.memory import router as memory_router
@@ -37,6 +40,10 @@ from src.api.routes.memory import scrape_router as memory_scrape_router
 from src.api.routes.memory_graph import router as memory_graph_router
 from src.api.routes.scanner import router as scanner_router
 from src.api.routes.telemetry import router as telemetry_router
+from src.api.routes.v2.jobs import router as jobs_v2_router
+from src.api.routes.v2.memory import router as memory_v2_router
+from src.api.routes.v2.memory import scrape_router as memory_v2_scrape_router
+from src.api.routes.v2.scanner import router as scanner_v2_router
 from src.api.schemas import APIResponse, StatusEnum
 from src.config import settings
 
@@ -59,6 +66,65 @@ def _init_pipelines_sync() -> tuple:
     logger.info("[boot] Creating RetrievalPipeline ...")
     retrieval = RetrievalPipeline()
     return ingest, retrieval
+
+
+def _detail_to_text(detail) -> str:
+    if isinstance(detail, str):
+        return detail
+    if isinstance(detail, list):
+        return "; ".join(str(item) for item in detail)
+    if isinstance(detail, dict):
+        return detail.get("message") or detail.get("error") or str(detail)
+    return str(detail)
+
+
+def _field_name(loc) -> str:
+    parts = [str(part) for part in loc if part not in {"body", "query", "path"}]
+    return ".".join(parts) or "request"
+
+
+def _friendly_validation_error(error: dict) -> str:
+    field = _field_name(error.get("loc", []))
+    kind = error.get("type", "")
+    message = error.get("msg", "Invalid value")
+
+    if kind == "missing":
+        return f"{field} is required."
+    if kind == "string_too_short":
+        return f"{field} cannot be empty."
+    if kind == "string_too_long":
+        limit = (error.get("ctx") or {}).get("max_length")
+        return f"{field} is too long" + (f" (max {limit} characters)." if limit else ".")
+    if kind in {"int_parsing", "float_parsing"}:
+        return f"{field} must be a number."
+    if kind in {"greater_than_equal", "less_than_equal"}:
+        return f"{field}: {message}"
+    if kind == "value_error":
+        ctx = error.get("ctx") or {}
+        return f"{field}: {ctx.get('error') or message}"
+
+    return f"{field}: {message}"
+
+
+def _public_exception_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    is_local = settings.environment.lower() in {"development", "dev", "local", "test"}
+
+    if is_local and isinstance(exc, TimeoutError):
+        return message or "The request timed out while waiting for an LLM response."
+    if is_local:
+        return message or type(exc).__name__
+
+    if isinstance(exc, TimeoutError):
+        return "The request timed out while waiting for an LLM response."
+    if isinstance(exc, ValueError):
+        return "Invalid request."
+    if isinstance(exc, ConnectionError):
+        return "A backend service is unavailable. Check the server logs with the request_id for details."
+    if isinstance(exc, RuntimeError):
+        return "The request could not be completed. Check the server logs with the request_id."
+
+    return "Internal server error. Check the server logs with the request_id for details."
 
 
 async def _boot_pipelines() -> None:
@@ -156,11 +222,17 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(memory_scrape_router)
     app.include_router(memory_router)
+    app.include_router(memory_v2_scrape_router)
+    app.include_router(memory_v2_router)
     app.include_router(memory_graph_router)
     app.include_router(code_router)
     app.include_router(scanner_router)
+    app.include_router(scanner_v2_router)
+    app.include_router(jobs_v2_router)
     app.include_router(auth_router)
     app.include_router(api_keys_router)
+    app.include_router(connectors_router)
+    app.include_router(billing_router)
     app.include_router(enterprise_router)
     app.include_router(telemetry_router)
 
@@ -200,6 +272,32 @@ def create_app() -> FastAPI:
 
 
     # ── Global exception handler ──────────────────────────────────────
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exception(request: Request, exc: RequestValidationError):
+        request_id = getattr(request.state, "request_id", None)
+        details = [_friendly_validation_error(error) for error in exc.errors()]
+        body = APIResponse(
+            status=StatusEnum.ERROR,
+            request_id=request_id,
+            error="Invalid request: " + " ".join(details),
+            data={"details": details},
+        )
+        return JSONResponse(content=body.model_dump(), status_code=422)
+
+    @app.exception_handler(HTTPException)
+    async def _http_exception(request: Request, exc: HTTPException):
+        request_id = getattr(request.state, "request_id", None)
+        body = APIResponse(
+            status=StatusEnum.ERROR,
+            request_id=request_id,
+            error=_detail_to_text(exc.detail),
+        )
+        return JSONResponse(
+            content=body.model_dump(),
+            status_code=exc.status_code,
+            headers=exc.headers,
+        )
+
     @app.exception_handler(Exception)
     async def _unhandled_exception(request: Request, exc: Exception):
         request_id = getattr(request.state, "request_id", None)
@@ -210,7 +308,9 @@ def create_app() -> FastAPI:
         capture_exception(exc)
 
         body = APIResponse(
-            status=StatusEnum.ERROR, request_id=request_id, error="Internal server error.",
+            status=StatusEnum.ERROR,
+            request_id=request_id,
+            error=_public_exception_message(exc),
         )
         return JSONResponse(content=body.model_dump(), status_code=500)
 

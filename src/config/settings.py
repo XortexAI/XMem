@@ -52,6 +52,50 @@ class Settings(BaseSettings):
         default="gpt-4.1-mini",
         description="OpenAI vision model name (must support image input)"
     )
+    deepseek_api_key: Optional[str] = Field(
+        default=None,
+        description="DeepSeek API key"
+    )
+    deepseek_base_url: str = Field(
+        default="https://api.deepseek.com",
+        description="Base URL for the DeepSeek OpenAI-compatible API"
+    )
+    deepseek_model: str = Field(
+        default="deepseek-v4-flash",
+        description="DeepSeek model name"
+    )
+    deepseek_vision_model: str = Field(
+        default="deepseek-v4-flash",
+        description="DeepSeek vision model name"
+    )
+    groq_api_key: Optional[str] = Field(
+        default=None,
+        description="Groq API key"
+    )
+    groq_model: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Groq model name"
+    )
+    groq_vision_model: str = Field(
+        default="llama-3.2-11b-vision-preview",
+        description="Groq vision-capable model name"
+    )
+    mimo_api_key: Optional[str] = Field(
+        default=None,
+        description="Xiaomi MiMo API key"
+    )
+    mimo_base_url: str = Field(
+        default="https://api.xiaomimimo.com/v1",
+        description="Base URL for the Xiaomi MiMo OpenAI-compatible API"
+    )
+    mimo_model: str = Field(
+        default="mimo-v2.5-pro",
+        description="Xiaomi MiMo model name"
+    )
+    mimo_vision_model: str = Field(
+        default="mimo-v2.5",
+        description="Xiaomi MiMo vision-capable model name"
+    )
 
     openrouter_api_key: Optional[str] = Field(
         default=None,
@@ -103,6 +147,38 @@ class Settings(BaseSettings):
     temperature: float = Field(
         default=0.4,
         description="LLM temperature for generation"
+    )
+    summary_judge_similarity_threshold: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="Threshold score for the Judge to match summary memories"
+    )
+    temporal_search_similarity_threshold: float = Field(
+        default=0.3,
+        ge=-1.0,
+        le=1.0,
+        description="Minimum cosine similarity threshold score for Neo4j temporal search"
+    )
+    llm_timeout_seconds: float = Field(
+        default=45.0,
+        description="Per-agent LLM call timeout in seconds",
+    )
+    memory_ingest_timeout_seconds: float = Field(
+        default=120.0,
+        description="Overall memory ingest timeout in seconds",
+    )
+    temporal_address: str = Field(
+        default="localhost:7233",
+        description="Temporal frontend address for durable v2 workflows",
+    )
+    temporal_namespace: str = Field(
+        default="default",
+        description="Temporal namespace for durable v2 workflows",
+    )
+    temporal_task_queue: str = Field(
+        default="xmem-v2",
+        description="Temporal task queue used by the XMem v2 worker",
     )
     fallback_order: List[str] = Field(
         default=["openrouter", "gemini", "claude", "openai"],
@@ -197,7 +273,7 @@ class Settings(BaseSettings):
     )
     embedding_provider: str = Field(
         default="auto",
-        description="Embedding provider: auto, gemini, bedrock, ollama, or fastembed",
+        description="Embedding provider: auto, gemini, openai, bedrock, ollama, or fastembed",
     )
     ollama_embedding_model: Optional[str] = Field(
         default=None,
@@ -409,11 +485,27 @@ class Settings(BaseSettings):
         default="http://localhost:5173",
         description="Frontend URL for redirects after auth"
     )
+    razorpay_key_id: Optional[str] = Field(
+        default=None,
+        description="Razorpay public key ID used for checkout order creation"
+    )
+    razorpay_key_secret: Optional[str] = Field(
+        default=None,
+        description="Razorpay key secret used only on the API server"
+    )
+    razorpay_webhook_secret: Optional[str] = Field(
+        default=None,
+        description="Optional Razorpay webhook signing secret"
+    )
+    razorpay_pro_plan_id: Optional[str] = Field(
+        default=None,
+        description="Razorpay subscription plan ID for the Pro plan",
+    )
 
     @field_validator("fallback_order")
     @classmethod
     def validate_fallback_order(cls, v: List[str]) -> List[str]:
-        valid_providers = {"gemini", "claude", "openai", "openrouter", "bedrock", "ollama"}
+        valid_providers = {"gemini", "claude", "openai", "deepseek", "groq", "mimo", "openrouter", "bedrock", "ollama"}
         for provider in v:
             if provider not in valid_providers:
                 raise ValueError(
@@ -426,9 +518,18 @@ class Settings(BaseSettings):
         """Validate that at least one LLM API key is provided."""
         if "ollama" in [p.lower() for p in self.fallback_order]:
             return
-        if not any([self.gemini_api_key, self.claude_api_key, self.openai_api_key, self.openrouter_api_key, self.aws_access_key_id]):
+        if not any([
+            self.gemini_api_key,
+            self.claude_api_key,
+            self.openai_api_key,
+            self.deepseek_api_key,
+            self.mimo_api_key,
+            self.openrouter_api_key,
+            self.aws_access_key_id,
+        ]):
             raise ValueError(
                 "At least one LLM API key must be provided "
-                "(GEMINI_API_KEY, CLAUDE_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, "
+                "(GEMINI_API_KEY, CLAUDE_API_KEY, OPENAI_API_KEY, "
+                "DEEPSEEK_API_KEY, MIMO_API_KEY, OPENROUTER_API_KEY, "
                 "AWS_ACCESS_KEY_ID, or include ollama in FALLBACK_ORDER)"
             )

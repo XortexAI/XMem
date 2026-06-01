@@ -1,0 +1,21 @@
+{
+  "name": "create-xmem",
+  "version": "0.1.2",
+  "description": "Create a local XMem workspace.",
+  "bin": {
+    "create-xmem": "bin/create-xmem.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "keywords": [
+    "xmem",
+    "xortexai",
+    "memory",
+    "local-ai"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/scripts/session-start.cjs\"",
+        "timeout": 20
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/scripts/session-end.cjs\"",
+        "timeout": 30
+      }
+    ]
+  }
+}

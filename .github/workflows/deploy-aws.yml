@@ -27,8 +27,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment:
-      name: production
-      url: ${{ vars.PRODUCTION_URL }}
+      name: EC2_HOST
     permissions:
       contents: read
       deployments: write
@@ -81,7 +80,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           deployment-id: ${{ steps.deployment.outputs.deployment_id }}
           state: success
-          environment-url: ${{ vars.PRODUCTION_URL }}
+          environment-url: https://api.xmem.in
 
       - name: Deployment failed
         if: failure()

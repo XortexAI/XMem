@@ -1,0 +1,92 @@
+# Deploy xmem-go to the PRODUCTION AWS EC2 instance when Go code changes land on main.
+#
+# Mirrors the Python deploy workflow: SSHes into EC2, pulls latest main,
+# builds the Go binary on-server, and restarts the xmem-go systemd service.
+#
+# Re-uses the same EC2 secrets as the Python deploy workflow:
+#   EC2_HOST, EC2_USER, EC2_SSH_KEY, EC2_SSH_KEY_PASSPHRASE
+
+name: Deploy xmem-go
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'xmem-go/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-xmem-go
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: EC2_HOST
+    permissions:
+      contents: read
+      deployments: write
+
+    steps:
+      - name: Create deployment
+        uses: chrnorm/deployment-action@v2
+        id: deployment
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          environment: production
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          passphrase: ${{ secrets.EC2_SSH_KEY_PASSPHRASE }}
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            export PATH=$PATH:/usr/local/go/bin
+            cd "${{ secrets.EC2_DEPLOY_PATH }}"
+
+            echo "── Pulling latest main ──"
+            git fetch origin main
+            git checkout main
+            git pull origin main
+
+            echo "── Building xmem-go ──"
+            cd xmem-go
+            go build -o xmem-go ./cmd/xmem
+
+            echo "── Restarting xmem-go service ──"
+            sudo systemctl restart xmem-go
+
+            echo "── Waiting for health endpoint ──"
+            for i in $(seq 1 30); do
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8002/health || true)
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "Health check passed (attempt $i)"
+                exit 0
+              fi
+              echo "Health check attempt $i: HTTP $HTTP_CODE — retrying in 10s"
+              sleep 10
+            done
+            echo "FATAL: Health check never returned 200 after 300s"
+            exit 1
+
+      - name: Deployment succeeded
+        if: success()
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deployment-id: ${{ steps.deployment.outputs.deployment_id }}
+          state: success
+          environment-url: https://api.xmem.in
+
+      - name: Deployment failed
+        if: failure()
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deployment-id: ${{ steps.deployment.outputs.deployment_id }}
+          state: failure

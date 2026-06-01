@@ -61,10 +61,34 @@ permissions:
   issues: write
 
 jobs:
-  # ── 1. Deploy PR branch to staging EC2 ─────────────────────────────────────
+  # ── 0. Fork PRs: GitHub blocks deployments + secrets for security ───────────
+  # External contributors open PRs from forks. For those, GITHUB_TOKEN is
+  # read-only ("Resource not accessible by integration") and staging SSH
+  # secrets are unavailable — even if the deployment API call succeeded.
+  fork-pr-notice:
+    name: Fork PR — skip staging deploy
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain why staging was not deployed
+        run: |
+          echo "Staging deploy skipped for fork PR. This is expected and keeps repository secrets unavailable to untrusted code."
+          {
+            echo "### Staging deploy skipped for fork PR"
+            echo
+            echo "This pull request comes from a fork, so GitHub does not expose staging SSH secrets or allow deployment records from this workflow token."
+            echo
+            echo "Code checks still run. A maintainer can deploy after review by pushing the branch to this repository or running the staging workflow manually."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 1. Deploy PR branch to staging EC2 (same-repo PRs + manual dispatch) ───
   deploy:
     name: Deploy to staging EC2
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
@@ -76,7 +100,7 @@ jobs:
         uses: chrnorm/deployment-action@v2
         id: deployment
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ github.token }}
           environment: staging
 
       - name: Deploy PR branch over SSH
@@ -91,12 +115,15 @@ jobs:
             set -euo pipefail
             cd "${{ secrets.STAGING_EC2_DEPLOY_PATH }}"
 
-            PR_BRANCH="${{ github.head_ref || github.event.inputs.ref || 'develop' }}"
-            echo "── Deploying branch: $PR_BRANCH ──"
+            DEPLOY_REF="${{ github.head_ref || github.event.inputs.ref || 'develop' }}"
+            echo "── Deploying ref: $DEPLOY_REF ──"
 
-            git fetch origin "$PR_BRANCH"
-            git checkout "$PR_BRANCH"
-            git pull origin "$PR_BRANCH"
+            git fetch origin "$DEPLOY_REF"
+            if git show-ref --verify --quiet "refs/remotes/origin/$DEPLOY_REF"; then
+              git checkout -B "$DEPLOY_REF" "origin/$DEPLOY_REF"
+            else
+              git checkout --detach FETCH_HEAD
+            fi
 
             echo "── Restarting XMem staging service ──"
             sudo systemctl restart xmem-staging
@@ -115,28 +142,28 @@ jobs:
             exit 1
 
       - name: Update deployment status (success)
-        if: success()
+        if: success() && steps.deployment.outputs.deployment_id != ''
         uses: chrnorm/deployment-status@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ github.token }}
           deployment-id: ${{ steps.deployment.outputs.deployment_id }}
           state: success
           environment-url: ${{ vars.STAGING_URL }}
 
       - name: Update deployment status (failure)
-        if: failure()
+        if: failure() && steps.deployment.outputs.deployment_id != ''
         uses: chrnorm/deployment-status@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ github.token }}
           deployment-id: ${{ steps.deployment.outputs.deployment_id }}
           state: failure
 
   # ── 2. Smoke tests against live staging ────────────────────────────────────
   smoke-test:
     name: Smoke test staging
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     needs: deploy
+    if: needs.deploy.result == 'success'
     timeout-minutes: 10
     environment:
       name: staging
@@ -191,7 +218,10 @@ jobs:
 
       # ── Post deployment report as PR comment ──────────────────────────────
       - name: Post result to PR
-        if: always() && github.event_name == 'pull_request'
+        if: >-
+          always() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         with:
           script: |

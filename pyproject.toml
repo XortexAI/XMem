@@ -41,11 +41,13 @@ dependencies = [
     "tree-sitter-go>=0.21.0",
     "beautifulsoup4>=4.12.0",
     "playwright>=1.42.0",
+    "cryptography>=42.0.0",
     "python-jose[cryptography]>=3.3.0",
     "google-auth>=2.27.0",
     "google-auth-oauthlib>=1.2.0",
     "sentry-sdk[fastapi]>=2.0.0",
     "prometheus-client>=0.20.0",
+    "temporalio>=1.10.0",
 ]
 
 [project.optional-dependencies]
@@ -106,6 +108,11 @@ omit = [
     "src/api/routes/memory_graph.py",
     "src/api/routes/scanner.py",
     "src/api/routes/telemetry.py",
+    "src/api/routes/v2/activities.py",
+    "src/api/routes/v2/scanner.py",
+    "src/api/routes/v2/temporal_client.py",
+    "src/api/routes/v2/worker.py",
+    "src/api/routes/v2/workflows.py",
     "src/config/*",
     "src/enterprise/memory_service.py",
     "src/graph/*",

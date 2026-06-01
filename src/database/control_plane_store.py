@@ -271,9 +271,6 @@ class ControlPlaneStore:
         now = time.time()
         cutoff = now - window_seconds
 
-        if self._in_memory:
-            return self._check_rate_limit_memory(identity, max_requests, now, cutoff)
-
         return await asyncio.to_thread(
             self._check_rate_limit_sync,
             identity,
@@ -294,13 +291,17 @@ class ControlPlaneStore:
         self._ensure_ready()
         if self._in_memory:
             return self._check_rate_limit_memory(identity, max_requests, now, cutoff)
-        return self._check_rate_limit_mongo(
-            identity,
-            max_requests,
-            window_seconds,
-            now,
-            cutoff,
-        )
+        try:
+            return self._check_rate_limit_mongo(
+                identity,
+                max_requests,
+                window_seconds,
+                now,
+                cutoff,
+            )
+        except Exception as exc:
+            logger.error("Rate-limit MongoDB error for %s: %s", identity, exc)
+            return True, 0
 
     def _check_rate_limit_memory(
         self,

@@ -1,0 +1,32 @@
+{
+  "name": "xmem-codex",
+  "version": "0.1.0",
+  "description": "Persistent XMem memory for Codex sessions",
+  "author": {
+    "name": "XMem",
+    "email": "support@xmem.in",
+    "url": "https://xmem.in"
+  },
+  "homepage": "https://xmem.in",
+  "repository": "https://github.com/XortexAI/XMem",
+  "license": "MIT",
+  "keywords": ["codex", "xmem", "memory", "coding-agent"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "XMem Codex",
+    "shortDescription": "Persistent memory for Codex sessions",
+    "longDescription": "Search and save project knowledge, decisions, and prior session context in XMem from Codex.",
+    "developerName": "XMem",
+    "category": "Productivity",
+    "capabilities": ["Memory", "Search", "Write"],
+    "websiteURL": "https://xmem.in",
+    "privacyPolicyURL": "https://xmem.in/privacy",
+    "termsOfServiceURL": "https://xmem.in/terms",
+    "defaultPrompt": [
+      "Search XMem for this project",
+      "Save this decision to XMem",
+      "Check XMem Codex setup"
+    ],
+    "brandColor": "#0EA5E9"
+  }
+}

@@ -1,0 +1,20 @@
+---
+description: XMem persistent memory tools - use them proactively
+alwaysApply: true
+---
+
+You have access to XMem MCP tools for persistent coding memory across Cursor sessions:
+
+- `xmem_search`: Search previous project memories, decisions, and solved bugs.
+- `xmem_add`: Save important decisions, fixes, conventions, and implementation notes.
+- `xmem_status`: Check whether XMem is configured without printing secrets.
+
+When to use:
+- User mentions previous work, past sessions, "last time", or asks why something was done -> search first.
+- User says "remember", "save this", or "don't forget" -> save immediately.
+- After solving a significant bug -> save root cause and fix.
+- When discovering architecture, commands, conventions, or integration details -> save concise project knowledge.
+
+Scope:
+- Use project-specific language in saved content so future searches can find it.
+- Never save API keys, tokens, passwords, private customer data, or other secrets.

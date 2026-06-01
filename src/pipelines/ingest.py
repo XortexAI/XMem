@@ -94,7 +94,7 @@ logger = logging.getLogger("xmem.pipelines.ingest")
 
 
 # ---------------------------------------------------------------------------
-# Embedding helper — supports Google GenAI and Amazon Bedrock (Nova)
+# Embedding helper — supports Google GenAI, OpenAI, Amazon Bedrock, Ollama, FastEmbed
 # ---------------------------------------------------------------------------
 
 import json as _json
@@ -103,6 +103,7 @@ from google import genai
 from google.genai import types
 
 _embedding_client: Optional[genai.Client] = None
+_openai_embedding_client = None
 _bedrock_embedding_client = None
 _fastembed_model = None
 
@@ -112,10 +113,19 @@ def _is_bedrock_embedding() -> bool:
     return settings.embedding_model.lower().startswith("amazon.")
 
 
+def _is_openai_embedding() -> bool:
+    """Check if the configured embedding model is an OpenAI embedding model."""
+    return settings.embedding_model.lower().startswith("text-embedding")
+
+
 def _embedding_provider() -> str:
     provider = (settings.embedding_provider or "auto").strip().lower()
     if provider == "auto":
-        return "bedrock" if _is_bedrock_embedding() else "gemini"
+        if _is_bedrock_embedding():
+            return "bedrock"
+        if _is_openai_embedding():
+            return "openai"
+        return "gemini"
     return provider
 
 
@@ -145,6 +155,24 @@ def _get_bedrock_embedding_client():
         _bedrock_embedding_client = boto3.client("bedrock-runtime", **kwargs)
         logger.info("Loaded Bedrock embedding client for model: %s", settings.embedding_model)
     return _bedrock_embedding_client
+
+
+def _get_openai_embedding_client():
+    """Lazily create an OpenAI client for embeddings."""
+    global _openai_embedding_client
+    if _openai_embedding_client is None:
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ImportError(
+                "openai package is not installed. Install with: pip install openai"
+            ) from exc
+        api_key = settings.openai_api_key
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY is not set but EMBEDDING_PROVIDER=openai")
+        _openai_embedding_client = OpenAI(api_key=api_key)
+        logger.info("Loaded OpenAI embedding client for model: %s", settings.embedding_model)
+    return _openai_embedding_client
 
 
 def _get_fastembed_model():
@@ -177,12 +205,14 @@ def _ensure_embedding_dimension(values: tuple[float, ...], provider: str) -> tup
 def embed_text(text: str) -> tuple[float, ...]:
     """Embed a single text string → tuple of floats.
 
-    Dispatches to Google GenAI or Amazon Bedrock based on the
-    EMBEDDING_MODEL setting.
+    Dispatches to the configured embedding provider (auto-detected or explicit).
+    Supported: gemini, openai, bedrock, ollama, fastembed.
     """
     provider = _embedding_provider()
     if provider == "gemini":
         return _embed_text_gemini(text)
+    if provider == "openai":
+        return _embed_text_openai(text)
     if provider == "bedrock":
         return _embed_text_bedrock(text)
     if provider == "ollama":
@@ -191,7 +221,7 @@ def embed_text(text: str) -> tuple[float, ...]:
         return _embed_text_fastembed(text)
     raise ValueError(
         f"Unsupported EMBEDDING_PROVIDER={provider!r}. "
-        "Use auto, gemini, bedrock, ollama, or fastembed."
+        "Use auto, gemini, openai, bedrock, ollama, or fastembed."
     )
 
 
@@ -224,6 +254,51 @@ def _embed_text_gemini(text: str) -> tuple[float, ...]:
         pass
 
     return tuple(embedding_obj.values)
+
+
+def _embed_text_openai(text: str) -> tuple[float, ...]:
+    """Embed text using the OpenAI Embeddings API.
+
+    Supports text-embedding-3-small, text-embedding-3-large, and
+    text-embedding-ada-002.  The v3 models accept a ``dimensions``
+    parameter for native dimension reduction (e.g. 384 for Pinecone).
+    """
+    import time as _time
+
+    client = _get_openai_embedding_client()
+    model = settings.embedding_model
+    dimension = int(settings.pinecone_dimension)
+
+    start = _time.perf_counter()
+
+    # text-embedding-3-* supports the dimensions parameter;
+    # ada-002 does not (fixed at 1536).
+    kwargs: dict = {"model": model, "input": text}
+    if model.startswith("text-embedding-3"):
+        kwargs["dimensions"] = dimension
+
+    response = client.embeddings.create(**kwargs)
+    elapsed = _time.perf_counter() - start
+    embedding = response.data[0].embedding
+
+    # Track embedding call for cost analytics
+    input_tokens = getattr(response.usage, "total_tokens", 0) or len(text.split())
+    try:
+        from src.config.analytics import analytics
+        analytics.track_llm_call(
+            provider="openai",
+            model=model,
+            agent="embedding",
+            latency_ms=round(elapsed * 1000, 2),
+            input_tokens=input_tokens,
+            output_tokens=0,
+            total_tokens=input_tokens,
+        )
+    except Exception:
+        pass
+
+    values = tuple(float(v) for v in embedding)
+    return _ensure_embedding_dimension(values, "OpenAI")
 
 
 def _embed_text_bedrock(text: str) -> tuple[float, ...]:

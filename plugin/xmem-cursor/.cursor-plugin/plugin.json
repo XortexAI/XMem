@@ -1,0 +1,14 @@
+{
+  "name": "xmem-cursor",
+  "description": "Persistent AI memory for Cursor powered by XMem",
+  "version": "0.1.0",
+  "author": {
+    "name": "XMem",
+    "email": "support@xmem.in"
+  },
+  "keywords": ["memory", "xmem", "ai", "mcp", "cursor"],
+  "rules": "rules",
+  "skills": "skills",
+  "commands": "commands",
+  "mcpServers": ".mcp.json"
+}

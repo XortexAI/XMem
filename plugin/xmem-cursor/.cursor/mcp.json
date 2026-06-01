@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "xmem": {
+      "command": "node",
+      "args": ["${CURSOR_PLUGIN_ROOT}/scripts/mcp-server.cjs"]
+    }
+  }
+}

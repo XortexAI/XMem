@@ -29,7 +29,7 @@ jobs:
           cache: pip
 
       - name: Install bandit
-        run: pip install bandit[toml] bandit-sarif-formatter
+        run: pip install "bandit[toml,sarif]"
 
       - name: Run Bandit
         run: |
@@ -41,11 +41,26 @@ jobs:
         continue-on-error: true
 
       - name: Upload Bandit SARIF
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        if: >-
+          always() &&
+          hashFiles('bandit-results.sarif') != '' &&
+          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: bandit-results.sarif
           category: bandit
+
+      - name: Summarize Bandit for fork PR
+        if: >-
+          always() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          {
+            echo "### Bandit SAST"
+            echo
+            echo "Bandit ran for this fork PR. SARIF upload to the repository security tab is skipped because fork PR tokens are read-only."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   pip-audit:
     name: Dependency CVE Audit

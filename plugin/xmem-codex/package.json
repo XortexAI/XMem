@@ -1,0 +1,20 @@
+{
+  "name": "xmem-codex",
+  "version": "0.1.0",
+  "description": "Persistent XMem memory for Codex sessions",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "codex",
+    "xmem",
+    "memory",
+    "coding-agent"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "check": "node --check scripts/search-memory.cjs && node --check scripts/save-memory.cjs && node --check scripts/status.cjs"
+  }
+}

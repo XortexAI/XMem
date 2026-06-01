@@ -1,0 +1,15 @@
+{
+  "name": "xmem-cursor",
+  "version": "0.1.0",
+  "description": "Persistent AI memory for Cursor powered by XMem",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["cursor", "xmem", "memory", "mcp"],
+  "license": "MIT",
+  "scripts": {
+    "check": "node --check scripts/lib/xmem-client.cjs && node --check scripts/mcp-server.cjs && node --check scripts/session-start.cjs && node --check scripts/session-end.cjs && node --check scripts/status.cjs"
+  }
+}

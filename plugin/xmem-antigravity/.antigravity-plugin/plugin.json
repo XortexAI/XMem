@@ -1,0 +1,9 @@
+{
+  "name": "xmem-antigravity",
+  "version": "0.1.0",
+  "description": "Persistent XMem memory across Antigravity agent sessions",
+  "author": {
+    "name": "XMem",
+    "email": "support@xmem.in"
+  }
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from src.api.schemas import IngestRequest, normalize_user_id
 from src.schemas.code import (
     AnnotationSeverity,
     AnnotationType,
@@ -84,3 +85,17 @@ def test_code_schema_enums_and_namespace_helpers():
     assert symbols_namespace("acme", "payments") == "acme:payments:symbols"
     assert annotations_namespace("acme") == "acme:annotations"
     assert snippets_namespace("user-1") == "user-1:snippets"
+
+
+def test_api_user_ids_are_normalized_before_validation():
+    assert normalize_user_id(" Ankit Kotnala! ") == "Ankit_Kotnala"
+
+    request = IngestRequest(
+        user_query="remember this",
+        agent_response="done",
+        user_id="Ankit Kotnala!",
+    )
+    assert request.user_id == "Ankit_Kotnala"
+
+    with pytest.raises(ValidationError):
+        IngestRequest(user_query="remember this", agent_response="done", user_id=" !!! ")

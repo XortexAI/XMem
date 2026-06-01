@@ -1,0 +1,30 @@
+{
+  "name": "xmem-hermes",
+  "version": "1.0.0",
+  "description": "Hermes Agent MCP connector for XMem persistent memory.",
+  "type": "module",
+  "bin": {
+    "xmem-hermes": "./src/cli.js"
+  },
+  "scripts": {
+    "build": "node --check src/cli.js",
+    "test": "node --test",
+    "smoke": "node src/cli.js smoke-test"
+  },
+  "keywords": [
+    "xmem",
+    "memory",
+    "hermes",
+    "mcp",
+    "connector"
+  ],
+  "author": "XMem",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/XortexAI/xmem-hermes.git"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

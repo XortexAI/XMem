@@ -1,0 +1,39 @@
+{
+  "name": "@xmem/openclaw",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OpenClaw XMem memory plugin",
+  "license": "MIT",
+  "files": [
+    "README.md",
+    "openclaw.plugin.json",
+    "index.ts",
+    "client.ts",
+    "commands",
+    "hooks",
+    "tools",
+    "config.ts",
+    "logger.ts",
+    "memory.ts",
+    "runtime.ts",
+    "types"
+  ],
+  "scripts": {
+    "check-json": "node -e \"JSON.parse(require('fs').readFileSync('openclaw.plugin.json','utf8')); JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log('json ok')\""
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.7"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "0.34.47"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.5.7",
+      "minGatewayVersion": "2026.5.7"
+    }
+  }
+}

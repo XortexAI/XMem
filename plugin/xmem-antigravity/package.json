@@ -1,0 +1,17 @@
+{
+  "name": "xmem-antigravity",
+  "version": "0.1.0",
+  "description": "Persistent XMem memory for Antigravity agent sessions",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "antigravity",
+    "plugin",
+    "xmem",
+    "memory"
+  ],
+  "license": "MIT"
+}

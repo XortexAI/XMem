@@ -1,0 +1,64 @@
+{
+  "id": "xmem-openclaw",
+  "kind": "memory",
+  "contracts": {
+    "tools": [
+      "xmem_search",
+      "xmem_store",
+      "xmem_status"
+    ]
+  },
+  "uiHints": {
+    "apiKey": {
+      "label": "XMem API Key",
+      "sensitive": true,
+      "placeholder": "xmem_...",
+      "help": "Your XMem API key from the dashboard, or use ${XMEM_API_KEY}"
+    },
+    "apiUrl": {
+      "label": "XMem API URL",
+      "placeholder": "https://api.xmem.in",
+      "help": "XMem API base URL",
+      "advanced": true
+    },
+    "userId": {
+      "label": "User ID",
+      "placeholder": "openclaw",
+      "help": "Optional user id for local/static-key setups",
+      "advanced": true
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Inject relevant memories before AI turns"
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Store useful conversation turns after AI responses"
+    },
+    "maxRecallResults": {
+      "label": "Max Recall Results",
+      "placeholder": "8",
+      "help": "Maximum memories to inject per turn",
+      "advanced": true
+    },
+    "debug": {
+      "label": "Debug Logging",
+      "help": "Enable verbose plugin logging",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiKey": { "type": "string" },
+      "apiUrl": { "type": "string" },
+      "userId": { "type": "string" },
+      "autoRecall": { "type": "boolean" },
+      "autoCapture": { "type": "boolean" },
+      "maxRecallResults": { "type": "number", "minimum": 1, "maximum": 20 },
+      "debug": { "type": "boolean" }
+    },
+    "required": []
+  }
+}

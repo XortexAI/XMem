@@ -88,8 +88,6 @@ def _format_similar_block(
     return "\n".join(lines)
 
 
-# Similarity threshold is evaluated dynamically at runtime from settings.summary_judge_similarity_threshold
-
 
 def _has_summary_judge_candidates(
     matches_per_item: Dict[str, List[SearchResult]],

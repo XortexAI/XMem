@@ -30,6 +30,7 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 from neo4j import GraphDatabase
 
 from src.graph.schema import GraphSchema
+from src.config import settings
 
 logger = logging.getLogger("xmem.graph.neo4j")
 
@@ -264,7 +265,6 @@ class Neo4jClient:
         dot-product semantics, which assumed unit-normalised embeddings).
         """
         if similarity_threshold is None:
-            from src.config import settings
             similarity_threshold = settings.temporal_search_similarity_threshold
 
         if not self._embedding_fn:

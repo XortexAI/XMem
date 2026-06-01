@@ -250,7 +250,7 @@ class Neo4jClient:
         user_id: str,
         query_text: str,
         top_k: int = 1,
-        similarity_threshold: float = 0.3,
+        similarity_threshold: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """Semantic search over event embeddings stored on HAS_EVENT relationships.
 
@@ -263,6 +263,10 @@ class Neo4jClient:
         ``similarity_score`` is raw cosine in [-1, 1] (matches the previous
         dot-product semantics, which assumed unit-normalised embeddings).
         """
+        if similarity_threshold is None:
+            from src.config import settings
+            similarity_threshold = settings.temporal_search_similarity_threshold
+
         if not self._embedding_fn:
             logger.warning("No embedding function — cannot search by embedding.")
             return []

@@ -32,6 +32,7 @@ from src.schemas.judge import (
     OperationType,
 )
 from src.storage.base import BaseVectorStore, SearchResult
+from src.config import settings
 
 
 # ---------------------------------------------------------------------------
@@ -87,13 +88,15 @@ def _format_similar_block(
     return "\n".join(lines)
 
 
-SUMMARY_JUDGE_SIMILARITY_THRESHOLD = 0.4
+SUMMARY_JUDGE_SIMILARITY_THRESHOLD = settings.summary_judge_similarity_threshold
 
 
 def _has_summary_judge_candidates(
     matches_per_item: Dict[str, List[SearchResult]],
-    threshold: float = SUMMARY_JUDGE_SIMILARITY_THRESHOLD,
+    threshold: Optional[float] = None,
 ) -> bool:
+    if threshold is None:
+        threshold = settings.summary_judge_similarity_threshold
     for matches in matches_per_item.values():
         for match in matches:
             if match.score >= threshold:
@@ -112,11 +115,12 @@ def _filter_matches_by_threshold(
 
 
 def _deterministic_summary_add(items_strings: List[str], confidence: float = 0.8) -> JudgeResult:
+    threshold = settings.summary_judge_similarity_threshold
     operations = [
         Operation(
             type=OperationType.ADD,
             content=item,
-            reason="No similar summary at or above 0.4 — defaulting to ADD.",
+            reason=f"No similar summary at or above {threshold} — defaulting to ADD.",
         )
         for item in items_strings
         if str(item).strip()

@@ -13,67 +13,56 @@ from src.storage.base import SearchResult
 from src.graph.neo4j_client import Neo4jClient
 
 
-def test_summary_judge_respects_custom_settings():
-    original_threshold = settings.summary_judge_similarity_threshold
-    try:
-        # Match with a score of 0.35
-        matches = {
-            "test item": [
-                SearchResult(id="1", content="similar text", score=0.35, metadata={})
-            ]
-        }
+def test_summary_judge_respects_custom_settings(monkeypatch):
+    # Match with a score of 0.35
+    matches = {
+        "test item": [
+            SearchResult(id="1", content="similar text", score=0.35, metadata={})
+        ]
+    }
 
-        # Default is 0.4, so score of 0.35 should NOT match
-        settings.summary_judge_similarity_threshold = 0.4
-        assert not _has_summary_judge_candidates(matches)
+    # Default is 0.4, so score of 0.35 should NOT match
+    monkeypatch.setattr(settings, "summary_judge_similarity_threshold", 0.4)
+    assert not _has_summary_judge_candidates(matches)
 
-        # If we configure it to 0.3, a score of 0.35 SHOULD match
-        settings.summary_judge_similarity_threshold = 0.3
-        assert _has_summary_judge_candidates(matches)
+    # If we configure it to 0.3, a score of 0.35 SHOULD match
+    monkeypatch.setattr(settings, "summary_judge_similarity_threshold", 0.3)
+    assert _has_summary_judge_candidates(matches)
 
-        # Test deterministic addition reason string includes threshold
-        settings.summary_judge_similarity_threshold = 0.55
-        result = _deterministic_summary_add(["new summary"])
-        assert len(result.operations) == 1
-        assert "0.55" in result.operations[0].reason
-
-    finally:
-        # Restore settings
-        settings.summary_judge_similarity_threshold = original_threshold
+    # Test deterministic addition reason string includes threshold
+    monkeypatch.setattr(settings, "summary_judge_similarity_threshold", 0.55)
+    result = _deterministic_summary_add(["new summary"])
+    assert len(result.operations) == 1
+    assert "0.55" in result.operations[0].reason
 
 
 def test_neo4j_client_respects_custom_settings(monkeypatch):
-    original_threshold = settings.temporal_search_similarity_threshold
-    try:
-        settings.temporal_search_similarity_threshold = 0.45
+    monkeypatch.setattr(settings, "temporal_search_similarity_threshold", 0.45)
 
-        # Instantiate Neo4jClient without real connections
-        client = Neo4jClient(uri="bolt://localhost:7687", username="neo4j", password="password")
+    # Instantiate Neo4jClient without real connections
+    client = Neo4jClient(uri="bolt://localhost:7687", username="neo4j", password="password")
 
-        # Mock embedding function
-        client._embedding_fn = lambda text: [0.1, 0.2]
+    # Mock embedding function
+    client._embedding_fn = lambda text: [0.1, 0.2]
 
-        # Mock session & driver behaviour so query does not hit a real Neo4j server
-        class MockSession:
-            def __enter__(self):
-                return self
+    # Mock session & driver behaviour so query does not hit a real Neo4j server
+    class MockSession:
+        def __enter__(self):
+            return self
 
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                pass
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
 
-            def run(self, query, **params):
-                # Verify that the similarity_threshold parameter passed to the query
-                # is indeed custom loaded from settings.temporal_search_similarity_threshold
-                assert params["similarity_threshold"] == 0.45
-                return []
+        def run(self, query, **params):
+            # Verify that the similarity_threshold parameter passed to the query
+            # is indeed custom loaded from settings.temporal_search_similarity_threshold
+            assert params["similarity_threshold"] == 0.45
+            return []
 
-        monkeypatch.setattr(client, "_session", lambda: MockSession())
+    monkeypatch.setattr(client, "_session", lambda: MockSession())
 
-        # Trigger search without specifying similarity_threshold explicitly
-        client.search_events_by_embedding(user_id="user-1", query_text="yesterday I did VOS")
-
-    finally:
-        settings.temporal_search_similarity_threshold = original_threshold
+    # Trigger search without specifying similarity_threshold explicitly
+    client.search_events_by_embedding(user_id="user-1", query_text="yesterday I did VOS")
 
 
 def test_settings_threshold_boundaries():

@@ -156,6 +156,7 @@ def get_model_context_window(
             key=lambda kv: len(kv[0]),
             reverse=True,
         ):
+            if key in model_name:
                 logger.debug(
                     f"Matched model '{model_name}' to key '{key}' with context window {window}"
                 )

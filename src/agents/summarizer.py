@@ -51,10 +51,7 @@ class SummarizerAgent(BaseAgent):
 
             context_window = get_model_context_window(provider, model_name)
          
-            self.MAX_CHUNK_TOKENS = min(
-                max(int(context_window * self.SAFE_THRESHOLD_RATIO), 2000),
-                12000
-            )
+            self.MAX_CHUNK_TOKENS = max(int(context_window * self.SAFE_THRESHOLD_RATIO), 2000)
 
             self.logger.info(
                 f"Initialized dynamic chunking: context_window={context_window}, "

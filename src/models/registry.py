@@ -23,12 +23,10 @@ from src.models.base import Provider
 logger = logging.getLogger("xmem.models")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Context Window Mappings (in tokens) for each model
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 _CONTEXT_WINDOWS = {
-    # Claude models
+
     "claude": {
         "claude-3-5-sonnet-20241022": 200000,
         "claude-3-5-sonnet": 200000,
@@ -40,7 +38,7 @@ _CONTEXT_WINDOWS = {
         "claude-haiku": 200000,
         "default": 200000,
     },
-    # OpenAI models
+    
     "openai": {
         "gpt-4o": 128000,
         "gpt-4-turbo": 128000,
@@ -63,7 +61,7 @@ _CONTEXT_WINDOWS = {
         "deepseek-coder": 128000,
         "default": 128000,
     },
-    # Groq models
+    
     "groq": {
         "mixtral-8x7b-32768": 32768,
         "llama2-70b-4096": 4096,
@@ -146,11 +144,11 @@ def get_model_context_window(
     provider_windows = _CONTEXT_WINDOWS[provider]
 
     if model_name:
-        # Try exact match first
+        
         if model_name in provider_windows:
             return provider_windows[model_name]
-        # Try partial match (e.g., "gpt-4o" matches "gpt-4o-mini")
-        # Sort by key length descending so more-specific keys win over shorter prefixes
+       
+        
         for key, window in sorted(
             ((k, v) for k, v in provider_windows.items() if k != "default"),
             key=lambda kv: len(kv[0]),
@@ -162,7 +160,7 @@ def get_model_context_window(
                 )
                 return window
 
-    # Fall back to provider default
+    
     return provider_windows.get("default", 8192)
 
 
@@ -187,7 +185,7 @@ def get_model(
     if provider:
         return _BUILDERS[provider](**kw)
 
-    # Auto-select from fallback order
+   
     errors: list[str] = []
     for p in settings.fallback_order:
         key_fn = _KEY_MAP.get(p)
@@ -206,9 +204,7 @@ def get_model(
     )
 
 
-# ---------------------------------------------------------------------------
-# Vision model (for image analysis)
-# ---------------------------------------------------------------------------
+
 
 _VISION_MODEL_MAP = {
     "gemini": lambda: settings.gemini_vision_model,
@@ -245,7 +241,7 @@ def get_vision_model(
             provider=provider, model_name=vision_name, temperature=temperature
         )
 
-    # Auto-select from fallback order
+    
     errors: list[str] = []
     for p in settings.fallback_order:
         key_fn = _KEY_MAP.get(p)

@@ -210,8 +210,14 @@ class SummarizerAgent(BaseAgent):
             tasks.append(self._call_model_with_retry(messages))
 
         self.logger.debug(f"Processing {len(chunks)} chunks concurrently...")
-        chunk_summaries = await asyncio.gather(*tasks)
-        chunk_summaries = [s.strip() for s in chunk_summaries]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Surface any failures rather than silently producing wrong output
+        exceptions = [r for r in results if isinstance(r, BaseException)]
+        if exceptions:
+            raise exceptions[0]
+
+        chunk_summaries = [str(s).strip() for s in results]
 
         # Map-reduce: Combine partial summaries and feed them back into the loop
         aggregated_text = "\n\n--- PARTIAL SUMMARIES ---\n\n".join(chunk_summaries)

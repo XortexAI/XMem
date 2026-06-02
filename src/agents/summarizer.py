@@ -19,12 +19,12 @@ from src.models.registry import get_model_context_window
 
 
 class SummarizerAgent(BaseAgent):
-    # Dynamic Chunking Configuration
+  
     MAX_RECURSION_DEPTH = 3
     CHUNK_OVERLAP_TOKENS = 200
-    SAFE_THRESHOLD_RATIO = 0.8  # Use 80% of context window as safe limit
+    SAFE_THRESHOLD_RATIO = 0.8  
 
-    # Rate limit retry configuration
+  
     MAX_RETRY_ATTEMPTS = 3
     INITIAL_BACKOFF_SECONDS = 1.0
 
@@ -34,7 +34,7 @@ class SummarizerAgent(BaseAgent):
             name="summarizer",
             system_prompt=build_system_prompt(),
         )
-        # Dynamically determine max chunk tokens from the model's context window
+ 
         self._init_dynamic_chunk_tokens()
 
     def _init_dynamic_chunk_tokens(self) -> None:
@@ -43,15 +43,14 @@ class SummarizerAgent(BaseAgent):
         This ensures we stay well within the model's limits across all providers.
         """
         try:
-            # Try to detect provider and model name from the model instance
+         
             provider = self._detect_provider()
             model_name = getattr(
                 self.model, "model", getattr(self.model, "model_name", None)
             )
 
             context_window = get_model_context_window(provider, model_name)
-            # Calculate safe chunk size at 80% of context window, capped at 12k
-            # to prevent "lost in the middle" degradation and output token exhaustion
+         
             self.MAX_CHUNK_TOKENS = min(
                 max(int(context_window * self.SAFE_THRESHOLD_RATIO), 2000),
                 12000
@@ -62,7 +61,7 @@ class SummarizerAgent(BaseAgent):
                 f"max_chunk_tokens={self.MAX_CHUNK_TOKENS}"
             )
         except Exception as e:
-            # Fallback to conservative default
+         
             self.MAX_CHUNK_TOKENS = 3000
             self.logger.warning(
                 f"Failed to initialize dynamic chunk tokens, using fallback (3000): {e}"
@@ -70,14 +69,14 @@ class SummarizerAgent(BaseAgent):
 
     def _detect_provider(self) -> str:
         """Detect the provider from the model instance, unwrapping RunnableBinding if needed."""
-        # Unwrap RunnableBinding and RunnableWithFallbacks to get the actual model
+
         model = self.model
         while hasattr(model, "bound"):
             model = model.bound
 
         model_type = type(model).__name__
 
-        # Map LangChain model classes to providers
+      
         provider_map = {
             "ChatAnthropic": "claude",
             "ChatOpenAI": "openai",
@@ -94,7 +93,7 @@ class SummarizerAgent(BaseAgent):
             if class_name in model_type:
                 return provider
 
-        # Default to openai if we can't determine
+      
         return "openai"
 
     async def _call_model_with_retry(self, messages: list) -> str:
@@ -119,7 +118,7 @@ class SummarizerAgent(BaseAgent):
                 )
 
                 if not is_rate_limit or attempt == self.MAX_RETRY_ATTEMPTS - 1:
-                    # Not a rate limit error, or last attempt - raise
+                 
                     raise
 
                 self.logger.warning(
@@ -127,7 +126,7 @@ class SummarizerAgent(BaseAgent):
                     f"Retrying in {backoff_seconds:.1f}s..."
                 )
                 await asyncio.sleep(backoff_seconds)
-                backoff_seconds *= 2  # Exponential backoff
+                backoff_seconds *= 2  
 
     def _estimate_tokens(self, text: str) -> int:
         """Lightweight token estimation (approx 4 characters per token)."""
@@ -148,10 +147,10 @@ class SummarizerAgent(BaseAgent):
         for word in words:
             word_tokens = self._estimate_tokens(word + " ")
             if current_tokens + word_tokens > self.MAX_CHUNK_TOKENS and current_chunk:
-                # Save the current chunk
+               
                 chunks.append(" ".join(current_chunk))
 
-                # Calculate overlap by counting tokens from the end of current_chunk
+               
                 overlap_words = []
                 overlap_tokens = 0
                 for w in reversed(current_chunk):
@@ -161,8 +160,8 @@ class SummarizerAgent(BaseAgent):
                     overlap_words.insert(0, w)
                     overlap_tokens += w_tokens
 
-                # Safety check: ensure overlap is strictly smaller than current_chunk
-                # to prevent infinite loops/bloat when single words exceed MAX_CHUNK_TOKENS
+             
+              
                 if len(overlap_words) >= len(current_chunk):
                     overlap_words = current_chunk[1:] if len(current_chunk) > 1 else []
 
@@ -195,14 +194,13 @@ class SummarizerAgent(BaseAgent):
             messages = self._build_messages(text)
             return await self._call_model_with_retry(messages)
 
-        # Recursive Case: Split large payloads and map-reduce
+      
         self.logger.info(
             f"Payload too large ({estimated_tokens} tokens). Splitting into chunks (Depth: {depth})."
         )
         chunks = self._chunk_payload(text)
 
-        # Summarize chunks concurrently to improve performance
-        # (avoids sequential processing that causes high latency)
+    
         tasks = []
         for i, chunk in enumerate(chunks):
             self.logger.debug(f"Queuing chunk {i + 1}/{len(chunks)} for concurrent summarization...")
@@ -212,14 +210,13 @@ class SummarizerAgent(BaseAgent):
         self.logger.debug(f"Processing {len(chunks)} chunks concurrently...")
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Surface any failures rather than silently producing wrong output
+       
         exceptions = [r for r in results if isinstance(r, BaseException)]
         if exceptions:
             raise exceptions[0]
 
         chunk_summaries = [str(s).strip() for s in results]
 
-        # Map-reduce: Combine partial summaries and feed them back into the loop
         aggregated_text = "\n\n--- PARTIAL SUMMARIES ---\n\n".join(chunk_summaries)
 
         return await self._recursive_summarize(aggregated_text, depth=depth + 1)
@@ -237,11 +234,11 @@ class SummarizerAgent(BaseAgent):
 
         user_message = pack_summary_query(user_query, agent_response)
 
-        # Route through the new dynamic chunking pipeline
+       
         raw_content = await self._recursive_summarize(user_message)
         summary = raw_content.strip()
 
-        # Treat empty-like responses as no summary
+        
         if summary in ('""', "''", "empty", "(empty)", "(empty string)"):
             summary = ""
 

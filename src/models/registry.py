@@ -150,8 +150,12 @@ def get_model_context_window(
         if model_name in provider_windows:
             return provider_windows[model_name]
         # Try partial match (e.g., "gpt-4o" matches "gpt-4o-mini")
-        for key, window in provider_windows.items():
-            if key != "default" and key in model_name:
+        # Sort by key length descending so more-specific keys win over shorter prefixes
+        for key, window in sorted(
+            ((k, v) for k, v in provider_windows.items() if k != "default"),
+            key=lambda kv: len(kv[0]),
+            reverse=True,
+        ):
                 logger.debug(
                     f"Matched model '{model_name}' to key '{key}' with context window {window}"
                 )

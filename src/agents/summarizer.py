@@ -84,7 +84,10 @@ class SummarizerAgent(BaseAgent):
             "ChatGoogleGenerativeAI": "gemini",
             "ChatGroq": "groq",
             "OllamaLLM": "ollama",
+            "ChatOllama": "ollama",
             "ChatBedrock": "bedrock",
+            "ChatDeepSeek": "deepseek",
+            "ChatMimo": "mimo",
         }
 
         for class_name, provider in provider_map.items():

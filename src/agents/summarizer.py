@@ -50,9 +50,11 @@ class SummarizerAgent(BaseAgent):
             )
 
             context_window = get_model_context_window(provider, model_name)
-            # Calculate safe chunk size at 80% of context window
-            self.MAX_CHUNK_TOKENS = max(
-                int(context_window * self.SAFE_THRESHOLD_RATIO), 2000
+            # Calculate safe chunk size at 80% of context window, capped at 12k
+            # to prevent "lost in the middle" degradation and output token exhaustion
+            self.MAX_CHUNK_TOKENS = min(
+                max(int(context_window * self.SAFE_THRESHOLD_RATIO), 2000),
+                12000
             )
 
             self.logger.info(
@@ -67,8 +69,13 @@ class SummarizerAgent(BaseAgent):
             )
 
     def _detect_provider(self) -> str:
-        """Detect the provider from the model instance."""
-        model_type = type(self.model).__name__
+        """Detect the provider from the model instance, unwrapping RunnableBinding if needed."""
+        # Unwrap RunnableBinding and RunnableWithFallbacks to get the actual model
+        model = self.model
+        while hasattr(model, "bound"):
+            model = model.bound
+
+        model_type = type(model).__name__
 
         # Map LangChain model classes to providers
         provider_map = {
@@ -124,8 +131,13 @@ class SummarizerAgent(BaseAgent):
         return len(text) // 4
 
     def _chunk_payload(self, text: str) -> list[str]:
-        """Splits text into overlapping chunks based on token limits."""
-        words = text.split(" ")
+        """Splits text into overlapping chunks based on token limits.
+        
+        Fixes: Uses text.split() for proper whitespace handling and ensures
+        overlap calculation doesn't create infinite loops when single words
+        exceed MAX_CHUNK_TOKENS.
+        """
+        words = text.split()
         chunks = []
         current_chunk = []
         current_tokens = 0
@@ -135,12 +147,22 @@ class SummarizerAgent(BaseAgent):
             if current_tokens + word_tokens > self.MAX_CHUNK_TOKENS and current_chunk:
                 # Save the current chunk
                 chunks.append(" ".join(current_chunk))
-                # Keep the overlap at the end of the chunk to prevent lost context
-                overlap_words = (
-                    current_chunk[-(self.CHUNK_OVERLAP_TOKENS // 2) :]
-                    if self.CHUNK_OVERLAP_TOKENS
-                    else []
-                )
+
+                # Calculate overlap by counting tokens from the end of current_chunk
+                overlap_words = []
+                overlap_tokens = 0
+                for w in reversed(current_chunk):
+                    w_tokens = self._estimate_tokens(w + " ")
+                    if overlap_tokens + w_tokens > self.CHUNK_OVERLAP_TOKENS:
+                        break
+                    overlap_words.insert(0, w)
+                    overlap_tokens += w_tokens
+
+                # Safety check: ensure overlap is strictly smaller than current_chunk
+                # to prevent infinite loops/bloat when single words exceed MAX_CHUNK_TOKENS
+                if len(overlap_words) >= len(current_chunk):
+                    overlap_words = current_chunk[1:] if len(current_chunk) > 1 else []
+
                 current_chunk = overlap_words + [word]
                 current_tokens = sum(
                     self._estimate_tokens(w + " ") for w in current_chunk
@@ -176,12 +198,17 @@ class SummarizerAgent(BaseAgent):
         )
         chunks = self._chunk_payload(text)
 
-        chunk_summaries = []
+        # Summarize chunks concurrently to improve performance
+        # (avoids sequential processing that causes high latency)
+        tasks = []
         for i, chunk in enumerate(chunks):
-            self.logger.debug(f"Summarizing chunk {i + 1}/{len(chunks)}...")
+            self.logger.debug(f"Queuing chunk {i + 1}/{len(chunks)} for concurrent summarization...")
             messages = self._build_messages(chunk)
-            chunk_summary = await self._call_model_with_retry(messages)
-            chunk_summaries.append(chunk_summary.strip())
+            tasks.append(self._call_model_with_retry(messages))
+
+        self.logger.debug(f"Processing {len(chunks)} chunks concurrently...")
+        chunk_summaries = await asyncio.gather(*tasks)
+        chunk_summaries = [s.strip() for s in chunk_summaries]
 
         # Map-reduce: Combine partial summaries and feed them back into the loop
         aggregated_text = "\n\n--- PARTIAL SUMMARIES ---\n\n".join(chunk_summaries)

@@ -37,6 +37,26 @@ class CreditLotPublic(BaseModel):
     expires_at: Optional[datetime] = None
 
 
+class UsageSnapshotPublic(BaseModel):
+    memories_written: int = 0
+    retrievals: int = 0
+    graph_queries: int = 0
+    credits_used: int = 0
+    credits_limit: int = 0
+
+
+class PaymentInvoicePublic(BaseModel):
+    id: str
+    date: datetime
+    amount_paise: int = 0
+    currency: str = "INR"
+    status: Literal["paid", "pending", "failed"] = "paid"
+    credits: int = 0
+    receipt_url: Optional[str] = None
+    package_id: Optional[str] = None
+    razorpay_payment_id: Optional[str] = None
+
+
 class BillingSummary(BaseModel):
     billing_account_id: str
     owner_type: str = "user"
@@ -44,11 +64,18 @@ class BillingSummary(BaseModel):
     plan_id: str
     plan_name: str
     status: str
+    account_status: str = "trial"
     currency: str = "INR"
     available_credits: int = 0
+    credit_balance: int = 0
     reserved_credits: int = 0
+    prepaid_balance_paise: int = 0
     current_period_start: Optional[datetime] = None
     current_period_end: Optional[datetime] = None
+    current_month: UsageSnapshotPublic = Field(default_factory=UsageSnapshotPublic)
+    next_invoice_paise: int = 0
+    last_payment_at: Optional[datetime] = None
+    invoices: list[PaymentInvoicePublic] = Field(default_factory=list)
     credit_lots: list[CreditLotPublic] = Field(default_factory=list)
 
 

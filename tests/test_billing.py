@@ -23,6 +23,7 @@ def clear_memory_billing():
     billing_store._memory_usage_events.clear()
     billing_store._memory_checkouts.clear()
     billing_store._memory_payment_events.clear()
+    billing_store._memory_payment_records.clear()
 
 
 def service() -> BillingService:
@@ -154,12 +155,18 @@ def test_pro_grant_is_idempotent_per_payment():
         user_id="user_1",
         payment_id="pay_1",
         subscription_id="sub_1",
+        amount=300,
+        currency="USD",
+        billing_region="GLOBAL",
         period_end=utc_now() + timedelta(days=30),
     )
     svc.grant_pro_subscription(
         user_id="user_1",
         payment_id="pay_1",
         subscription_id="sub_1",
+        amount=300,
+        currency="USD",
+        billing_region="GLOBAL",
         period_end=utc_now() + timedelta(days=30),
     )
 
@@ -171,6 +178,35 @@ def test_pro_grant_is_idempotent_per_payment():
         if entry["source"] == "pro_monthly"
     ]
     assert len(pro_grants) == 1
+    assert len(summary.invoices) == 1
+    assert summary.invoices[0].id == "pay_1"
+    assert summary.invoices[0].amount_paise == 300
+    assert summary.invoices[0].currency == "USD"
+    assert summary.invoices[0].credits == 5_000
+
+
+def test_topup_grant_adds_dashboard_invoice():
+    svc = service()
+
+    svc.grant_topup(
+        user_id="user_1",
+        pack_id="topup_99",
+        payment_id="pay_topup_1",
+        order_id="order_1",
+        amount=9_900,
+        currency="INR",
+        billing_region="IN",
+    )
+
+    summary = svc.get_billing_summary({"id": "user_1"})
+    assert summary.credit_balance == 15_000
+    assert len(summary.invoices) == 1
+    invoice = summary.invoices[0]
+    assert invoice.id == "pay_topup_1"
+    assert invoice.amount_paise == 9_900
+    assert invoice.currency == "INR"
+    assert invoice.credits == 5_000
+    assert invoice.status == "paid"
 
 
 def test_billing_config_changes_affect_estimates(monkeypatch):

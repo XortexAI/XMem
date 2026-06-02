@@ -16,9 +16,11 @@ from src.billing.types import (
     BillingSummary,
     CreditEstimate,
     CreditLotPublic,
+    PaymentInvoicePublic,
     PlanPublic,
     ReservationResult,
     TopUpPackPublic,
+    UsageSnapshotPublic,
 )
 from src.utils import billing as billing_config
 
@@ -242,10 +244,15 @@ class BillingService:
         user_id: str,
         payment_id: str,
         subscription_id: str,
+        amount: Optional[int] = None,
+        currency: Optional[str] = None,
+        billing_region: Optional[str] = None,
+        receipt_url: Optional[str] = None,
         period_end=None,
     ) -> dict[str, Any]:
         account = self.store.ensure_account(owner_id=user_id)
         plan = billing_config.PLANS["pro"]
+        price = billing_config.plan_price("pro", billing_region)
         expires_at = period_end or (utc_now() + timedelta(days=30))
         self.store.update_account(
             account["id"],
@@ -256,14 +263,40 @@ class BillingService:
                 "current_period_end": expires_at,
             },
         )
-        return self.store.grant_credits(
+        grant = self.store.grant_credits(
             account_id=account["id"],
             amount=int(plan["monthly_credits"]),
             source="pro_monthly",
             expires_at=expires_at,
             idempotency_key=f"pro_grant:{subscription_id}:{payment_id}",
-            metadata={"payment_id": payment_id, "subscription_id": subscription_id},
+            metadata={
+                "payment_id": payment_id,
+                "subscription_id": subscription_id,
+                "billing_region": billing_config.normalize_billing_region(
+                    billing_region
+                ),
+            },
         )
+        self.store.record_payment_invoice(
+            payment_id=payment_id,
+            payload={
+                "billing_account_id": account["id"],
+                "user_id": user_id,
+                "package_id": "pro",
+                "package_type": "plan",
+                "amount_paise": int(
+                    amount if amount is not None else price["price_minor_unit"]
+                ),
+                "currency": str(currency or price.get("currency") or "INR"),
+                "credits": int(plan["monthly_credits"]),
+                "razorpay_subscription_id": subscription_id,
+                "billing_region": billing_config.normalize_billing_region(
+                    billing_region
+                ),
+                "receipt_url": receipt_url,
+            },
+        )
+        return grant
 
     def grant_topup(
         self,
@@ -272,10 +305,14 @@ class BillingService:
         pack_id: str,
         payment_id: str,
         order_id: str,
+        amount: Optional[int] = None,
+        currency: Optional[str] = None,
+        billing_region: Optional[str] = None,
+        receipt_url: Optional[str] = None,
     ) -> dict[str, Any]:
         pack = billing_config.TOP_UP_PACKS[pack_id]
         account = self.store.ensure_account(owner_id=user_id)
-        return self.store.grant_credits(
+        grant = self.store.grant_credits(
             account_id=account["id"],
             amount=int(pack["credits"]),
             source=pack_id,
@@ -287,12 +324,59 @@ class BillingService:
                 "pack_id": pack_id,
             },
         )
+        self.store.record_payment_invoice(
+            payment_id=payment_id,
+            payload={
+                "billing_account_id": account["id"],
+                "user_id": user_id,
+                "package_id": pack_id,
+                "package_type": "topup",
+                "amount_paise": int(
+                    amount if amount is not None else pack["price_paise"]
+                ),
+                "currency": str(currency or pack.get("currency") or "INR"),
+                "credits": int(pack["credits"]),
+                "razorpay_order_id": order_id,
+                "billing_region": billing_config.normalize_billing_region(
+                    billing_region
+                ),
+                "receipt_url": receipt_url,
+            },
+        )
+        return grant
 
     def get_billing_summary(self, user: Mapping[str, Any]) -> BillingSummary:
         account = self.ensure_billing_account(user)
         wallet = self.store.get_wallet(account["id"])
         plan_id = str(account.get("plan_id") or "free")
         plan = billing_config.PLANS.get(plan_id, billing_config.PLANS["free"])
+        available_credits = int(wallet.get("available_credits") or 0)
+        status = str(account.get("status") or "trialing")
+        account_status = "trial" if status == "trialing" else status
+        invoices = [
+            PaymentInvoicePublic(
+                id=str(invoice.get("id") or invoice.get("razorpay_payment_id")),
+                date=invoice.get("paid_at") or invoice.get("created_at") or utc_now(),
+                amount_paise=int(
+                    invoice.get("amount_paise") or invoice.get("amount") or 0
+                ),
+                currency=str(invoice.get("currency") or plan.get("currency") or "INR"),
+                status=str(invoice.get("status") or "paid"),
+                credits=int(invoice.get("credits") or 0),
+                receipt_url=invoice.get("receipt_url"),
+                package_id=invoice.get("package_id"),
+                razorpay_payment_id=invoice.get("razorpay_payment_id"),
+            )
+            for invoice in self.store.list_payment_invoices(account["id"])
+        ]
+        last_payment_at = invoices[0].date if invoices else None
+        credits_limit = int(
+            plan.get("monthly_credits")
+            or plan.get("trial_credits")
+            or available_credits
+            or 0
+        )
+        current_usage = max(credits_limit - available_credits, 0)
         lots = [
             CreditLotPublic(
                 id=str(lot["id"]),
@@ -308,12 +392,24 @@ class BillingService:
             owner_id=str(account.get("owner_id")),
             plan_id=plan_id,
             plan_name=str(plan.get("name") or plan_id),
-            status=str(account.get("status") or "trialing"),
+            status=status,
+            account_status=account_status,
             currency=str(plan.get("currency") or "INR"),
-            available_credits=int(wallet.get("available_credits") or 0),
+            available_credits=available_credits,
+            credit_balance=available_credits,
             reserved_credits=int(wallet.get("reserved_credits") or 0),
+            prepaid_balance_paise=int(
+                available_credits * billing_config.nominal_paise_per_credit(plan_id)
+            ),
             current_period_start=account.get("current_period_start"),
             current_period_end=account.get("current_period_end"),
+            current_month=UsageSnapshotPublic(
+                credits_used=current_usage,
+                credits_limit=credits_limit,
+            ),
+            next_invoice_paise=0,
+            last_payment_at=last_payment_at,
+            invoices=invoices,
             credit_lots=lots,
         )
 

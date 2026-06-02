@@ -158,6 +158,9 @@ async def create_razorpay_checkout(
                     "package_id": request.package_id,
                     "billing_region": billing_region,
                     "subscription_id": checkout_id,
+                    "amount": int(checkout_package["price_minor_unit"]),
+                    "currency": str(checkout_package.get("currency") or "INR"),
+                    "credits": int(checkout_package.get("monthly_credits") or 0),
                     "status": "created",
                 },
             )
@@ -248,6 +251,9 @@ async def verify_razorpay_payment(
             user_id=user_id,
             payment_id=request.razorpay_payment_id,
             subscription_id=request.razorpay_subscription_id,
+            amount=int(checkout.get("amount") or 0) or None,
+            currency=checkout.get("currency"),
+            billing_region=checkout.get("billing_region") or request.billing_region,
         )
     elif request.razorpay_order_id:
         if not verify_order_signature(
@@ -273,6 +279,9 @@ async def verify_razorpay_payment(
                 user_id=user_id,
                 payment_id=request.razorpay_payment_id,
                 subscription_id=request.razorpay_order_id,
+                amount=int(checkout.get("amount") or 0) or None,
+                currency=checkout.get("currency"),
+                billing_region=checkout.get("billing_region") or request.billing_region,
             )
         else:
             await asyncio.to_thread(
@@ -281,6 +290,9 @@ async def verify_razorpay_payment(
                 pack_id=package_id,
                 payment_id=request.razorpay_payment_id,
                 order_id=request.razorpay_order_id,
+                amount=int(checkout.get("amount") or 0) or None,
+                currency=checkout.get("currency"),
+                billing_region=checkout.get("billing_region") or request.billing_region,
             )
     else:
         raise HTTPException(status_code=400, detail="Missing Razorpay order or subscription id")
@@ -345,6 +357,9 @@ async def razorpay_webhook(request: Request) -> dict[str, str]:
                 user_id=user_id,
                 payment_id=payment_id,
                 subscription_id=subscription_id or order_id,
+                amount=int(payment.get("amount") or 0) or None,
+                currency=payment.get("currency"),
+                billing_region=notes.get("billing_region"),
             )
         elif package_id == "pro":
             logger.warning("Razorpay pro webhook missing subscription/order id: %s", event_name)
@@ -356,6 +371,9 @@ async def razorpay_webhook(request: Request) -> dict[str, str]:
                 pack_id=package_id,
                 payment_id=payment_id,
                 order_id=order_id,
+                amount=int(payment.get("amount") or 0) or None,
+                currency=payment.get("currency"),
+                billing_region=notes.get("billing_region"),
             )
         elif package_id in billing_config.TOP_UP_PACKS:
             logger.warning("Razorpay top-up webhook missing order id: %s", event_name)

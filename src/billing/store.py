@@ -22,6 +22,7 @@ _memory_reservations: dict[str, dict[str, Any]] = {}
 _memory_usage_events: list[dict[str, Any]] = []
 _memory_checkouts: dict[str, dict[str, Any]] = {}
 _memory_payment_events: dict[str, dict[str, Any]] = {}
+_memory_payment_records: dict[str, dict[str, Any]] = {}
 
 
 class BillingStoreError(RuntimeError):
@@ -1046,6 +1047,84 @@ class BillingStore:
                 else None
             )
         return _without_id(self.payments.find_one({"id": checkout_id}))
+
+    def record_payment_invoice(
+        self,
+        *,
+        payment_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not payment_id:
+            raise ValueError("Razorpay payment id is required")
+        now = utc_now()
+        checkout_id = payload.get("razorpay_subscription_id") or payload.get(
+            "razorpay_order_id"
+        )
+        doc = {
+            "id": payment_id,
+            "type": "invoice",
+            "razorpay_payment_id": payment_id,
+            "status": "paid",
+            **payload,
+            "paid_at": payload.get("paid_at") or now,
+            "updated_at": now,
+        }
+        if self._in_memory:
+            existing = _memory_payment_records.get(payment_id)
+            if existing:
+                _memory_payment_records[payment_id] = {**existing, **doc}
+            else:
+                _memory_payment_records[payment_id] = {**doc, "created_at": now}
+            if checkout_id and checkout_id in _memory_checkouts:
+                _memory_checkouts[checkout_id]["status"] = "paid"
+                _memory_checkouts[checkout_id]["payment_id"] = payment_id
+                _memory_checkouts[checkout_id]["updated_at"] = now
+            return dict(_memory_payment_records[payment_id])
+
+        from pymongo import ReturnDocument
+
+        invoice = self.payments.find_one_and_update(
+            {"razorpay_payment_id": payment_id},
+            {"$set": doc, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        if checkout_id:
+            self.payments.update_one(
+                {"id": checkout_id},
+                {
+                    "$set": {
+                        "status": "paid",
+                        "payment_id": payment_id,
+                        "updated_at": now,
+                    }
+                },
+            )
+        return _without_id(invoice) or doc
+
+    def list_payment_invoices(
+        self, account_id: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        if self._in_memory:
+            invoices = [
+                dict(invoice)
+                for invoice in _memory_payment_records.values()
+                if invoice.get("billing_account_id") == account_id
+                and invoice.get("type") == "invoice"
+            ]
+            return sorted(
+                invoices,
+                key=lambda item: item.get("paid_at") or item.get("created_at"),
+                reverse=True,
+            )[:limit]
+        return [
+            _without_id(invoice) or {}
+            for invoice in self.payments.find(
+                {"billing_account_id": account_id, "type": "invoice"}
+            )
+            .sort("paid_at", -1)
+            .limit(limit)
+        ]
 
     def mark_payment_event(self, event_id: str, payload: dict[str, Any]) -> bool:
         if not event_id:

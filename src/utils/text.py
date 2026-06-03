@@ -7,10 +7,51 @@ All parse_* functions convert raw LLM output → structured data.
 
 from __future__ import annotations
 
+import logging
 from typing import List
 
 from src.config.constants import LLM_TAB_SEPARATOR
 from src.schemas.classification import Classification
+from src.utils.exceptions import ValidationError
+
+
+logger = logging.getLogger(__name__)
+
+# Maximum string length threshold (10 MB)
+MAX_STRING_LENGTH = 10 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Validation helpers
+# ---------------------------------------------------------------------------
+
+
+def validate_input_text(content: str, function_name: str) -> None:
+    """
+    Validate input text for null, empty, and size constraints.
+    
+    Raises:
+        ValidationError: If content is None, empty after stripping, or exceeds max length.
+        TypeError: If content is not a string.
+    """
+    if content is None:
+        raise ValidationError(f"{function_name}: Input text cannot be None")
+    
+    if not isinstance(content, str):
+        raise TypeError(f"{function_name}: Input must be a string, got {type(content).__name__}")
+    
+    if not content.strip():
+        raise ValidationError(f"{function_name}: Input text cannot be empty or whitespace-only")
+    
+    if len(content) > MAX_STRING_LENGTH:
+        logger.warning(
+            f"{function_name}: Input text exceeds maximum length. "
+            f"Length: {len(content)} bytes, Max: {MAX_STRING_LENGTH} bytes"
+        )
+        raise ValidationError(
+            f"{function_name}: Input text exceeds maximum allowed length "
+            f"({len(content)} > {MAX_STRING_LENGTH} bytes)"
+        )
 
 
 def attribute_unify(value: str) -> str:
@@ -45,7 +86,12 @@ def parse_raw_response_to_classifications(content: str) -> List[Classification]:
 
     Expected line format::
         SOURCE::QUERY
+    
+    Raises:
+        ValidationError: If content is None, empty, or exceeds maximum length.
     """
+    validate_input_text(content, "parse_raw_response_to_classifications")
+    
     classifications: List[Classification] = []
 
     for line in content.strip().splitlines():
@@ -99,7 +145,12 @@ def parse_raw_response_to_profiles(content: str) -> list[dict]:
         TOPIC::SUB_TOPIC::MEMO
 
     Lines before ``---`` are treated as the LLM's "thinking" and ignored.
+    
+    Raises:
+        ValidationError: If content is None, empty, or exceeds maximum length.
     """
+    validate_input_text(content, "parse_raw_response_to_profiles")
+    
     facts: list[dict] = []
 
     # Skip the thinking section (everything before '---')
@@ -150,7 +201,12 @@ def parse_raw_response_to_events(content: str) -> list[dict]:
 
     Returns:
         List of event dicts. Empty list if no events found.
+    
+    Raises:
+        ValidationError: If content is None, empty, or exceeds maximum length.
     """
+    validate_input_text(content, "parse_raw_response_to_events")
+    
     content = content.strip()
 
     if "NO_EVENT" in content.upper():
@@ -253,7 +309,12 @@ def parse_raw_response_to_event(content: str) -> dict | None:
 
     Returns:
         Dict with event data or *None* if no event was found.
+    
+    Raises:
+        ValidationError: If content is None, empty, or exceeds maximum length.
     """
+    validate_input_text(content, "parse_raw_response_to_event")
+    
     events = parse_raw_response_to_events(content)
     return events[0] if events else None
 
@@ -277,7 +338,12 @@ def parse_raw_response_to_image(content: str) -> dict:
     Returns:
         Dict with keys ``description`` (str) and ``observations`` (list of dicts).
         Each observation dict has ``category``, ``description``, and optional ``confidence``.
+    
+    Raises:
+        ValidationError: If content is None, empty, or exceeds maximum length.
     """
+    validate_input_text(content, "parse_raw_response_to_image")
+    
     content = content.strip()
 
     result: dict = {

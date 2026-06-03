@@ -320,7 +320,7 @@ class MemoryBatchIngestWorkflow:
                         original_task.cancel()
                         try:
                             await original_task
-                        except BaseException:
+                        except (asyncio.CancelledError, CancelledError):
                             pass
 
             for start in range(0, len(items), concurrency):

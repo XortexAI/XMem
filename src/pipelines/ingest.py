@@ -870,6 +870,7 @@ class IngestPipeline:
             judge_result=judge_result,
             domain=JudgeDomain.PROFILE,
             user_id=user_id,
+            extra_metadata=state.get("lifecycle_metadata"),
         )
         return {
             "profile_result": result,
@@ -963,6 +964,7 @@ class IngestPipeline:
             judge_result=judge_result,
             domain=JudgeDomain.SUMMARY,
             user_id=user_id,
+            extra_metadata=state.get("lifecycle_metadata"),
         )
 
         return {
@@ -1090,6 +1092,7 @@ class IngestPipeline:
             judge_result=judge_result,
             domain=JudgeDomain.SUMMARY,
             user_id=state.get("user_id", "default"),
+            extra_metadata=state.get("lifecycle_metadata"),
         )
         return {
             "summary_result": result,

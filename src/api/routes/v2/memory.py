@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import time
 from typing import Any, Dict
 
@@ -122,6 +123,18 @@ async def ingest_memory_v2(req: IngestRequest, request: Request, user: dict = De
     payload = req.model_dump()
     payload["user_id"] = user_id
     payload["timeout_seconds"] = float(settings.memory_ingest_timeout_seconds)
+
+    # When forget=true, compute lifecycle_metadata and thread it through so the
+    # weaver stamps the forget flag + TTL on every vector record it writes.
+    if req.forget:
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(days=settings.memory_forget_default_ttl_days)
+        payload["lifecycle_metadata"] = {
+            "forget": True,
+            "expires_at": expires_at.isoformat(),
+            "lifecycle_state": "active",
+        }
+
     idempotency_fields = {
         "user_id": user_id,
         "org_id": payload.get("org_id", "default"),
@@ -131,6 +144,9 @@ async def ingest_memory_v2(req: IngestRequest, request: Request, user: dict = De
             "session_datetime": req.session_datetime,
             "image_url": req.image_url,
             "effort_level": req.effort_level,
+            # Include forget in idempotency so forget vs non-forget of the
+            # same content are treated as distinct requests.
+            "forget": req.forget,
         }),
     }
     job_id = _durable_job_id("memory_ingest", idempotency_fields)

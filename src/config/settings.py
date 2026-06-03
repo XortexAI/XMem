@@ -131,6 +131,10 @@ class Settings(BaseSettings):
         default=None,
         description="AWS secret access key for Bedrock"
     )
+    aws_session_token: Optional[str] = Field(
+        default=None,
+        description="Optional AWS session token for temporary credentials"
+    )
     bedrock_region: str = Field(
         default="us-east-1",
         description="AWS region for Bedrock"
@@ -167,6 +171,101 @@ class Settings(BaseSettings):
     memory_ingest_timeout_seconds: float = Field(
         default=120.0,
         description="Overall memory ingest timeout in seconds",
+    )
+
+    original_storage_enabled: bool = Field(
+        default=False,
+        description="Enable v2-only raw original storage and original chunk indexing",
+    )
+    original_storage_provider: str = Field(
+        default="s3",
+        description="Original storage provider: s3",
+    )
+    original_storage_fail_closed: bool = Field(
+        default=False,
+        description="Fail v2 ingest jobs when original storage/indexing fails",
+    )
+    original_storage_timeout_seconds: float = Field(
+        default=180.0,
+        description="Temporal activity timeout for original storage/indexing",
+    )
+    original_s3_bucket: Optional[str] = Field(
+        default=None,
+        description="S3 bucket for raw original documents",
+    )
+    original_s3_region: str = Field(
+        default="us-east-1",
+        description="AWS region for ORIGINAL_S3_BUCKET",
+    )
+    original_s3_prefix: str = Field(
+        default="originals",
+        description="Prefix inside the S3 bucket for original documents",
+    )
+    original_s3_endpoint_url: Optional[str] = Field(
+        default=None,
+        description="Optional S3-compatible endpoint URL",
+    )
+    original_s3_kms_key_id: Optional[str] = Field(
+        default=None,
+        description="Optional KMS key ID/ARN for SSE-KMS encryption",
+    )
+    original_s3_multipart_threshold_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        description="Use multipart upload above this serialized object size",
+    )
+    original_s3_multipart_chunk_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        description="Multipart upload chunk size for original S3 objects",
+    )
+    original_chunk_size_tokens: int = Field(
+        default=350,
+        description="Approximate token target for original searchable chunks",
+    )
+    original_chunk_overlap_tokens: int = Field(
+        default=40,
+        description="Approximate token overlap between original searchable chunks",
+    )
+    original_index_batch_size: int = Field(
+        default=64,
+        description="Number of original chunks to upsert per vector-store batch",
+    )
+    original_embed_concurrency: int = Field(
+        default=4,
+        description="Concurrent embedding calls for original chunks",
+    )
+    original_index_concurrency: int = Field(
+        default=2,
+        description="Concurrent vector upsert batches for original chunks",
+    )
+    original_batch_item_concurrency: int = Field(
+        default=3,
+        description="Concurrent v2 batch-ingest items when original storage is enabled",
+    )
+    original_max_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        description="Maximum serialized original object size accepted for preservation",
+    )
+    original_include_agent_response: bool = Field(
+        default=True,
+        description="Include agent_response in stored original content",
+    )
+    original_include_image_url: bool = Field(
+        default=False,
+        description="Include image_url in stored original JSON and indexed text",
+    )
+    hybrid_search_memory_top_k: int = Field(
+        default=10,
+        description="Default number of extracted memory hits for v2 hybrid search",
+    )
+    hybrid_search_original_top_k: int = Field(
+        default=10,
+        description="Default number of original chunk hits for v2 hybrid search",
+    )
+    hybrid_search_min_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Minimum score for original chunks returned by v2 hybrid search",
     )
     temporal_address: str = Field(
         default="localhost:7233",

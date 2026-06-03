@@ -12,6 +12,7 @@ from src.api.routes import memory as memory_v1
 from src.billing.context import use_billing_context
 from src.billing.service import commit_job_billing, release_job_billing
 from src.jobs.durable import get_default_job_store
+from src.storage.original import preserve_original
 
 try:  # pragma: no cover - no-op fallback keeps imports working without SDK.
     from temporalio import activity
@@ -180,6 +181,16 @@ async def memory_run_pipeline_activity(payload: Dict[str, Any]) -> Dict[str, Any
 
 
 @activity.defn
+async def memory_store_original_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
+    pipeline = get_ingest_pipeline()
+    return await preserve_original(
+        payload,
+        vector_store=pipeline.vector_store,
+        embed_fn=pipeline.embed_fn,
+    )
+
+
+@activity.defn
 async def memory_scrape_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
     def _run_scrape() -> Dict[str, Any]:
         html, final_url = memory_v1._render_chat_share_sync(payload["url"])
@@ -286,6 +297,7 @@ ALL_ACTIVITIES = [
     memory_classify_activity,
     memory_domain_activity,
     memory_run_pipeline_activity,
+    memory_store_original_activity,
     memory_scrape_activity,
     scanner_scan_activity,
     scanner_phase2_activity,

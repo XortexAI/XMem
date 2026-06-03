@@ -109,11 +109,14 @@ async def memory_domain_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
         billing_account_id=payload.get("billing_account_id"),
         user_id=user_id,
     ):
+        lifecycle_metadata = payload.get("lifecycle_metadata")
+
         if domain == "profile":
             result = await pipeline._node_extract_profile(
                 {
                     "profile_queries": payload.get("queries", []),
                     "user_id": user_id,
+                    "lifecycle_metadata": lifecycle_metadata,
                 }
             )
             return {"domain": domain, "result": _domain_payload(result, "profile")}
@@ -124,6 +127,7 @@ async def memory_domain_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "temporal_queries": payload.get("queries", []),
                     "session_datetime": payload.get("session_datetime", ""),
                     "user_id": user_id,
+                    "lifecycle_metadata": lifecycle_metadata,
                 }
             )
             return {"domain": domain, "result": _domain_payload(result, "temporal")}
@@ -134,6 +138,7 @@ async def memory_domain_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "user_query": payload.get("user_query", ""),
                     "agent_response": payload.get("agent_response", ""),
                     "user_id": user_id,
+                    "lifecycle_metadata": lifecycle_metadata,
                 }
             )
             return {"domain": domain, "result": _domain_payload(result, "summary")}
@@ -144,6 +149,7 @@ async def memory_domain_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "classifier_output": payload.get("classifier_output", ""),
                     "image_url": payload.get("image_url", ""),
                     "user_id": user_id,
+                    "lifecycle_metadata": lifecycle_metadata,
                 }
             )
             return {"domain": domain, "result": _domain_payload(result, "image")}

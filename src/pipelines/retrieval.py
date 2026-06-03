@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -31,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from src.config import settings
 from src.graph.neo4j_client import Neo4jClient
+from src.pipelines.lifecycle import is_retrievable
 from src.prompts.retrieval import ANSWER_PROMPT, build_system_prompt
 from src.schemas.retrieval import RetrievalResult, SourceRecord
 from src.schemas.code import snippets_namespace
@@ -100,6 +102,7 @@ class RetrievalPipeline:
         model: Optional[BaseChatModel] = None,
         vector_store: Optional[BaseVectorStore] = None,
         neo4j_client: Optional[Neo4jClient] = None,
+        _now: Optional[Callable[[], datetime]] = None,
     ) -> None:
         # ── LLM ───────────────────────────────────────────────────────
         if model is None:
@@ -133,6 +136,7 @@ class RetrievalPipeline:
 
         self.embed_fn = embed_fn
         self._snippet_stores: Dict[str, BaseVectorStore] = {}
+        self._now: Callable[[], datetime] = _now or (lambda: datetime.now(timezone.utc))
 
         logger.info("RetrievalPipeline initialized")
 
@@ -413,8 +417,11 @@ class RetrievalPipeline:
         user_id: str,
         top_k: int = 10,
     ) -> List[SourceRecord]:
-        """Semantic search over summary entries in Pinecone."""
+        """Semantic search over summary entries in Pinecone.
 
+        Records ingested with ``forget=true`` whose TTL has passed are filtered
+        out at read time. Legacy records (no lifecycle keys) always pass through.
+        """
         results = await self.vector_store.search_by_text(
             query_text=query,
             top_k=top_k,
@@ -424,8 +431,11 @@ class RetrievalPipeline:
             },
         )
 
+        now = self._now()
         records = []
         for r in results:
+            if not is_retrievable(r.metadata, now):
+                continue
             records.append(SourceRecord(
                 domain="summary",
                 content=r.content,
@@ -503,11 +513,16 @@ class RetrievalPipeline:
             logger.warning("Failed to fetch profile catalog: %s", exc)
             return [], []
 
+        now = self._now()
         catalog: List[Dict[str, str]] = []
         seen = set()
+        live_results = []
 
         for r in results:
-            main_content = r.metadata.get("main_content", "")
+            if not is_retrievable(r.metadata, now):
+                continue
+            live_results.append(r)
+            main_content = (r.metadata or {}).get("main_content", "")
             if not main_content or main_content in seen:
                 continue
             seen.add(main_content)
@@ -524,7 +539,7 @@ class RetrievalPipeline:
                     "sub_topic": "",
                 })
 
-        return catalog, results
+        return catalog, live_results
 
     def _format_catalog(self, catalog: List[Dict[str, str]]) -> str:
         """Format profile catalog for the system prompt."""

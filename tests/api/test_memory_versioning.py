@@ -445,6 +445,58 @@ def test_v2_cancel_mark_failure_keeps_billing_reserved_after_signal(monkeypatch)
     assert store.jobs["job-1"]["status"] == "running"
 
 
+def test_batch_ingest_rejects_forget(monkeypatch):
+    """Batch ingest with any forget=true item must return 400 before enqueuing any job."""
+    app, _ = _build_app(monkeypatch)
+    store = FakeJobStore()
+    monkeypatch.setattr(memory_v2, "get_default_job_store", lambda: store)
+
+    payload = {
+        "items": [
+            {"user_query": "remember alpha", "user_id": "alice", "forget": True},
+        ],
+    }
+
+    response = TestClient(app).post("/v2/memory/batch-ingest", json=payload)
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["status"] == "error"
+    assert "forget=true is not supported in batch" in body["error"]
+    assert store.jobs == {}
+
+
+def test_v2_ingest_forget_stamps_lifecycle(monkeypatch):
+    """Ingest with forget=true must thread lifecycle_metadata with created_at/updated_at."""
+    app, _ = _build_app(monkeypatch)
+    store = FakeJobStore()
+    scheduled = []
+
+    async def fake_start_job_workflow(job):
+        scheduled.append(job["job_id"])
+
+    monkeypatch.setattr(memory_v2, "get_default_job_store", lambda: store)
+    monkeypatch.setattr(memory_v2, "start_job_workflow", fake_start_job_workflow)
+
+    payload = {
+        "user_query": "delete this later",
+        "agent_response": "done",
+        "user_id": "hunter",
+        "forget": True,
+    }
+
+    response = TestClient(app).post("/v2/memory/ingest", json=payload)
+
+    assert response.status_code == 200
+    job = list(store.jobs.values())[0]
+    lc = job["payload"].get("lifecycle_metadata")
+    assert lc is not None, "lifecycle_metadata must be present in payload"
+    assert lc.get("forget") is True
+    assert "created_at" in lc
+    assert "updated_at" in lc
+    assert "expires_at" in lc
+
+
 def test_v1_batch_ingest_scopes_each_item_for_local_static_key(monkeypatch):
     monkeypatch.setattr(memory.settings, "environment", "development", raising=False)
     static_user = {"id": "static-key", "name": "Static Key User", "email": "static@xmem.ai"}

@@ -13,6 +13,7 @@ No LLM involved — just structured execution with guard rails.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from functools import partial
 import logging
 from typing import Any, Callable, Dict, List, Optional
@@ -23,6 +24,7 @@ from src.schemas.judge import (
     Operation,
     OperationType,
 )
+from src.schemas.memory_lifecycle import PROTECTED_METADATA_KEYS
 from src.schemas.weaver import ExecutedOp, OpStatus, WeaverResult
 from src.storage.base import BaseVectorStore
 
@@ -63,6 +65,7 @@ class Weaver:
         code_vector_store: Optional[BaseVectorStore] = None,
         graph_create_annotation: Optional[GraphCreateAnnotationFn] = None,
         snippet_vector_store: Optional[BaseVectorStore] = None,
+        _now: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self.vector_store = vector_store
         self.embed_fn = embed_fn
@@ -72,6 +75,7 @@ class Weaver:
         self.code_vector_store = code_vector_store
         self.graph_create_annotation = graph_create_annotation
         self.snippet_vector_store = snippet_vector_store
+        self._now: Callable[[], datetime] = _now or (lambda: datetime.now(timezone.utc))
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -82,6 +86,7 @@ class Weaver:
         judge_result: JudgeResult,
         domain: JudgeDomain,
         user_id: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> WeaverResult:
         result = WeaverResult()
 
@@ -89,13 +94,20 @@ class Weaver:
             logger.info("Nothing to execute — all NOOPs or empty.")
             return result
 
+        # Sanitize ONCE here — execute() is the sole entry point.
+        safe_extra: Optional[Dict[str, Any]] = None
+        if extra_metadata:
+            safe_extra = {k: v for k, v in extra_metadata.items() if k not in PROTECTED_METADATA_KEYS}
+
         # Optimization: Batch vector operations if possible
         if domain not in (JudgeDomain.TEMPORAL, JudgeDomain.CODE, JudgeDomain.SNIPPET) and self.vector_store:
-            batched_executed = await self._execute_batched_vector(judge_result.operations, domain, user_id)
+            batched_executed = await self._execute_batched_vector(
+                judge_result.operations, domain, user_id, extra_metadata=safe_extra
+            )
             result.executed.extend(batched_executed)
         else:
             for op in judge_result.operations:
-                executed = await self._execute_one(op, domain, user_id)
+                executed = await self._execute_one(op, domain, user_id, extra_metadata=safe_extra)
                 result.executed.append(executed)
 
         self._log_summary(domain, result)
@@ -106,6 +118,7 @@ class Weaver:
         operations: List[Operation],
         domain: JudgeDomain,
         user_id: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> List[ExecutedOp]:
         """Batch ADD and DELETE operations to reduce vector store round-trips."""
         executed_ops: List[ExecutedOp] = []
@@ -142,6 +155,7 @@ class Weaver:
                 try:
                     meta = {"user_id": user_id, "domain": domain.value}
                     meta.update(_extract_structured_metadata(op.content))
+                    _merge_extra_metadata(meta, extra_metadata)
 
                     valid_ops.append(op)
                     texts.append(op.content)
@@ -279,14 +293,12 @@ class Weaver:
             elif current_op.type == OperationType.UPDATE:
                 await flush_add_batch()
                 await flush_delete_batch()
-                # Execute individual UPDATE
-                executed_ops.append(await self._execute_one(current_op, domain, user_id))
+                executed_ops.append(await self._execute_one(current_op, domain, user_id, extra_metadata=extra_metadata))
 
             else:
-                 # Fallback for unknown types
-                 await flush_add_batch()
-                 await flush_delete_batch()
-                 executed_ops.append(await self._execute_one(current_op, domain, user_id))
+                await flush_add_batch()
+                await flush_delete_batch()
+                executed_ops.append(await self._execute_one(current_op, domain, user_id, extra_metadata=extra_metadata))
 
         # Final flush
         await flush_add_batch()
@@ -303,6 +315,7 @@ class Weaver:
         op: Operation,
         domain: JudgeDomain,
         user_id: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> ExecutedOp:
         # ── Guard rails ──────────────────────────────────────────────
         if op.type == OperationType.NOOP:
@@ -332,7 +345,7 @@ class Weaver:
         elif domain == JudgeDomain.SNIPPET:
             return await self._execute_snippet(op, user_id)
         else:
-            return await self._execute_vector(op, domain, user_id)
+            return await self._execute_vector(op, domain, user_id, extra_metadata=extra_metadata)
 
     # ------------------------------------------------------------------
     # Profile / Summary → Pinecone
@@ -343,6 +356,7 @@ class Weaver:
         op: Operation,
         domain: JudgeDomain,
         user_id: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> ExecutedOp:
         if not self.vector_store:
             return ExecutedOp(
@@ -352,9 +366,9 @@ class Weaver:
 
         try:
             if op.type == OperationType.ADD:
-                return await self._vector_add(op, domain, user_id)
+                return await self._vector_add(op, domain, user_id, extra_metadata=extra_metadata)
             elif op.type == OperationType.UPDATE:
-                return await self._vector_update(op, domain, user_id)
+                return await self._vector_update(op, domain, user_id, extra_metadata=extra_metadata)
             elif op.type == OperationType.DELETE:
                 return await self._vector_delete(op)
             else:
@@ -371,7 +385,11 @@ class Weaver:
             )
 
     async def _vector_add(
-        self, op: Operation, domain: JudgeDomain, user_id: str,
+        self,
+        op: Operation,
+        domain: JudgeDomain,
+        user_id: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> ExecutedOp:
         if not self.embed_fn:
             return ExecutedOp(
@@ -385,6 +403,7 @@ class Weaver:
         # Store structured metadata for deterministic lookups
         structured = _extract_structured_metadata(op.content)
         metadata.update(structured)
+        _merge_extra_metadata(metadata, extra_metadata)
 
         ids = self.vector_store.add(
             texts=[op.content],
@@ -399,6 +418,7 @@ class Weaver:
 
     async def _vector_update(
         self, op: Operation, domain: JudgeDomain, user_id: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> ExecutedOp:
         if not self.embed_fn:
             return ExecutedOp(
@@ -412,6 +432,8 @@ class Weaver:
         # Store structured metadata for deterministic lookups
         structured = _extract_structured_metadata(op.content)
         metadata.update(structured)
+        # TODO(PR#2): UPDATE re-stamps created_at to "now"; fix when versioning lands
+        _merge_extra_metadata(metadata, extra_metadata)
 
         success = self.vector_store.update(
             id=op.embedding_id,
@@ -428,7 +450,7 @@ class Weaver:
             logger.warning(
                 "UPDATE target %s not found — falling back to ADD.", op.embedding_id,
             )
-            return await self._vector_add(op, domain, user_id)
+            return await self._vector_add(op, domain, user_id, extra_metadata=extra_metadata)
 
     async def _vector_delete(self, op: Operation) -> ExecutedOp:
         success = self.vector_store.delete(ids=[op.embedding_id])
@@ -851,6 +873,16 @@ class Weaver:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _merge_extra_metadata(base: Dict[str, Any], extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge already-sanitized extra_metadata onto base, in place.
+    Protected-key stripping happens ONCE at the execute() boundary, so this is a
+    plain merge. Kept as one helper so every vector write funnels through one path.
+    """
+    if extra:
+        base.update(extra)
+    return base
+
 
 def _extract_structured_metadata(content: str) -> Dict[str, str]:
     """Extract structured metadata from profile/summary content.

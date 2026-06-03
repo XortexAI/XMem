@@ -86,6 +86,14 @@ class IngestRequest(UserScopedModel):
         default="low",
         description="'low' (fast, single pass) or 'high' (chunked parallel extraction)",
     )
+    forget: bool = Field(
+        default=False,
+        description=(
+            "When true, the stored memory is tagged with a TTL and will be "
+            "automatically excluded from retrieval after it expires. "
+            "Only honoured on the v2 ingest path."
+        ),
+    )
 
     @field_validator("user_query")
     @classmethod

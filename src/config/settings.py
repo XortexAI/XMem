@@ -506,6 +506,18 @@ class Settings(BaseSettings):
         description="Razorpay subscription plan ID for the global USD Pro plan",
     )
 
+    # =============================================================================
+    # Memory Lifecycle — Forget / TTL (default OFF — fully backward compatible)
+    # =============================================================================
+    memory_forget_default_ttl_days: float = Field(
+        default=30.0,
+        gt=0.0,
+        description=(
+            "Default TTL in days for memories ingested with forget=true via the v2 API. "
+            "Expired records are hidden from retrieval (filtered at read time; no sweeper)."
+        ),
+    )
+
     @field_validator("fallback_order")
     @classmethod
     def validate_fallback_order(cls, v: List[str]) -> List[str]:

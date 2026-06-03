@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add v2-only original document preservation in S3 with indexed original chunks and hybrid memory search.
 - Add modular Razorpay billing, credit wallets, ledger reservations, and v2 memory workflow metering.
 - Add durable Temporal-backed v2 memory and scanner workflow APIs with job status, retry, cancel, and dead-letter endpoints.
 - Add modular LoCoMo and BEAM benchmark runners for the Python XMem API.

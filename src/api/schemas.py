@@ -7,7 +7,6 @@ OpenAPI docs, input validation, and serialization are fully type-safe.
 
 from __future__ import annotations
 
-from datetime import datetime
 from enum import Enum
 import re
 from typing import Any, Dict, List, Optional
@@ -193,6 +192,41 @@ class SearchRequest(UserScopedModel):
 class SearchResponse(BaseModel):
     results: List[SourceRecord] = Field(default_factory=list)
     total: int = 0
+
+
+class HybridSearchRequest(UserScopedModel):
+    """v2-only search across extracted memories and original chunks."""
+    query: str = Field(..., min_length=1, max_length=5_000)
+    user_id: str = Field(..., min_length=1, max_length=256)
+    domains: List[str] = Field(
+        default=["profile", "temporal", "summary"],
+        description="Extracted memory domains to search",
+    )
+    memory_top_k: Optional[int] = Field(default=None, ge=1, le=100)
+    original_top_k: Optional[int] = Field(default=None, ge=1, le=100)
+    include_original_chunks: bool = True
+
+    @field_validator("query")
+    @classmethod
+    def strip_hybrid_query(cls, v: str) -> str:
+        return v.strip()
+
+    @field_validator("domains")
+    @classmethod
+    def validate_hybrid_domains(cls, v: List[str]) -> List[str]:
+        allowed = {"profile", "temporal", "summary"}
+        for d in v:
+            if d not in allowed:
+                raise ValueError(f"Invalid domain '{d}'. Allowed: {allowed}")
+        return v
+
+
+class HybridSearchResponse(BaseModel):
+    memory_results: List[SourceRecord] = Field(default_factory=list)
+    original_chunks: List[SourceRecord] = Field(default_factory=list)
+    results: List[SourceRecord] = Field(default_factory=list)
+    total: int = 0
+    original_storage_enabled: bool = False
 
 
 # ── Scrape (extract from shared chat links) ────────────────────────────────

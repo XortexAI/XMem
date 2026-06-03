@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any, Dict, List
 
@@ -54,6 +55,41 @@ async def _execute(name: str, arg: Any, timeout_seconds: float) -> Any:
     )
 
 
+def _original_enabled(payload: Dict[str, Any]) -> bool:
+    return bool(payload.get("original_storage_enabled"))
+
+
+def _original_timeout(payload: Dict[str, Any]) -> float:
+    return float(payload.get("original_storage_timeout_seconds") or 180.0)
+
+
+def _start_original_task(job_id: str, payload: Dict[str, Any]):
+    if not _original_enabled(payload):
+        return None
+    return asyncio.create_task(
+        _execute(
+            "memory_store_original_activity",
+            {**payload, "job_id": job_id},
+            _original_timeout(payload),
+        )
+    )
+
+
+async def _await_original_task(task, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if task is None:
+        return {"status": "disabled", "indexed_chunks": 0}
+    try:
+        return await task
+    except Exception as exc:
+        if bool(payload.get("original_storage_fail_closed")):
+            raise
+        return {
+            "status": "failed",
+            "error": str(exc) or exc.__class__.__name__,
+            "indexed_chunks": 0,
+        }
+
+
 async def _mark_dead(job_id: str, exc: BaseException) -> Dict[str, Any]:
     error = str(exc) or exc.__class__.__name__
     await _execute(
@@ -103,11 +139,16 @@ class MemoryIngestWorkflow:
         timeout = float(payload.get("timeout_seconds") or 120.0)
         try:
             await _execute("mark_job_running_activity", job_id, 30)
+            original_task = _start_original_task(job_id, payload)
             if payload.get("effort_level") == "high":
                 result = await _execute(
                     "memory_run_pipeline_activity",
                     {**payload, **billing_activity},
                     timeout,
+                )
+                result["original_storage"] = await _await_original_task(
+                    original_task,
+                    payload,
                 )
                 await _execute(
                     "mark_job_succeeded_activity",
@@ -211,6 +252,10 @@ class MemoryIngestWorkflow:
                 )
                 result["code"] = code
 
+            result["original_storage"] = await _await_original_task(
+                original_task,
+                payload,
+            )
             await _execute(
                 "mark_job_succeeded_activity", {"job_id": job_id, "result": result}, 30
             )
@@ -236,31 +281,71 @@ class MemoryBatchIngestWorkflow:
             items = list(payload.get("items") or [])
             total_timeout = float(payload.get("timeout_seconds") or 3600.0)
             item_timeout = max(total_timeout / max(len(items), 1), 1.0)
-            results = []
-            for index, item in enumerate(items):
+            concurrency = max(
+                int(payload.get("original_batch_item_concurrency") or 1),
+                1,
+            )
+            results: List[Any] = [None] * len(items)
+            completed = 0
+
+            async def _run_item(index: int, item: Dict[str, Any]):
                 item_payload = dict(item)
                 item_payload["user_id"] = (
                     item_payload.get("user_id") or payload["user_id"]
                 )
-                item_payload.update(billing_activity)
-                item_result = await _execute(
-                    "memory_run_pipeline_activity",
-                    item_payload,
-                    item_timeout,
-                )
-                results.append(item_result)
-                await _execute(
-                    "mark_job_progress_activity",
-                    {
-                        "job_id": job_id,
-                        "progress": {
-                            "step": "batch_ingest",
-                            "completed": index + 1,
-                            "total": len(items),
+                for key in (
+                    "original_storage_enabled",
+                    "original_storage_fail_closed",
+                    "original_storage_timeout_seconds",
+                    "original_config",
+                ):
+                    if key in payload and key not in item_payload:
+                        item_payload[key] = payload[key]
+
+                original_task = _start_original_task(job_id, item_payload)
+                try:
+                    item_result = await _execute(
+                        "memory_run_pipeline_activity",
+                        {**item_payload, **billing_activity},
+                        item_timeout,
+                    )
+                    item_result["original_storage"] = await _await_original_task(
+                        original_task,
+                        item_payload,
+                    )
+                    original_task = None
+                    return index, item_result
+                finally:
+                    if original_task and not original_task.done():
+                        original_task.cancel()
+                        try:
+                            await original_task
+                        except (asyncio.CancelledError, CancelledError):
+                            pass
+
+            for start in range(0, len(items), concurrency):
+                window = [
+                    asyncio.create_task(_run_item(index, item))
+                    for index, item in enumerate(
+                        items[start:start + concurrency],
+                        start=start,
+                    )
+                ]
+                for index, item_result in await asyncio.gather(*window):
+                    results[index] = item_result
+                    completed += 1
+                    await _execute(
+                        "mark_job_progress_activity",
+                        {
+                            "job_id": job_id,
+                            "progress": {
+                                "step": "batch_ingest",
+                                "completed": completed,
+                                "total": len(items),
+                            },
                         },
-                    },
-                    30,
-                )
+                        30,
+                    )
             result = {"results": results}
             await _execute(
                 "mark_job_succeeded_activity", {"job_id": job_id, "result": result}, 30

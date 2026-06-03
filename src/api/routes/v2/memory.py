@@ -7,7 +7,12 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from src.api.dependencies import enforce_rate_limit, require_api_key, require_ready
+from src.api.dependencies import (
+    enforce_rate_limit,
+    get_retrieval_pipeline,
+    require_api_key,
+    require_ready,
+)
 from src.api.routes import memory as memory_v1
 from src.api.routes.v2.shared import (
     _error,
@@ -18,10 +23,20 @@ from src.api.routes.v2.shared import (
     read_user_job,
 )
 from src.api.routes.v2.temporal_client import start_job_workflow
-from src.api.schemas import APIResponse, BatchIngestRequest, IngestRequest, ScrapeRequest, StatusEnum
+from src.api.schemas import (
+    APIResponse,
+    BatchIngestRequest,
+    HybridSearchRequest,
+    HybridSearchResponse,
+    IngestRequest,
+    ScrapeRequest,
+    SourceRecord,
+    StatusEnum,
+)
 from src.billing import InsufficientCredits, get_default_billing_service
 from src.config import settings
 from src.jobs.durable import QUEUED, get_default_job_store, idempotency_key, new_attempt_id, stable_hash
+from src.storage.original import ORIGINAL_CHUNK_DOMAIN, original_config_snapshot
 
 router = APIRouter(
     prefix="/v2/memory",
@@ -42,6 +57,18 @@ def _content_hash(payload: Dict[str, Any]) -> str:
 
 def _durable_job_id(job_type: str, fields: Dict[str, Any]) -> str:
     return f"{job_type}:{idempotency_key(job_type, fields)}"
+
+
+def _attach_original_storage_config(payload: Dict[str, Any]) -> None:
+    payload["original_storage_enabled"] = bool(settings.original_storage_enabled)
+    payload["original_storage_fail_closed"] = bool(settings.original_storage_fail_closed)
+    payload["original_storage_timeout_seconds"] = float(
+        settings.original_storage_timeout_seconds
+    )
+    payload["original_batch_item_concurrency"] = int(
+        settings.original_batch_item_concurrency
+    )
+    payload["original_config"] = original_config_snapshot()
 
 
 class WorkflowStartFailed(RuntimeError):
@@ -122,6 +149,7 @@ async def ingest_memory_v2(req: IngestRequest, request: Request, user: dict = De
     payload = req.model_dump()
     payload["user_id"] = user_id
     payload["timeout_seconds"] = float(settings.memory_ingest_timeout_seconds)
+    _attach_original_storage_config(payload)
     idempotency_fields = {
         "user_id": user_id,
         "org_id": payload.get("org_id", "default"),
@@ -132,6 +160,7 @@ async def ingest_memory_v2(req: IngestRequest, request: Request, user: dict = De
             "image_url": req.image_url,
             "effort_level": req.effort_level,
         }),
+        "original_storage_enabled": bool(settings.original_storage_enabled),
     }
     job_id = _durable_job_id("memory_ingest", idempotency_fields)
     billing_service = get_default_billing_service()
@@ -217,9 +246,11 @@ async def batch_ingest_memory_v2(req: BatchIngestRequest, request: Request, user
             min(len(req.items) * float(settings.memory_ingest_timeout_seconds), 3600.0),
         ),
     }
+    _attach_original_storage_config(payload)
     idempotency_fields = {
         "user_id": user_id,
         "content_hash": _content_hash({"items": items}),
+        "original_storage_enabled": bool(settings.original_storage_enabled),
     }
     job_id = _durable_job_id("memory_batch_ingest", idempotency_fields)
     billing_service = get_default_billing_service()
@@ -275,6 +306,99 @@ async def batch_ingest_memory_v2(req: BatchIngestRequest, request: Request, user
                 payload["billing_account_id"],
                 job_id,
             )
+        return _error(request, str(exc), 500, elapsed_ms(start))
+
+
+async def _search_original_chunks(
+    pipeline,
+    query: str,
+    user_id: str,
+    top_k: int,
+) -> list[SourceRecord]:
+    raw = await pipeline.vector_store.search_by_text(
+        query_text=query,
+        top_k=top_k,
+        filters={"user_id": user_id, "domain": ORIGINAL_CHUNK_DOMAIN},
+    )
+    results: list[SourceRecord] = []
+    for item in raw:
+        score = float(item.score or 0.0)
+        if score < float(settings.hybrid_search_min_score):
+            continue
+        results.append(
+            SourceRecord(
+                domain=ORIGINAL_CHUNK_DOMAIN,
+                content=item.content,
+                score=round(score, 3),
+                metadata={"id": item.id, **item.metadata},
+            )
+        )
+    return results
+
+
+@router.post(
+    "/hybrid-search",
+    response_model=APIResponse,
+    summary="v2-only hybrid search across extracted memories and original chunks",
+)
+async def hybrid_search_memory_v2(
+    req: HybridSearchRequest,
+    request: Request,
+    user: dict = Depends(require_api_key),
+):
+    start = time.perf_counter()
+    pipeline = get_retrieval_pipeline()
+    user_id = memory_v1._current_user_id(user, req.user_id)
+    memory_top_k = req.memory_top_k or int(settings.hybrid_search_memory_top_k)
+    original_top_k = req.original_top_k or int(settings.hybrid_search_original_top_k)
+
+    try:
+        memory_results: list[SourceRecord] = []
+        if "profile" in req.domains:
+            profile_results = await asyncio.to_thread(
+                memory_v1._search_profile,
+                pipeline,
+                user_id,
+            )
+            memory_results.extend(profile_results)
+        if "temporal" in req.domains:
+            temporal_results = await asyncio.to_thread(
+                memory_v1._search_temporal,
+                pipeline,
+                req.query,
+                user_id,
+                memory_top_k,
+            )
+            memory_results.extend(temporal_results)
+        if "summary" in req.domains:
+            memory_results.extend(
+                await memory_v1._search_summary(
+                    pipeline,
+                    req.query,
+                    user_id,
+                    memory_top_k,
+                )
+            )
+
+        original_chunks: list[SourceRecord] = []
+        if req.include_original_chunks and settings.original_storage_enabled:
+            original_chunks = await _search_original_chunks(
+                pipeline,
+                req.query,
+                user_id,
+                original_top_k,
+            )
+
+        all_results = memory_results + original_chunks
+        data = HybridSearchResponse(
+            memory_results=memory_results,
+            original_chunks=original_chunks,
+            results=all_results,
+            total=len(all_results),
+            original_storage_enabled=bool(settings.original_storage_enabled),
+        )
+        return _wrap(request, data, elapsed_ms(start))
+    except Exception as exc:
         return _error(request, str(exc), 500, elapsed_ms(start))
 
 

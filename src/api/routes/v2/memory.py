@@ -355,16 +355,21 @@ async def hybrid_search_memory_v2(
     try:
         memory_results: list[SourceRecord] = []
         if "profile" in req.domains:
-            memory_results.extend(memory_v1._search_profile(pipeline, user_id))
-        if "temporal" in req.domains:
-            memory_results.extend(
-                memory_v1._search_temporal(
-                    pipeline,
-                    req.query,
-                    user_id,
-                    memory_top_k,
-                )
+            profile_results = await asyncio.to_thread(
+                memory_v1._search_profile,
+                pipeline,
+                user_id,
             )
+            memory_results.extend(profile_results)
+        if "temporal" in req.domains:
+            temporal_results = await asyncio.to_thread(
+                memory_v1._search_temporal,
+                pipeline,
+                req.query,
+                user_id,
+                memory_top_k,
+            )
+            memory_results.extend(temporal_results)
         if "summary" in req.domains:
             memory_results.extend(
                 await memory_v1._search_summary(

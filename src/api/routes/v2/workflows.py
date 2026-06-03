@@ -303,17 +303,25 @@ class MemoryBatchIngestWorkflow:
                         item_payload[key] = payload[key]
 
                 original_task = _start_original_task(job_id, item_payload)
-                extraction_task = asyncio.create_task(_execute(
-                    "memory_run_pipeline_activity",
-                    {**item_payload, **billing_activity},
-                    item_timeout,
-                ))
-                item_result = await extraction_task
-                item_result["original_storage"] = await _await_original_task(
-                    original_task,
-                    item_payload,
-                )
-                return index, item_result
+                try:
+                    item_result = await _execute(
+                        "memory_run_pipeline_activity",
+                        {**item_payload, **billing_activity},
+                        item_timeout,
+                    )
+                    item_result["original_storage"] = await _await_original_task(
+                        original_task,
+                        item_payload,
+                    )
+                    original_task = None
+                    return index, item_result
+                finally:
+                    if original_task and not original_task.done():
+                        original_task.cancel()
+                        try:
+                            await original_task
+                        except BaseException:
+                            pass
 
             for start in range(0, len(items), concurrency):
                 window = [

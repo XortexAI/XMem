@@ -13,6 +13,7 @@ No LLM involved — just structured execution with guard rails.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from functools import partial
 import logging
 from typing import Any, Callable, Dict, List, Optional
@@ -63,6 +64,7 @@ class Weaver:
         code_vector_store: Optional[BaseVectorStore] = None,
         graph_create_annotation: Optional[GraphCreateAnnotationFn] = None,
         snippet_vector_store: Optional[BaseVectorStore] = None,
+        _now: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self.vector_store = vector_store
         self.embed_fn = embed_fn
@@ -72,6 +74,7 @@ class Weaver:
         self.code_vector_store = code_vector_store
         self.graph_create_annotation = graph_create_annotation
         self.snippet_vector_store = snippet_vector_store
+        self._now: Callable[[], datetime] = _now or (lambda: datetime.now(timezone.utc))
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -82,6 +85,7 @@ class Weaver:
         judge_result: JudgeResult,
         domain: JudgeDomain,
         user_id: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> WeaverResult:
         result = WeaverResult()
 
@@ -91,7 +95,9 @@ class Weaver:
 
         # Optimization: Batch vector operations if possible
         if domain not in (JudgeDomain.TEMPORAL, JudgeDomain.CODE, JudgeDomain.SNIPPET) and self.vector_store:
-            batched_executed = await self._execute_batched_vector(judge_result.operations, domain, user_id)
+            batched_executed = await self._execute_batched_vector(
+                judge_result.operations, domain, user_id, extra_metadata=extra_metadata
+            )
             result.executed.extend(batched_executed)
         else:
             for op in judge_result.operations:
@@ -106,6 +112,7 @@ class Weaver:
         operations: List[Operation],
         domain: JudgeDomain,
         user_id: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> List[ExecutedOp]:
         """Batch ADD and DELETE operations to reduce vector store round-trips."""
         executed_ops: List[ExecutedOp] = []
@@ -142,6 +149,8 @@ class Weaver:
                 try:
                     meta = {"user_id": user_id, "domain": domain.value}
                     meta.update(_extract_structured_metadata(op.content))
+                    if extra_metadata:
+                        meta.update(extra_metadata)
 
                     valid_ops.append(op)
                     texts.append(op.content)
@@ -371,7 +380,11 @@ class Weaver:
             )
 
     async def _vector_add(
-        self, op: Operation, domain: JudgeDomain, user_id: str,
+        self,
+        op: Operation,
+        domain: JudgeDomain,
+        user_id: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> ExecutedOp:
         if not self.embed_fn:
             return ExecutedOp(
@@ -385,6 +398,8 @@ class Weaver:
         # Store structured metadata for deterministic lookups
         structured = _extract_structured_metadata(op.content)
         metadata.update(structured)
+        if extra_metadata:
+            metadata.update(extra_metadata)
 
         ids = self.vector_store.add(
             texts=[op.content],

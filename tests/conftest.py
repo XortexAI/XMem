@@ -122,7 +122,8 @@ class InMemoryVectorStore:
         if embedding is not None:
             current["embedding"] = embedding
         if metadata is not None:
-            current["metadata"] = metadata
+            # Merge (not replace) — mirrors prod backends (local.py:177, pinecone.py:669)
+            current["metadata"] = {**current.get("metadata", {}), **metadata}
         return True
 
     def delete(self, ids):

@@ -52,7 +52,7 @@ class RecordingWeaver:
         self.calls = []
         self.snippet_vector_store = None
 
-    async def execute(self, judge_result, domain, user_id):
+    async def execute(self, judge_result, domain, user_id, extra_metadata=None):
         self.calls.append((judge_result, domain, user_id))
         return WeaverResult(
             executed=[

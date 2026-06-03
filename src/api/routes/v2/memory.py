@@ -310,11 +310,11 @@ async def batch_ingest_memory_v2(req: BatchIngestRequest, request: Request, user
 
 
 async def _search_original_chunks(
+    pipeline,
     query: str,
     user_id: str,
     top_k: int,
 ) -> list[SourceRecord]:
-    pipeline = get_retrieval_pipeline()
     raw = await pipeline.vector_store.search_by_text(
         query_text=query,
         top_k=top_k,
@@ -383,6 +383,7 @@ async def hybrid_search_memory_v2(
         original_chunks: list[SourceRecord] = []
         if req.include_original_chunks and settings.original_storage_enabled:
             original_chunks = await _search_original_chunks(
+                pipeline,
                 req.query,
                 user_id,
                 original_top_k,

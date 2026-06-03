@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import time
 from typing import Any, Dict
 
@@ -19,6 +19,7 @@ from src.api.routes.v2.shared import (
     read_user_job,
 )
 from src.api.routes.v2.temporal_client import start_job_workflow
+from src.pipelines.lifecycle import build_lifecycle_metadata
 from src.api.schemas import APIResponse, BatchIngestRequest, IngestRequest, ScrapeRequest, StatusEnum
 from src.billing import InsufficientCredits, get_default_billing_service
 from src.config import settings
@@ -127,13 +128,10 @@ async def ingest_memory_v2(req: IngestRequest, request: Request, user: dict = De
     # When forget=true, compute lifecycle_metadata and thread it through so the
     # weaver stamps the forget flag + TTL on every vector record it writes.
     if req.forget:
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(days=settings.memory_forget_default_ttl_days)
-        payload["lifecycle_metadata"] = {
-            "forget": True,
-            "expires_at": expires_at.isoformat(),
-            "lifecycle_state": "active",
-        }
+        payload["lifecycle_metadata"] = build_lifecycle_metadata(
+            now=datetime.now(timezone.utc),
+            ttl_days=settings.memory_forget_default_ttl_days,
+        )
 
     idempotency_fields = {
         "user_id": user_id,
@@ -144,8 +142,11 @@ async def ingest_memory_v2(req: IngestRequest, request: Request, user: dict = De
             "session_datetime": req.session_datetime,
             "image_url": req.image_url,
             "effort_level": req.effort_level,
-            # Include forget in idempotency so forget vs non-forget of the
-            # same content are treated as distinct requests.
+            # forget distinguishes forget vs non-forget of identical content.
+            # KNOWN LIMITATION (PR #2): server-default TTL is intentionally NOT hashed.
+            # Idempotency = "same request → same job"; the request didn't change, the
+            # server config did. Changing MEMORY_FORGET_DEFAULT_TTL_DAYS won't refresh a
+            # cached forget job's TTL. Resolved when forget_ttl_days becomes a client field.
             "forget": req.forget,
         }),
     }
@@ -223,6 +224,13 @@ async def memory_job_status(job_id: str, request: Request, user: dict = Depends(
 @router.post("/batch-ingest", response_model=APIResponse, summary="Start an async durable batch memory ingest job")
 async def batch_ingest_memory_v2(req: BatchIngestRequest, request: Request, user: dict = Depends(require_api_key)):
     start = time.perf_counter()
+    if any(getattr(item, "forget", False) for item in req.items):
+        return _error(
+            request,
+            "forget=true is not supported in batch ingest yet; use POST /v2/memory/ingest per item.",
+            400,
+            elapsed_ms(start),
+        )
     user_id = memory_v1._current_user_id(user)
     items = [memory_v1._scoped_ingest_payload(user, item) for item in req.items]
     payload = {

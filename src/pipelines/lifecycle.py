@@ -1,7 +1,7 @@
 """
 Memory lifecycle — pure, deterministic helper functions for forget/TTL.
 
-is_retrievable() is the single retrieval-time gate. build_forget_metadata()
+is_retrievable() is the single retrieval-time gate. build_lifecycle_metadata()
 stamps the lifecycle fields onto a metadata dict for storage.
 
 All functions are side-effect-free so they can be tested without live services.
@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Dict, Mapping, Optional
 
 
-def is_retrievable(metadata: Mapping[str, Any], now: datetime) -> bool:
+def is_retrievable(metadata: Optional[Mapping[str, Any]], now: datetime) -> bool:
     """Return True when a record should appear in retrieval results.
 
     Rules (applied in order):
@@ -24,6 +24,9 @@ def is_retrievable(metadata: Mapping[str, Any], now: datetime) -> bool:
     Missing keys default to the legacy-safe value so records stored before
     lifecycle was introduced are never hidden.
     """
+    if not metadata:
+        return True
+
     if metadata.get("lifecycle_state", "active") == "forgotten":
         return False
 
@@ -31,7 +34,10 @@ def is_retrievable(metadata: Mapping[str, Any], now: datetime) -> bool:
         expires_raw = metadata.get("expires_at")
         if expires_raw:
             try:
-                expires_at = datetime.fromisoformat(str(expires_raw))
+                if isinstance(expires_raw, datetime):
+                    expires_at = expires_raw
+                else:
+                    expires_at = datetime.fromisoformat(str(expires_raw))
                 # Make both sides timezone-aware or both naive for comparison
                 if expires_at.tzinfo is None and now.tzinfo is not None:
                     from datetime import timezone

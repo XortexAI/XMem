@@ -522,7 +522,7 @@ class RetrievalPipeline:
             if not is_retrievable(r.metadata, now):
                 continue
             live_results.append(r)
-            main_content = r.metadata.get("main_content", "")
+            main_content = (r.metadata or {}).get("main_content", "")
             if not main_content or main_content in seen:
                 continue
             seen.add(main_content)

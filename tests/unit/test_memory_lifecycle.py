@@ -233,3 +233,20 @@ def test_fake_update_merges_metadata():
     assert meta["a"] == 1, "Pre-existing key must be preserved"
     assert meta["b"] == 99, "Updated key must reflect new value"
     assert meta["c"] == 3, "New key must be added"
+
+
+# ---------------------------------------------------------------------------
+# 6. is_retrievable — None guard + datetime short-circuit
+# ---------------------------------------------------------------------------
+
+def test_is_retrievable_none_metadata():
+    """is_retrievable(None, now) must return True (legacy-safe)."""
+    assert is_retrievable(None, NOW) is True
+
+
+def test_is_retrievable_datetime_expires_at():
+    """is_retrievable must handle a real datetime object (isinstance short-circuit)."""
+    meta_past = {"forget": True, "expires_at": PAST, "lifecycle_state": "active"}
+    meta_future = {"forget": True, "expires_at": FUTURE, "lifecycle_state": "active"}
+    assert is_retrievable(meta_past, NOW) is False
+    assert is_retrievable(meta_future, NOW) is True

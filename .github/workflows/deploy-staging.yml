@@ -65,6 +65,7 @@ jobs:
   deploy:
     name: Deploy to staging EC2
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 20
     environment:
       name: staging

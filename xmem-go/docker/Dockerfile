@@ -10,4 +10,3 @@ COPY --from=build /out/xmem-go /app/xmem-go
 COPY .env.example /app/.env.example
 EXPOSE 8002
 CMD ["/app/xmem-go"]
-

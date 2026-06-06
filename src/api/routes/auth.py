@@ -1,12 +1,10 @@
 """Authentication routes for Google OAuth and JWT management."""
 
-import secrets
-import string
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, status
+from fastapi.responses import JSONResponse
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 from jose import JWTError, jwt
@@ -16,6 +14,7 @@ from src.api.dependencies import get_current_user, require_api_key, require_user
 from src.config import settings
 from src.database.user_store import UserStore
 from src.database.api_key_store import APIKeyStore
+from src.database.control_plane_store import control_plane_store
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -24,86 +23,52 @@ user_store = UserStore()
 api_key_store = APIKeyStore()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# MCP OAuth Temp Token Store (in-memory with TTL)
+# MCP OAuth Temp Token Store
 # ═══════════════════════════════════════════════════════════════════════════
-_mcp_temp_tokens: Dict[str, Dict[str, Any]] = {}
 TEMP_TOKEN_PREFIX = "xm-temp-"
 TEMP_TOKEN_TTL_MINUTES = 10
-TEMP_TOKEN_LENGTH = 32
+MCP_TEMP_TOKEN_RECORD = "mcp_temp_token"
+OAUTH_AUTH_CODE_RECORD = "oauth_auth_code"
 
 
-def _generate_mcp_temp_token() -> str:
-    """Generate a temporary token for MCP OAuth flow."""
-    alphabet = string.ascii_letters + string.digits
-    random_part = "".join(secrets.choice(alphabet) for _ in range(TEMP_TOKEN_LENGTH))
-    return f"{TEMP_TOKEN_PREFIX}{random_part}"
-
-
-def _create_mcp_temp_token(user_id: str) -> str:
+async def _create_mcp_temp_token(user_id: str) -> dict:
     """Create and store a temporary token for the user."""
-    token = _generate_mcp_temp_token()
-    expires_at = datetime.utcnow() + timedelta(minutes=TEMP_TOKEN_TTL_MINUTES)
-
-    _mcp_temp_tokens[token] = {
-        "user_id": user_id,
-        "created_at": datetime.utcnow(),
-        "expires_at": expires_at,
-        "exchanged": False,
-    }
-
-    return token
+    return await control_plane_store.create_single_use_token_async(
+        record_type=MCP_TEMP_TOKEN_RECORD,
+        user_id=user_id,
+        prefix=TEMP_TOKEN_PREFIX,
+        ttl_seconds=TEMP_TOKEN_TTL_MINUTES * 60,
+    )
 
 
-def _get_and_invalidate_mcp_token(token: str) -> Optional[str]:
+async def _get_and_invalidate_mcp_token(token: str) -> Optional[str]:
     """Validate temp token and return user_id if valid, None otherwise."""
-    if token not in _mcp_temp_tokens:
-        return None
-
-    token_data = _mcp_temp_tokens[token]
-
-    # Check expiry
-    if datetime.utcnow() > token_data["expires_at"]:
-        del _mcp_temp_tokens[token]
-        return None
-
-    # Check if already exchanged
-    if token_data["exchanged"]:
-        return None
-
-    # Mark as exchanged and return user_id
-    user_id = token_data["user_id"]
-    del _mcp_temp_tokens[token]  # Single-use token
-    return user_id
+    return await control_plane_store.consume_single_use_token_async(
+        MCP_TEMP_TOKEN_RECORD,
+        token,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Standard OAuth 2.0 Store (for ChatGPT UI)
 # ═══════════════════════════════════════════════════════════════════════════
-_oauth_auth_codes: Dict[str, Dict[str, Any]] = {}
-
-def _generate_auth_code(user_id: str) -> str:
+async def _generate_auth_code(user_id: str) -> str:
     """Generate a standard OAuth 2.0 authorization code."""
-    alphabet = string.ascii_letters + string.digits
-    code = "".join(secrets.choice(alphabet) for _ in range(32))
-    
-    _oauth_auth_codes[code] = {
-        "user_id": user_id,
-        "expires_at": datetime.utcnow() + timedelta(minutes=10)
-    }
-    return code
+    created = await control_plane_store.create_single_use_token_async(
+        record_type=OAUTH_AUTH_CODE_RECORD,
+        user_id=user_id,
+        prefix="",
+        ttl_seconds=10 * 60,
+    )
+    return created["token"]
 
-def _get_and_invalidate_auth_code(code: str) -> Optional[str]:
+
+async def _get_and_invalidate_auth_code(code: str) -> Optional[str]:
     """Validate auth code and return user_id if valid."""
-    if code not in _oauth_auth_codes:
-        return None
-        
-    data = _oauth_auth_codes[code]
-    del _oauth_auth_codes[code] # Single-use
-    
-    if datetime.utcnow() > data["expires_at"]:
-        return None
-        
-    return data["user_id"]
+    return await control_plane_store.consume_single_use_token_async(
+        OAUTH_AUTH_CODE_RECORD,
+        code,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -457,15 +422,15 @@ async def generate_mcp_temp_token(current_user: dict = Depends(require_user)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required"
-        )
+    )
 
     user_id = str(current_user.get("id"))
-    temp_token = _create_mcp_temp_token(user_id)
+    temp_token = await _create_mcp_temp_token(user_id)
 
     return MCPTempTokenResponse(
-        temp_token=temp_token,
+        temp_token=temp_token["token"],
         expires_in=TEMP_TOKEN_TTL_MINUTES * 60,
-        expires_at=_mcp_temp_tokens[temp_token]["expires_at"]
+        expires_at=temp_token["expires_at"],
     )
 
 
@@ -480,7 +445,7 @@ async def exchange_mcp_token(request: MCPExchangeRequest):
     The temp token is single-use and invalidated after exchange.
     """
     # Validate and consume the temp token
-    user_id = _get_and_invalidate_mcp_token(request.temp_token)
+    user_id = await _get_and_invalidate_mcp_token(request.temp_token)
 
     if not user_id:
         raise HTTPException(
@@ -531,12 +496,9 @@ async def oauth_approve(request: OAuthApproveRequest, current_user: dict = Depen
         raise HTTPException(status_code=401, detail="Authentication required")
         
     user_id = str(current_user.get("id"))
-    code = _generate_auth_code(user_id)
+    code = await _generate_auth_code(user_id)
     return OAuthApproveResponse(code=code)
 
-
-from fastapi import Form
-from fastapi.responses import JSONResponse
 
 @router.post("/oauth/token")
 async def oauth_token(
@@ -555,7 +517,7 @@ async def oauth_token(
     if not code:
         return JSONResponse(status_code=400, content={"error": "invalid_request", "error_description": "code is required"})
         
-    user_id = _get_and_invalidate_auth_code(code)
+    user_id = await _get_and_invalidate_auth_code(code)
     if not user_id:
         return JSONResponse(status_code=400, content={"error": "invalid_grant", "error_description": "Invalid or expired authorization code"})
         
